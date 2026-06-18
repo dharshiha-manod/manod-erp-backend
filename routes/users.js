@@ -1,60 +1,46 @@
 /**
  * ====================================================
- * USER ROUTES
+ * USER MANAGEMENT ROUTES
  * /api/users endpoints
  * ====================================================
  */
 
 const express = require('express');
-const { 
-  getProfile, 
-  updateProfile, 
-  changePassword,
-  getAllUsers,
-  deleteUser 
-} = require('../controllers/userController');
-const authenticateToken = require('../middleware/auth');
-
 const router = express.Router();
+const authenticateToken = require('../middleware/auth');
+const {
+  getAllUsers,
+  getUserById,
+  createUser,
+  updateUser,
+  deleteUser,
+  getProfile,
+  changePassword,
+  resetUserPassword,
+} = require('../controllers/userController');
 
-// ── PROTECTED ROUTES (All require authentication) ──
-
-/**
- * @route   GET /api/users/profile
- * @desc    Get current user profile
- * @access  Private
- * @header  Authorization: Bearer <token>
- */
-router.get('/profile', authenticateToken, getProfile);
-
-/**
- * @route   PUT /api/users/profile
- * @desc    Update current user profile
- * @access  Private
- * @body    { name, email, phone, address }
- */
-router.put('/profile', authenticateToken, updateProfile);
-
-/**
- * @route   POST /api/users/change-password
- * @desc    Change user password
- * @access  Private
- * @body    { currentPassword, newPassword, confirmPassword }
- */
-router.post('/change-password', authenticateToken, changePassword);
-
-/**
- * @route   GET /api/users
- * @desc    Get all users (Admin only)
- * @access  Private (Admin)
- */
+// ── GET /api/users ── Get all users
 router.get('/', authenticateToken, getAllUsers);
 
-/**
- * @route   DELETE /api/users/:id
- * @desc    Delete user (Admin only)
- * @access  Private (Admin)
- */
+// ── GET /api/users/profile ── Get my profile (must be before /:id)
+router.get('/profile', authenticateToken, getProfile);
+
+// ── GET /api/users/:id ── Get user by ID
+router.get('/:id', authenticateToken, getUserById);
+
+// ── POST /api/users ── Create new user
+router.post('/', authenticateToken, createUser);
+
+// ── PUT /api/users/:id ── Update user
+router.put('/:id', authenticateToken, updateUser);
+
+// ── DELETE /api/users/:id ── Delete user
 router.delete('/:id', authenticateToken, deleteUser);
+
+// ── POST /api/users/change-password ── Change own password
+router.post('/change-password', authenticateToken, changePassword);
+
+// ── PUT /api/users/:id/reset-password ── Admin reset user password
+router.put('/:id/reset-password', authenticateToken, resetUserPassword);
 
 module.exports = router;

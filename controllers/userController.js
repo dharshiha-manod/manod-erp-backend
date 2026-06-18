@@ -1,206 +1,237 @@
 /**
  * ====================================================
- * USER CONTROLLER
- * User Profile Management
+ * USER MANAGEMENT CONTROLLER
+ * Full CRUD + Reset Password
  * ====================================================
  */
 
 const bcrypt = require('bcryptjs');
-const { pool } = require('../config/database');
+const pool = require('../config/database');
 
-// ── GET USER PROFILE ──
-const getProfile = async (req, res) => {
+// ── GET ALL USERS ──
+const getAllUsers = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const result = await pool.query(
+      `SELECT id, email, full_name, phone, role, status, department, created_at, updated_at 
+       FROM users 
+       ORDER BY created_at DESC`
+    );
+    res.status(200).json({ success: true, total: result.rows.length, users: result.rows });
+  } catch (err) {
+    console.error('❌ Get All Users Error:', err.message);
+    res.status(500).json({ success: false, error: 'Failed to fetch users' });
+  }
+};
+
+// ── GET USER BY ID ──
+const getUserById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      `SELECT id, email, full_name, phone, role, status, department, created_at, updated_at 
+       FROM users WHERE id = $1`,
+      [id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+    res.status(200).json({ success: true, user: result.rows[0] });
+  } catch (err) {
+    console.error('❌ Get User By ID Error:', err.message);
+    res.status(500).json({ success: false, error: 'Failed to fetch user' });
+  }
+};
+
+// ── CREATE USER ──
+const createUser = async (req, res) => {
+  try {
+    const { email, password, full_name, phone, role, department } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ success: false, error: 'Email and password are required' });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ success: false, error: 'Password must be at least 6 characters' });
+    }
+
+    const existing = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ success: false, error: 'Email already exists' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
 
     const result = await pool.query(
-      'SELECT id, name, email, phone, role, status, created_at, updated_at FROM users WHERE id = $1',
-      [userId]
+      `INSERT INTO users (email, password_hash, full_name, phone, role, department, status)
+       VALUES ($1, $2, $3, $4, $5, $6, 'active')
+       RETURNING id, email, full_name, phone, role, department, status, created_at`,
+      [email, hashedPassword, full_name || null, phone || null, role || 'employee', department || null]
+    );
+
+    console.log('✅ User created:', result.rows[0].email);
+    res.status(201).json({ success: true, message: 'User created successfully', user: result.rows[0] });
+  } catch (err) {
+    console.error('❌ Create User Error:', err.message);
+    res.status(500).json({ success: false, error: 'Failed to create user' });
+  }
+};
+
+// ── UPDATE USER ──
+const updateUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { full_name, email, phone, role, status, department } = req.body;
+
+    const existing = await pool.query('SELECT id FROM users WHERE id = $1', [id]);
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+
+    if (email) {
+      const emailCheck = await pool.query(
+        'SELECT id FROM users WHERE email = $1 AND id != $2',
+        [email, id]
+      );
+      if (emailCheck.rows.length > 0) {
+        return res.status(400).json({ success: false, error: 'Email already in use' });
+      }
+    }
+
+    const result = await pool.query(
+      `UPDATE users 
+       SET full_name = COALESCE($1, full_name),
+           email = COALESCE($2, email),
+           phone = COALESCE($3, phone),
+           role = COALESCE($4, role),
+           status = COALESCE($5, status),
+           department = COALESCE($6, department)
+       WHERE id = $7
+       RETURNING id, email, full_name, phone, role, status, department`,
+      [full_name, email, phone, role, status, department, id]
+    );
+
+    console.log('✅ User updated:', result.rows[0].email);
+    res.status(200).json({ success: true, message: 'User updated successfully', user: result.rows[0] });
+  } catch (err) {
+    console.error('❌ Update User Error:', err.message);
+    res.status(500).json({ success: false, error: 'Failed to update user' });
+  }
+};
+
+// ── DELETE USER ──
+const deleteUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (req.user.id === id) {
+      return res.status(400).json({ success: false, error: 'Cannot delete your own account' });
+    }
+
+    const result = await pool.query(
+      'DELETE FROM users WHERE id = $1 RETURNING id, email, full_name',
+      [id]
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
+      return res.status(404).json({ success: false, error: 'User not found' });
     }
 
-    res.status(200).json(result.rows[0]);
+    console.log('✅ User deleted:', result.rows[0].email);
+    res.status(200).json({ success: true, message: 'User deleted successfully', user: result.rows[0] });
   } catch (err) {
-    console.error('❌ Get Profile Error:', err);
-    res.status(500).json({ error: 'Failed to fetch profile' });
+    console.error('❌ Delete User Error:', err.message);
+    res.status(500).json({ success: false, error: 'Failed to delete user' });
   }
 };
 
-// ── UPDATE USER PROFILE ──
-const updateProfile = async (req, res) => {
+// ── GET MY PROFILE ──
+const getProfile = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { name, email, phone, address } = req.body;
-
-    // Validate input
-    if (!name || !email) {
-      return res.status(400).json({ 
-        error: 'Name and email are required' 
-      });
-    }
-
-    // Check if email is already used by another user
-    const emailCheck = await pool.query(
-      'SELECT id FROM users WHERE email = $1 AND id != $2',
-      [email, userId]
-    );
-
-    if (emailCheck.rows.length > 0) {
-      return res.status(400).json({ 
-        error: 'Email is already in use' 
-      });
-    }
-
-    // Update user
     const result = await pool.query(
-      'UPDATE users SET name = $1, email = $2, phone = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4 RETURNING id, name, email, phone, role, status, updated_at',
-      [name, email, phone || null, userId]
+      `SELECT id, email, full_name, phone, role, status, department, created_at, updated_at 
+       FROM users WHERE id = $1`,
+      [userId]
     );
-
-    res.status(200).json({
-      message: 'Profile updated successfully',
-      user: result.rows[0]
-    });
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+    res.status(200).json({ success: true, user: result.rows[0] });
   } catch (err) {
-    console.error('❌ Update Profile Error:', err);
-    res.status(500).json({ error: 'Failed to update profile' });
+    console.error('❌ Get Profile Error:', err.message);
+    res.status(500).json({ success: false, error: 'Failed to fetch profile' });
   }
 };
 
-// ── CHANGE PASSWORD ──
+// ── CHANGE OWN PASSWORD ──
 const changePassword = async (req, res) => {
   try {
     const userId = req.user.id;
     const { currentPassword, newPassword, confirmPassword } = req.body;
 
-    // ── VALIDATION ──
     if (!currentPassword || !newPassword || !confirmPassword) {
-      return res.status(400).json({ 
-        error: 'All password fields are required' 
-      });
+      return res.status(400).json({ success: false, error: 'All fields are required' });
     }
-
     if (newPassword !== confirmPassword) {
-      return res.status(400).json({ 
-        error: 'New passwords do not match' 
-      });
+      return res.status(400).json({ success: false, error: 'New passwords do not match' });
     }
-
     if (newPassword.length < 6) {
-      return res.status(400).json({ 
-        error: 'New password must be at least 6 characters' 
-      });
+      return res.status(400).json({ success: false, error: 'Password must be at least 6 characters' });
     }
 
-    // Get current user password
-    const userResult = await pool.query(
-      'SELECT password FROM users WHERE id = $1',
-      [userId]
-    );
-
+    const userResult = await pool.query('SELECT password_hash FROM users WHERE id = $1', [userId]);
     if (userResult.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
+      return res.status(404).json({ success: false, error: 'User not found' });
     }
 
-    // Verify current password
-    const validPassword = await bcrypt.compare(
-      currentPassword,
-      userResult.rows[0].password
-    );
-
+    const validPassword = await bcrypt.compare(currentPassword, userResult.rows[0].password_hash);
     if (!validPassword) {
-      return res.status(401).json({ 
-        error: 'Current password is incorrect' 
-      });
+      return res.status(401).json({ success: false, error: 'Current password is incorrect' });
     }
 
-    // Hash new password
     const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hashedPassword, userId]);
 
-    // Update password
-    await pool.query(
-      'UPDATE users SET password = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-      [hashedPassword, userId]
-    );
-
-    res.status(200).json({ 
-      message: 'Password changed successfully' 
-    });
+    res.status(200).json({ success: true, message: 'Password changed successfully' });
   } catch (err) {
-    console.error('❌ Change Password Error:', err);
-    res.status(500).json({ error: 'Failed to change password' });
+    console.error('❌ Change Password Error:', err.message);
+    res.status(500).json({ success: false, error: 'Failed to change password' });
   }
 };
 
-// ── GET ALL USERS (Admin only) ──
-const getAllUsers = async (req, res) => {
-  try {
-    // Check if user is admin
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ 
-        error: 'Only admins can view all users' 
-      });
-    }
-
-    const result = await pool.query(
-      'SELECT id, name, email, phone, role, status, created_at FROM users ORDER BY created_at DESC'
-    );
-
-    res.status(200).json({
-      total: result.rows.length,
-      users: result.rows
-    });
-  } catch (err) {
-    console.error('❌ Get All Users Error:', err);
-    res.status(500).json({ error: 'Failed to fetch users' });
-  }
-};
-
-// ── DELETE USER (Admin only) ──
-const deleteUser = async (req, res) => {
+// ── ADMIN RESET USER PASSWORD ──
+const resetUserPassword = async (req, res) => {
   try {
     const { id } = req.params;
+    const { newPassword } = req.body;
 
-    // Check if user is admin
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ 
-        error: 'Only admins can delete users' 
-      });
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ success: false, error: 'Password must be at least 6 characters' });
     }
 
-    // Prevent deleting self
-    if (req.user.id === parseInt(id)) {
-      return res.status(400).json({ 
-        error: 'Cannot delete your own account' 
-      });
+    const existing = await pool.query('SELECT id, email FROM users WHERE id = $1', [id]);
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'User not found' });
     }
 
-    const result = await pool.query(
-      'DELETE FROM users WHERE id = $1 RETURNING id, name, email',
-      [id]
-    );
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hashedPassword, id]);
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    res.status(200).json({
-      message: 'User deleted successfully',
-      user: result.rows[0]
-    });
+    console.log('✅ Password reset for:', existing.rows[0].email);
+    res.status(200).json({ success: true, message: 'Password reset successfully' });
   } catch (err) {
-    console.error('❌ Delete User Error:', err);
-    res.status(500).json({ error: 'Failed to delete user' });
+    console.error('❌ Reset Password Error:', err.message);
+    res.status(500).json({ success: false, error: 'Failed to reset password' });
   }
 };
 
 module.exports = {
-  getProfile,
-  updateProfile,
-  changePassword,
   getAllUsers,
-  deleteUser
+  getUserById,
+  createUser,
+  updateUser,
+  deleteUser,
+  getProfile,
+  changePassword,
+  resetUserPassword,
 };
