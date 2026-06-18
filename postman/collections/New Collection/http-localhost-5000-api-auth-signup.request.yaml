@@ -1,0 +1,5 @@
+$kind: http-request
+name: http://localhost:5000/api/auth/signup
+url: http://localhost:5000/api/auth/signup
+method: GET
+order: 1781688160356

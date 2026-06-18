@@ -1,49 +1,41 @@
 /**
  * ====================================================
- * AUTHENTICATION ROUTES
- * /api/auth endpoints
+ * AUTHENTICATION ROUTES (FIXED FOR YOUR SCHEMA)
  * ====================================================
  */
 
 const express = require('express');
-const { register, login, verifyToken, logout } = require('../controllers/authController');
-const authenticateToken = require('../middleware/auth');
-
 const router = express.Router();
-
-// ── PUBLIC ROUTES ──
+const {
+  register,
+  login,
+  verifyToken,
+  logout,
+  getUserProfile
+} = require('../controllers/authController');
+const authMiddleware = require('../middleware/auth');
 
 /**
- * @route   POST /api/auth/register
- * @desc    Register new user
- * @access  Public
- * @body    { name, email, password, phone }
+ * Public Routes (No Authentication Required)
  */
+
+// Register new user
 router.post('/register', register);
 
-/**
- * @route   POST /api/auth/login
- * @desc    Login user
- * @access  Public
- * @body    { email, password }
- */
+// Login user
 router.post('/login', login);
 
-// ── PROTECTED ROUTES ──
-
 /**
- * @route   GET /api/auth/verify
- * @desc    Verify JWT token
- * @access  Private
- * @header  Authorization: Bearer <token>
+ * Protected Routes (Authentication Required)
  */
-router.get('/verify', authenticateToken, verifyToken);
 
-/**
- * @route   POST /api/auth/logout
- * @desc    Logout user
- * @access  Private
- */
-router.post('/logout', authenticateToken, logout);
+// Verify token
+router.post('/verify-token', authMiddleware, verifyToken);
+
+// Get user profile
+router.get('/profile', authMiddleware, getUserProfile);
+
+// Logout
+router.post('/logout', authMiddleware, logout);
 
 module.exports = router;
