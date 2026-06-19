@@ -9,6 +9,7 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 
+
 // ── Initialize Express App ──
 const app = express();
 
@@ -40,11 +41,13 @@ const pool = require('./config/database');
 // Import routes
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
+const roleRoutes = require('./routes/roles');   // ← add this
+          // ← add this
 
 // Use routes
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
-
+app.use('/api/roles', roleRoutes);    
 // ── HEALTH CHECK ENDPOINT ──
 app.get('/api/health', (req, res) => {
   res.status(200).json({ 
