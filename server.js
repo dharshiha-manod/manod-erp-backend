@@ -1,6 +1,6 @@
 /**
  * ====================================================
- * MANOD ERP BACKEND - MAIN SERVER
+ * MANOD ERP BACKEND - MAIN SERVER (UPDATED)
  * Node.js + Express + PostgreSQL
  * ====================================================
  */
@@ -41,13 +41,15 @@ const pool = require('./config/database');
 // Import routes
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
-const roleRoutes = require('./routes/roles');   // ← add this
-          // ← add this
+const roleRoutes = require('./routes/roles');
+const commissionAgentRoutes = require('./routes/commissionAgentsroutes'); // ← NEW
 
 // Use routes
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
-app.use('/api/roles', roleRoutes);    
+app.use('/api/roles', roleRoutes);
+app.use('/api/sales-commission-agents', commissionAgentRoutes); // ← NEW
+
 // ── HEALTH CHECK ENDPOINT ──
 app.get('/api/health', (req, res) => {
   res.status(200).json({ 
@@ -65,7 +67,9 @@ app.get('/', (req, res) => {
     endpoints: {
       health: '/api/health',
       auth: '/api/auth',
-      users: '/api/users'
+      users: '/api/users',
+      roles: '/api/roles',
+      commissionAgents: '/api/sales-commission-agents' // ← NEW
     }
   });
 });
@@ -100,6 +104,7 @@ app.listen(PORT, () => {
 ║   Server: http://localhost:${PORT}            ║
 ║   Environment: ${process.env.NODE_ENV}                ║
 ║   Database: ${process.env.DB_NAME}                   ║
+║   New Module: Sales Commission Agents ✓     ║
 ╚══════════════════════════════════════════════╝
   `);
 });
