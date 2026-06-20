@@ -43,12 +43,14 @@ const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
 const roleRoutes = require('./routes/roles');
 const commissionAgentRoutes = require('./routes/commissionAgentsroutes'); // ← NEW
+const contactRoutes = require('./routes/contacts'); 
 
 // Use routes
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/roles', roleRoutes);
 app.use('/api/sales-commission-agents', commissionAgentRoutes); // ← NEW
+app.use('/api/contacts', contactRoutes); // ← NEW
 
 // ── HEALTH CHECK ENDPOINT ──
 app.get('/api/health', (req, res) => {
