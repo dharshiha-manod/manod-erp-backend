@@ -1,6 +1,6 @@
 /**
  * ====================================================
- * MANOD ERP BACKEND - MAIN SERVER (UPDATED)
+ * MANOD ERP BACKEND - MAIN SERVER
  * Node.js + Express + PostgreSQL
  * ====================================================
  */
@@ -9,12 +9,10 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 
-
 // ── Initialize Express App ──
 const app = express();
 
 // ── MIDDLEWARE ──
-// Enable CORS (allow requests from frontend)
 app.use(cors({
   origin: process.env.FRONTEND_URL || 'http://localhost:5173',
   credentials: true,
@@ -22,80 +20,83 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Parse JSON body
 app.use(express.json());
-
-// Parse URL encoded body
 app.use(express.urlencoded({ extended: true }));
 
-// Request logging middleware
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} | ${req.method} ${req.path}`);
   next();
 });
 
-// ── DATABASE CONNECTION TEST ──
+// ── DATABASE ──
 const pool = require('./config/database');
 
 // ── ROUTES ──
-// Import routes
-const authRoutes = require('./routes/auth');
-const userRoutes = require('./routes/users');
-const roleRoutes = require('./routes/roles');
-const commissionAgentRoutes = require('./routes/commissionAgentsroutes'); // ← NEW
-const contactRoutes = require('./routes/contacts'); 
+const authRoutes            = require('./routes/auth');
+const userRoutes            = require('./routes/users');
+const roleRoutes            = require('./routes/roles');
+const commissionAgentRoutes = require('./routes/commissionAgentsroutes');
+const contactRoutes         = require('./routes/contacts');
+const purchaseRoutes        = require('./routes/purchases');
+const stockTransferRoutes   = require('./routes/stockTransfers');
+const productRoutes = require('./routes/products');
 
-// Use routes
-app.use('/api/auth', authRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/roles', roleRoutes);
-app.use('/api/sales-commission-agents', commissionAgentRoutes); // ← NEW
-app.use('/api/contacts', contactRoutes); // ← NEW
+// FIXED: products route file doesn't exist yet — add it back once you create routes/products.js
+// const productRoutes = require('./routes/products');
 
-// ── HEALTH CHECK ENDPOINT ──
+app.use('/api/auth',                    authRoutes);
+app.use('/api/users',                   userRoutes);
+app.use('/api/roles',                   roleRoutes);
+app.use('/api/sales-commission-agents', commissionAgentRoutes);
+app.use('/api/purchases',               purchaseRoutes);
+app.use('/api/contacts',                contactRoutes);
+app.use('/api/stock-transfers',         stockTransferRoutes);
+app.use('/api/products', productRoutes);
+
+// app.use('/api/products', productRoutes); // ← uncomment once routes/products.js exists
+
+// ── HEALTH CHECK ──
 app.get('/api/health', (req, res) => {
-  res.status(200).json({ 
+  res.status(200).json({
     message: '✅ Backend is running!',
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV
+    environment: process.env.NODE_ENV,
   });
 });
 
-// ── ROOT ENDPOINT ──
+// ── ROOT ──
 app.get('/', (req, res) => {
   res.json({
     message: 'Manod ERP Backend API',
     version: '1.0.0',
     endpoints: {
-      health: '/api/health',
-      auth: '/api/auth',
-      users: '/api/users',
-      roles: '/api/roles',
-      commissionAgents: '/api/sales-commission-agents' // ← NEW
-    }
+      health:           '/api/health',
+      auth:             '/api/auth',
+      users:            '/api/users',
+      roles:            '/api/roles',
+      contacts:         '/api/contacts',
+      purchases:        '/api/purchases',
+      stockTransfers:   '/api/stock-transfers',
+      commissionAgents: '/api/sales-commission-agents',
+    },
   });
 });
 
-// ── 404 HANDLER ──
+// ── 404 ──
 app.use((req, res) => {
-  res.status(404).json({ 
-    error: 'Endpoint not found',
-    path: req.path,
-    method: req.method
-  });
+  res.status(404).json({ error: 'Endpoint not found', path: req.path, method: req.method });
 });
 
 // ── ERROR HANDLER ──
 app.use((err, req, res, next) => {
   console.error('❌ Error:', err);
-  
   res.status(err.status || 500).json({
     error: err.message || 'Internal Server Error',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
   });
 });
 
-// ── START SERVER ──
+// ── START ──
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
@@ -104,14 +105,11 @@ app.listen(PORT, () => {
 ║   🚀 MANOD ERP BACKEND STARTED               ║
 ╠══════════════════════════════════════════════╣
 ║   Server: http://localhost:${PORT}            ║
-║   Environment: ${process.env.NODE_ENV}                ║
-║   Database: ${process.env.DB_NAME}                   ║
-║   New Module: Sales Commission Agents ✓     ║
+║   Environment: ${process.env.NODE_ENV || 'development'}             ║
 ╚══════════════════════════════════════════════╝
   `);
 });
 
-// ── Handle Shutdown ──
 process.on('SIGINT', () => {
   console.log('\n📴 Shutting down server...');
   pool.end();
