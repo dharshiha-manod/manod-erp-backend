@@ -12,11 +12,11 @@
  *                          created_at, updated_at
  *   stock_transfer_items : id, stock_transfer_id, product_id,
  *                          quantity, created_at
- *   products              : id, product_name, sku, cost_price,
- *                          selling_price, ...
+ *   products              : id, name, sku, purchase_price_exc_tax,
+ *                          selling_price_exc_tax, current_stock, ...
  *
  * NOTE: stock_transfer_items has no unit_cost/subtotal column,
- * so totals are computed on the fly by joining products.cost_price.
+ * so totals are computed on the fly by joining products.purchase_price_exc_tax.
  * ====================================================
  */
 
@@ -60,14 +60,14 @@ const fetchAllStockTransfers = async (filters = {}) => {
       st.id, st.transfer_number, st.transfer_date,
       st.location_from, st.location_to, st.status, st.notes,
       st.created_at,
-      u.username AS added_by,
+      u.full_name AS added_by,
       COALESCE(tot.total_amount, 0) AS total_amount,
       COALESCE(tot.item_count, 0)   AS item_count
     FROM stock_transfers st
     LEFT JOIN users u ON u.id = st.created_by
     LEFT JOIN (
       SELECT sti.stock_transfer_id,
-             SUM(sti.quantity * COALESCE(p.cost_price, 0)) AS total_amount,
+             SUM(sti.quantity * COALESCE(p.purchase_price_exc_tax, 0)) AS total_amount,
              COUNT(*) AS item_count
       FROM stock_transfer_items sti
       LEFT JOIN products p ON p.id = sti.product_id
@@ -125,7 +125,7 @@ const fetchAllStockTransfers = async (filters = {}) => {
 // ── FETCH ONE STOCK TRANSFER (with items + product info) ─────────────────────
 const fetchStockTransferById = async (id) => {
   const headerResult = await pool.query(
-    `SELECT st.*, u.username AS added_by_name
+    `SELECT st.*, u.full_name AS added_by_name
      FROM stock_transfers st
      LEFT JOIN users u ON u.id = st.created_by
      WHERE st.id = $1`,
@@ -136,8 +136,8 @@ const fetchStockTransferById = async (id) => {
   const items = await pool.query(
     `SELECT
        sti.id, sti.stock_transfer_id, sti.product_id, sti.quantity,
-       p.product_name, p.sku, p.cost_price,
-       (sti.quantity * COALESCE(p.cost_price, 0)) AS subtotal
+       p.name AS product_name, p.sku, p.purchase_price_exc_tax AS cost_price,
+       (sti.quantity * COALESCE(p.purchase_price_exc_tax, 0)) AS subtotal
      FROM stock_transfer_items sti
      LEFT JOIN products p ON p.id = sti.product_id
      WHERE sti.stock_transfer_id = $1
@@ -326,10 +326,13 @@ const getStockTransferStats = async () => {
 // ── PRODUCTS DROPDOWN (for Add/Edit form item search) ─────────────────────────
 const getProductsList = async () => {
   const result = await pool.query(
-    `SELECT id, product_name, sku, cost_price, selling_price
+    `SELECT id, name AS product_name, sku,
+            purchase_price_exc_tax AS cost_price,
+            selling_price_exc_tax  AS selling_price,
+            current_stock
      FROM products
-     WHERE is_active IS NOT FALSE
-     ORDER BY product_name`
+     WHERE status IS NULL OR status NOT IN ('inactive', 'disabled')
+     ORDER BY name`
   );
   return result.rows;
 };

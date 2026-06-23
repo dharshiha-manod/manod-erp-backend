@@ -38,6 +38,7 @@ const roleRoutes            = require('./routes/roles');
 const commissionAgentRoutes = require('./routes/commissionAgentsroutes');
 const contactRoutes         = require('./routes/contacts');
 const productRoutes         = require('./routes/products');   // ← PRODUCT MODULE
+const stockTransferRoutes   = require('./routes/stockTransfers'); // ← STOCK TRANSFER MODULE (NEW)
 
 app.use('/api/auth',                    authRoutes);
 app.use('/api/users',                   userRoutes);
@@ -45,6 +46,7 @@ app.use('/api/roles',                   roleRoutes);
 app.use('/api/sales-commission-agents', commissionAgentRoutes);
 app.use('/api/contacts',                contactRoutes);
 app.use('/api/products',                productRoutes);       // ← PRODUCT MODULE
+app.use('/api/stock-transfers',         stockTransferRoutes); // ← STOCK TRANSFER MODULE (NEW)
 
 // ── HEALTH CHECK ─────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
@@ -73,6 +75,7 @@ app.get('/', (req, res) => {
       variations:       '/api/products/variations',
       categories:       '/api/products/categories',
       warranties:       '/api/products/warranties',
+      stockTransfers:   '/api/stock-transfers',
     }
   });
 });
@@ -104,6 +107,7 @@ app.listen(PORT, () => {
 ║   Products Module ✓                         ║
 ║   Warranties Module ✓                       ║
 ║   Opening Stock Import ✓                    ║
+║   Stock Transfer Module ✓                   ║
 ╚══════════════════════════════════════════════╝
   `);
 });
