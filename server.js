@@ -39,6 +39,9 @@ const commissionAgentRoutes = require('./routes/commissionAgentsroutes');
 const contactRoutes         = require('./routes/contacts');
 const productRoutes         = require('./routes/products');   // ← PRODUCT MODULE
 const stockTransferRoutes   = require('./routes/stockTransfers'); // ← STOCK TRANSFER MODULE (NEW)
+const stockAdjustmentRoutes = require('./routes/stockAdjustments'); // ← STOCK ADJUSTMENT
+const manufacturingRoutes = require('./routes/manufacturing');
+
 
 app.use('/api/auth',                    authRoutes);
 app.use('/api/users',                   userRoutes);
@@ -47,6 +50,8 @@ app.use('/api/sales-commission-agents', commissionAgentRoutes);
 app.use('/api/contacts',                contactRoutes);
 app.use('/api/products',                productRoutes);       // ← PRODUCT MODULE
 app.use('/api/stock-transfers',         stockTransferRoutes); // ← STOCK TRANSFER MODULE (NEW)
+app.use('/api/stock-adjustments', stockAdjustmentRoutes); // ← STOCK ADJUSTMENT
+app.use('/api/manufacturing', manufacturingRoutes);
 
 // ── HEALTH CHECK ─────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
