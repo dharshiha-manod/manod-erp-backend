@@ -41,6 +41,10 @@ const productRoutes         = require('./routes/products');   // ← PRODUCT MOD
 const stockTransferRoutes   = require('./routes/stockTransfers'); // ← STOCK TRANSFER MODULE (NEW)
 const stockAdjustmentRoutes = require('./routes/stockAdjustments'); // ← STOCK ADJUSTMENT
 const manufacturingRoutes = require('./routes/manufacturing');
+const expenseRoutes = require('./routes/expenses');
+const purchaseRoutes = require('./routes/purchases');
+const purchaseReturnRoutes = require('./routes/purchaseReturns');
+
 
 
 app.use('/api/auth',                    authRoutes);
@@ -52,6 +56,10 @@ app.use('/api/products',                productRoutes);       // ← PRODUCT MOD
 app.use('/api/stock-transfers',         stockTransferRoutes); // ← STOCK TRANSFER MODULE (NEW)
 app.use('/api/stock-adjustments', stockAdjustmentRoutes); // ← STOCK ADJUSTMENT
 app.use('/api/manufacturing', manufacturingRoutes);
+app.use('/api/expenses', expenseRoutes);
+app.use('/api/purchases', purchaseRoutes);
+app.use('/api/purchase-returns', purchaseReturnRoutes);
+
 
 // ── HEALTH CHECK ─────────────────────────────────────────────
 app.get('/api/health', (req, res) => {

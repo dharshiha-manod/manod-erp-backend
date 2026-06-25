@@ -35,6 +35,15 @@ router.get(
   ctrl.getStats
 );
 
+// ── PRODUCTS SEARCH (for Add Purchase form) ──────────────────────────────────
+// GET /api/purchases/products/search?q=chai
+router.get(
+  '/products/search',
+  authenticateToken,
+  requireAnyPermission(VIEW_PURCHASES),
+  ctrl.searchProducts
+);
+
 // ── SUPPLIERS DROPDOWN ───────────────────────────────────────────────────────
 router.get(
   '/suppliers',

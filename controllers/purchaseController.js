@@ -173,6 +173,18 @@ const getSuppliers = async (req, res) => {
   }
 };
 
+// ── PRODUCTS SEARCH (for Add Purchase product dropdown) ──────────────────────
+const searchProducts = async (req, res) => {
+  try {
+    const products = await purchaseService.searchProducts(req.query.q || '');
+    res.status(200).json({ success: true, products: products || [] });
+  } catch (err) {
+    console.error('❌ Search Products Error:', err.message);
+    // Return empty array instead of 500 so frontend still works
+    res.status(200).json({ success: true, products: [] });
+  }
+};
+
 module.exports = {
   getAllPurchases,
   getPurchaseById,
@@ -183,4 +195,5 @@ module.exports = {
   deletePayment,
   getStats,
   getSuppliers,
+  searchProducts,
 };

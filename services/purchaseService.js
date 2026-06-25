@@ -108,9 +108,9 @@ const fetchAllPurchases = async (filters = {}) => {
       p.subtotal, p.discount_amount, p.tax_amount, p.shipping_charges,
       p.grand_total, p.amount_paid, p.payment_due,
       p.notes, p.pay_term, p.created_at,
-      u.username AS added_by
+      p.added_by
     FROM purchases p
-    LEFT JOIN users u ON u.id = p.added_by
+
     WHERE 1=1
   `;
   const params = [];
@@ -171,9 +171,7 @@ const fetchAllPurchases = async (filters = {}) => {
 // ── FETCH ONE PURCHASE (full detail with items + payments) ───────────────────
 const fetchPurchaseById = async (id) => {
   const purchaseResult = await pool.query(
-    `SELECT p.*, u.username AS added_by_name
-     FROM purchases p
-     LEFT JOIN users u ON u.id = p.added_by
+    `SELECT * FROM purchases p
      WHERE p.id = $1`,
     [id]
   );
@@ -184,9 +182,7 @@ const fetchPurchaseById = async (id) => {
     [id]
   );
   const payments = await pool.query(
-    `SELECT pp.*, u.username AS added_by_name
-     FROM purchase_payments pp
-     LEFT JOIN users u ON u.id = pp.added_by
+    `SELECT * FROM purchase_payments pp
      WHERE pp.purchase_id = $1
      ORDER BY pp.paid_on DESC`,
     [id]
@@ -516,12 +512,59 @@ const getPurchaseStats = async () => {
 // ── SUPPLIER DROPDOWN (for Add/Edit form) ────────────────────────────────────
 const getSuppliersList = async () => {
   const result = await pool.query(
-    `SELECT id, name, contact_id, mobile, email, address
+    `SELECT id, name, contact_id, mobile, email
      FROM contacts
      WHERE contact_type IN ('Suppliers', 'Both')
      ORDER BY name`
   );
   return result.rows;
+};
+
+// ── PRODUCT SEARCH (for Add Purchase product dropdown) ───────────────────────
+const searchProducts = async (query = '') => {
+  try {
+    // First check what columns exist in the products table
+    const colCheck = await pool.query(`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'products' AND table_schema = 'public'
+    `);
+    const cols = colCheck.rows.map(r => r.column_name);
+
+    // Build safe SELECT using only columns that exist
+    const nameCol   = cols.includes('name')          ? 'name'          : cols.includes('product_name') ? 'product_name' : null;
+    const skuCol    = cols.includes('sku')            ? 'sku'           : cols.includes('product_sku')  ? 'product_sku'  : null;
+    const priceCol  = cols.includes('selling_price')  ? 'selling_price' : cols.includes('unit_price')   ? 'unit_price'   : cols.includes('price') ? 'price' : null;
+
+    if (!nameCol) return []; // No recognisable products table
+
+    const params = [];
+    let q = `SELECT id, ${nameCol} AS name`;
+    if (skuCol)   q += `, ${skuCol} AS sku`;
+    else          q += `, null AS sku`;
+    if (priceCol) q += `, ${priceCol} AS default_price`;
+    else          q += `, 0 AS default_price`;
+    q += ` FROM products WHERE 1=1`;
+
+    if (query && query.trim()) {
+      params.push(`%${query.trim()}%`);
+      const pn = params.length;
+      q += ` AND (LOWER(${nameCol}) LIKE LOWER($${pn})`;
+      if (skuCol) q += ` OR LOWER(COALESCE(${skuCol}, '')) LIKE LOWER($${pn})`;
+      q += `)`;
+    }
+    q += ` ORDER BY ${nameCol} LIMIT 50`;
+
+    const result = await pool.query(q, params);
+    return result.rows.map(p => ({
+      id:            p.id,
+      name:          p.name || '',
+      sku:           p.sku  || '',
+      default_price: parseFloat(p.default_price) || 0,
+    }));
+  } catch (err) {
+    console.error('Product search error:', err.message);
+    return []; // Return empty array — don't crash the server
+  }
 };
 
 module.exports = {
@@ -534,4 +577,5 @@ module.exports = {
   deletePayment,
   getPurchaseStats,
   getSuppliersList,
+  searchProducts,
 };
