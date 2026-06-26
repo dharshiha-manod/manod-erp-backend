@@ -40,12 +40,11 @@ const contactRoutes         = require('./routes/contacts');
 const productRoutes         = require('./routes/products');   // ← PRODUCT MODULE
 const stockTransferRoutes   = require('./routes/stockTransfers'); // ← STOCK TRANSFER MODULE (NEW)
 const stockAdjustmentRoutes = require('./routes/stockAdjustments'); // ← STOCK ADJUSTMENT
-const manufacturingRoutes = require('./routes/manufacturing');
-const expenseRoutes = require('./routes/expenses');
-const purchaseRoutes = require('./routes/purchases');
-const purchaseReturnRoutes = require('./routes/purchaseReturns');
-
-
+const manufacturingRoutes   = require('./routes/manufacturing');
+const expenseRoutes         = require('./routes/expenses');
+const purchaseRoutes        = require('./routes/purchases');
+const purchaseReturnRoutes  = require('./routes/purchaseReturns');
+const notificationTemplateRoutes = require('./routes/notificationTemplates'); // ← NOTIFICATION TEMPLATES
 
 app.use('/api/auth',                    authRoutes);
 app.use('/api/users',                   userRoutes);
@@ -54,12 +53,12 @@ app.use('/api/sales-commission-agents', commissionAgentRoutes);
 app.use('/api/contacts',                contactRoutes);
 app.use('/api/products',                productRoutes);       // ← PRODUCT MODULE
 app.use('/api/stock-transfers',         stockTransferRoutes); // ← STOCK TRANSFER MODULE (NEW)
-app.use('/api/stock-adjustments', stockAdjustmentRoutes); // ← STOCK ADJUSTMENT
-app.use('/api/manufacturing', manufacturingRoutes);
-app.use('/api/expenses', expenseRoutes);
-app.use('/api/purchases', purchaseRoutes);
-app.use('/api/purchase-returns', purchaseReturnRoutes);
-
+app.use('/api/stock-adjustments',       stockAdjustmentRoutes); // ← STOCK ADJUSTMENT
+app.use('/api/manufacturing',           manufacturingRoutes);
+app.use('/api/expenses',                expenseRoutes);
+app.use('/api/purchases',               purchaseRoutes);
+app.use('/api/purchase-returns',        purchaseReturnRoutes);
+app.use('/api/notification-templates',  notificationTemplateRoutes); // ← NOTIFICATION TEMPLATES
 
 // ── HEALTH CHECK ─────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
@@ -76,19 +75,25 @@ app.get('/', (req, res) => {
     message:  'Manod ERP Backend API',
     version:  '1.0.0',
     endpoints: {
-      health:           '/api/health',
-      auth:             '/api/auth',
-      users:            '/api/users',
-      roles:            '/api/roles',
-      commissionAgents: '/api/sales-commission-agents',
-      contacts:         '/api/contacts',
-      products:         '/api/products',
-      brands:           '/api/products/brands',
-      units:            '/api/products/units',
-      variations:       '/api/products/variations',
-      categories:       '/api/products/categories',
-      warranties:       '/api/products/warranties',
-      stockTransfers:   '/api/stock-transfers',
+      health:                   '/api/health',
+      auth:                     '/api/auth',
+      users:                    '/api/users',
+      roles:                    '/api/roles',
+      commissionAgents:         '/api/sales-commission-agents',
+      contacts:                 '/api/contacts',
+      products:                 '/api/products',
+      brands:                   '/api/products/brands',
+      units:                    '/api/products/units',
+      variations:               '/api/products/variations',
+      categories:               '/api/products/categories',
+      warranties:               '/api/products/warranties',
+      stockTransfers:           '/api/stock-transfers',
+      stockAdjustments:         '/api/stock-adjustments',
+      manufacturing:            '/api/manufacturing',
+      expenses:                 '/api/expenses',
+      purchases:                '/api/purchases',
+      purchaseReturns:          '/api/purchase-returns',
+      notificationTemplates:    '/api/notification-templates'
     }
   });
 });
@@ -121,6 +126,7 @@ app.listen(PORT, () => {
 ║   Warranties Module ✓                       ║
 ║   Opening Stock Import ✓                    ║
 ║   Stock Transfer Module ✓                   ║
+║   Notification Templates Module ✓           ║
 ╚══════════════════════════════════════════════╝
   `);
 });

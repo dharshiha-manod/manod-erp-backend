@@ -72,7 +72,7 @@ const calcFinancials = (body, items) => {
 
   const shipping   = parseFloat(body.shipping_charges) || 0;
   const grandTotal = subtotal - discountValue + taxAmt + shipping;
-  const amountPaid = parseFloat(body.payment_amount)   || 0;
+  const amountPaid = parseFloat(body.amount_paid) || parseFloat(body.payment_amount) || 0;
   const paymentDue = Math.max(0, grandTotal - amountPaid);
 
   let paymentStatus = 'Due';
@@ -143,11 +143,11 @@ const fetchAllPurchases = async (filters = {}) => {
   }
   if (date_from) {
     params.push(date_from);
-    q += ` AND p.purchase_date >= $${params.length}`;
+    q += ` AND DATE(p.purchase_date AT TIME ZONE 'Asia/Kolkata') >= $${params.length}::date`;
   }
   if (date_to) {
     params.push(date_to);
-    q += ` AND p.purchase_date <= $${params.length}`;
+    q += ` AND DATE(p.purchase_date AT TIME ZONE 'Asia/Kolkata') <= $${params.length}::date`;
   }
 
   // Count before pagination
@@ -523,43 +523,25 @@ const getSuppliersList = async () => {
 // ── PRODUCT SEARCH (for Add Purchase product dropdown) ───────────────────────
 const searchProducts = async (query = '') => {
   try {
-    // First check what columns exist in the products table
-    const colCheck = await pool.query(`
-      SELECT column_name FROM information_schema.columns
-      WHERE table_name = 'products' AND table_schema = 'public'
-    `);
-    const cols = colCheck.rows.map(r => r.column_name);
-
-    // Build safe SELECT using only columns that exist
-    const nameCol   = cols.includes('name')          ? 'name'          : cols.includes('product_name') ? 'product_name' : null;
-    const skuCol    = cols.includes('sku')            ? 'sku'           : cols.includes('product_sku')  ? 'product_sku'  : null;
-    const priceCol  = cols.includes('selling_price')  ? 'selling_price' : cols.includes('unit_price')   ? 'unit_price'   : cols.includes('price') ? 'price' : null;
-
-    if (!nameCol) return []; // No recognisable products table
-
     const params = [];
-    let q = `SELECT id, ${nameCol} AS name`;
-    if (skuCol)   q += `, ${skuCol} AS sku`;
-    else          q += `, null AS sku`;
-    if (priceCol) q += `, ${priceCol} AS default_price`;
-    else          q += `, 0 AS default_price`;
-    q += ` FROM products WHERE 1=1`;
-
-    if (query && query.trim()) {
+    let q = `SELECT * FROM products WHERE 1=1`;
+    if (query.trim()) {
       params.push(`%${query.trim()}%`);
-      const pn = params.length;
-      q += ` AND (LOWER(${nameCol}) LIKE LOWER($${pn})`;
-      if (skuCol) q += ` OR LOWER(COALESCE(${skuCol}, '')) LIKE LOWER($${pn})`;
-      q += `)`;
+      q += ` AND (
+        LOWER(name) LIKE LOWER($${params.length}) OR
+        LOWER(COALESCE(sku, '')) LIKE LOWER($${params.length})
+      )`;
     }
-    q += ` ORDER BY ${nameCol} LIMIT 50`;
-
+    q += ` ORDER BY name LIMIT 50`;
     const result = await pool.query(q, params);
+
+    // Normalise column names — handle different product table schemas
     return result.rows.map(p => ({
       id:            p.id,
-      name:          p.name || '',
-      sku:           p.sku  || '',
-      default_price: parseFloat(p.default_price) || 0,
+      name:          p.name || p.product_name || '',
+      sku:           p.sku  || p.product_sku  || '',
+      default_price: p.unit_price || p.selling_price || p.price || p.default_price || 0,
+      unit_name:     p.unit || p.unit_name || '',
     }));
   } catch (err) {
     console.error('Product search error:', err.message);

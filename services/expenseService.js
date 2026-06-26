@@ -135,6 +135,19 @@ const updateExpense = async (id, data, userId) => {
   const existing = await fetchExpenseById(id);
   if (!existing) throw new Error('Expense not found');
 
+  // Columns that are integer/numeric in Postgres — an empty string ("")
+  // from the form must become NULL, never be written as-is, or Postgres
+  // throws "invalid input syntax for type integer: ''".
+  const INT_OR_NUMERIC_FIELDS = new Set([
+    'category_id', 'sub_category_id', 'contact_id',
+    'tax_amount', 'total_amount',
+    'recurring_interval', 'recurring_repetitions',
+  ]);
+  const clean = (f, v) => {
+    if (v === '' || v === undefined) return INT_OR_NUMERIC_FIELDS.has(f) ? null : v;
+    return v;
+  };
+
   const fields = [
     'location', 'category_id', 'sub_category_id', 'expense_date', 'expense_for',
     'contact_id', 'tax_amount', 'total_amount', 'description', 'payment_status',
@@ -145,12 +158,17 @@ const updateExpense = async (id, data, userId) => {
   const params = [];
   fields.forEach((f) => {
     if (data[f] !== undefined) {
-      params.push(data[f]);
+      params.push(clean(f, data[f]));
       sets.push(`${f} = $${params.length}`);
     }
   });
+  if (data.category_name !== undefined) {
+    params.push(data.category_name);
+    sets.push(`category = $${params.length}`);
+  }
   if (data.total_amount !== undefined && data.payment_status !== undefined) {
-    params.push(data.payment_status === 'paid' ? 0 : data.total_amount);
+    const totalVal = clean('total_amount', data.total_amount) ?? 0;
+    params.push(data.payment_status === 'paid' ? 0 : totalVal);
     sets.push(`payment_due = $${params.length}`);
   }
   params.push(id);
