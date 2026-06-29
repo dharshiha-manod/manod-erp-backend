@@ -45,6 +45,11 @@ const expenseRoutes         = require('./routes/expenses');
 const purchaseRoutes        = require('./routes/purchases');
 const purchaseReturnRoutes  = require('./routes/purchaseReturns');
 const notificationTemplateRoutes = require('./routes/notificationTemplates'); // ← NOTIFICATION TEMPLATES
+const hrmRoutes = require('./routes/hrm');
+const crmRoutes = require('./routes/crm');
+
+
+
 
 app.use('/api/auth',                    authRoutes);
 app.use('/api/users',                   userRoutes);
@@ -59,6 +64,8 @@ app.use('/api/expenses',                expenseRoutes);
 app.use('/api/purchases',               purchaseRoutes);
 app.use('/api/purchase-returns',        purchaseReturnRoutes);
 app.use('/api/notification-templates',  notificationTemplateRoutes); // ← NOTIFICATION TEMPLATES
+app.use('/api/hrm', hrmRoutes);
+app.use('/api/crm', crmRoutes);
 
 // ── HEALTH CHECK ─────────────────────────────────────────────
 app.get('/api/health', (req, res) => {

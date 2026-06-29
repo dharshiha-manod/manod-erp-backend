@@ -66,7 +66,8 @@ const fetchAllExpenses = async (filters = {}) => {
   const rowsResult = await pool.query(
     `SELECT e.*,
             c.name  AS category_name,
-            s.name  AS sub_category_name
+            s.name  AS sub_category_name,
+            (e.total_amount - COALESCE(e.refund_amount, 0)) AS net_expense
      FROM   expenses e
      LEFT JOIN expense_categories c ON c.id = e.category_id
      LEFT JOIN expense_categories s ON s.id = e.sub_category_id
@@ -81,7 +82,8 @@ const fetchAllExpenses = async (filters = {}) => {
 
 const fetchExpenseById = async (id) => {
   const result = await pool.query(
-    `SELECT e.*, c.name AS category_name, s.name AS sub_category_name
+    `SELECT e.*, c.name AS category_name, s.name AS sub_category_name,
+            (e.total_amount - COALESCE(e.refund_amount, 0)) AS net_expense
      FROM   expenses e
      LEFT JOIN expense_categories c ON c.id = e.category_id
      LEFT JOIN expense_categories s ON s.id = e.sub_category_id
@@ -96,6 +98,7 @@ const createExpense = async (data, userId) => {
     location, category_id, sub_category_id, expense_number,
     expense_date, expense_for, contact_id, tax_amount = 0,
     amount, total_amount, description, is_refund = false,
+    refund_amount, refund_date, refund_reason, refund_method,
     is_recurring = false, recurring_interval, recurring_interval_unit,
     recurring_repetitions, attachment_url, payment_status = 'due',
   } = data;
@@ -104,26 +107,47 @@ const createExpense = async (data, userId) => {
     throw new Error('Total amount is required');
   }
 
+  const finalTotal = total_amount || amount;
+
+  // ── Refund business rules ────────────────────────────────────────────────
+  let cleanRefundAmount = null;
+  let cleanRefundDate = null;
+  if (is_refund) {
+    const amt = parseFloat(refund_amount);
+    if (refund_amount === undefined || refund_amount === null || refund_amount === '' || isNaN(amt)) {
+      throw new Error('Refund amount is required when "Is refund?" is checked');
+    }
+    if (amt <= 0) {
+      throw new Error('Refund amount must be greater than 0');
+    }
+    if (amt > parseFloat(finalTotal)) {
+      throw new Error('Refund amount cannot be greater than the original expense amount');
+    }
+    cleanRefundAmount = amt;
+    cleanRefundDate = refund_date || new Date().toISOString().slice(0, 10);
+  }
+
   const refNo = expense_number && expense_number.trim()
     ? expense_number.trim()
     : await generateReferenceNo();
 
-  const finalTotal = total_amount || amount;
   const paymentDue = payment_status === 'paid' ? 0 : finalTotal;
 
   const result = await pool.query(
     `INSERT INTO expenses
        (expense_number, expense_date, location, category_id, sub_category_id,
         category, amount, description, payment_status, tax_amount, total_amount,
-        payment_due, expense_for, contact_id, is_refund, is_recurring,
+        payment_due, expense_for, contact_id, is_refund, refund_amount, refund_date,
+        refund_reason, refund_method, is_recurring,
         recurring_interval, recurring_interval_unit, recurring_repetitions,
         attachment_url, added_by, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,NOW(),NOW())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,NOW(),NOW())
      RETURNING *`,
     [
       refNo, expense_date || new Date(), location, category_id || null, sub_category_id || null,
       data.category_name || null, finalTotal, description || null, payment_status, tax_amount,
-      finalTotal, paymentDue, expense_for || null, contact_id || null, is_refund, is_recurring,
+      finalTotal, paymentDue, expense_for || null, contact_id || null, is_refund,
+      cleanRefundAmount, cleanRefundDate, refund_reason || null, refund_method || null, is_recurring,
       recurring_interval || null, recurring_interval_unit || 'Days', recurring_repetitions || null,
       attachment_url || null, userId,
     ]
@@ -140,18 +164,52 @@ const updateExpense = async (id, data, userId) => {
   // throws "invalid input syntax for type integer: ''".
   const INT_OR_NUMERIC_FIELDS = new Set([
     'category_id', 'sub_category_id', 'contact_id',
-    'tax_amount', 'total_amount',
+    'tax_amount', 'total_amount', 'refund_amount',
     'recurring_interval', 'recurring_repetitions',
   ]);
+  const DATE_FIELDS = new Set(['refund_date']);
   const clean = (f, v) => {
-    if (v === '' || v === undefined) return INT_OR_NUMERIC_FIELDS.has(f) ? null : v;
+    if (v === '' || v === undefined) {
+      if (INT_OR_NUMERIC_FIELDS.has(f) || DATE_FIELDS.has(f)) return null;
+      return v;
+    }
     return v;
   };
+
+  // ── Refund business rules — same as create ──────────────────────────────
+  const isRefundNow = data.is_refund !== undefined ? data.is_refund : existing.is_refund;
+  const totalForCheck = data.total_amount !== undefined && data.total_amount !== ''
+    ? parseFloat(data.total_amount)
+    : parseFloat(existing.total_amount);
+
+  if (isRefundNow) {
+    const refundAmtRaw = data.refund_amount !== undefined ? data.refund_amount : existing.refund_amount;
+    const amt = parseFloat(refundAmtRaw);
+    if (refundAmtRaw === undefined || refundAmtRaw === null || refundAmtRaw === '' || isNaN(amt)) {
+      throw new Error('Refund amount is required when "Is refund?" is checked');
+    }
+    if (amt <= 0) {
+      throw new Error('Refund amount must be greater than 0');
+    }
+    if (amt > totalForCheck) {
+      throw new Error('Refund amount cannot be greater than the original expense amount');
+    }
+    if (data.refund_date === undefined && !existing.refund_date) {
+      data.refund_date = new Date().toISOString().slice(0, 10);
+    }
+  } else if (data.is_refund !== undefined && !data.is_refund) {
+    // Unchecking "Is refund?" clears the refund detail fields
+    data.refund_amount = null;
+    data.refund_date = null;
+    data.refund_reason = null;
+    data.refund_method = null;
+  }
 
   const fields = [
     'location', 'category_id', 'sub_category_id', 'expense_date', 'expense_for',
     'contact_id', 'tax_amount', 'total_amount', 'description', 'payment_status',
-    'is_refund', 'is_recurring', 'recurring_interval', 'recurring_interval_unit',
+    'is_refund', 'refund_amount', 'refund_date', 'refund_reason', 'refund_method',
+    'is_recurring', 'recurring_interval', 'recurring_interval_unit',
     'recurring_repetitions', 'attachment_url',
   ];
   const sets = [];
