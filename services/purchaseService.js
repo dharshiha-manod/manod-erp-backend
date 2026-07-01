@@ -108,9 +108,10 @@ const fetchAllPurchases = async (filters = {}) => {
       p.subtotal, p.discount_amount, p.tax_amount, p.shipping_charges,
       p.grand_total, p.amount_paid, p.payment_due,
       p.notes, p.pay_term, p.created_at,
-      p.added_by
+      p.added_by,
+      COALESCE(u.full_name, u.email, '') AS added_by_name
     FROM purchases p
-
+    LEFT JOIN users u ON u.id::text = p.added_by::text
     WHERE 1=1
   `;
   const params = [];
@@ -244,7 +245,7 @@ const createPurchase = async (body, userId) => {
         body.supplier_id       || null,
         supplierName,
         body.location          || 'Manodtechnologies (BL0001)',
-        body.purchase_status   || 'Ordered',
+        (()=>{const s=body.purchase_status||'Ordered';return ['Received','Ordered','Pending','Cancelled'].includes(s)?s:'Ordered';})(),
         fin.payment_status,
         fin.subtotal,
         body.discount_type     || 'None',

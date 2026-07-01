@@ -22,6 +22,9 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Serve uploaded files (Essentials → Documents attachments live here)
+app.use('/uploads', express.static('uploads'));
+
 // Request logging
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} | ${req.method} ${req.path}`);
@@ -47,6 +50,7 @@ const purchaseReturnRoutes  = require('./routes/purchaseReturns');
 const notificationTemplateRoutes = require('./routes/notificationTemplates'); // ← NOTIFICATION TEMPLATES
 const hrmRoutes = require('./routes/hrm');
 const crmRoutes = require('./routes/crm');
+const essentialsRoutes = require('./routes/essentials'); // ← ESSENTIALS MODULE (NEW)
 
 
 
@@ -66,6 +70,7 @@ app.use('/api/purchase-returns',        purchaseReturnRoutes);
 app.use('/api/notification-templates',  notificationTemplateRoutes); // ← NOTIFICATION TEMPLATES
 app.use('/api/hrm', hrmRoutes);
 app.use('/api/crm', crmRoutes);
+app.use('/api/essentials', essentialsRoutes); // ← ESSENTIALS MODULE (NEW)
 
 // ── HEALTH CHECK ─────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
@@ -100,7 +105,8 @@ app.get('/', (req, res) => {
       expenses:                 '/api/expenses',
       purchases:                '/api/purchases',
       purchaseReturns:          '/api/purchase-returns',
-      notificationTemplates:    '/api/notification-templates'
+      notificationTemplates:    '/api/notification-templates',
+      essentials:               '/api/essentials'
     }
   });
 });
@@ -134,6 +140,7 @@ app.listen(PORT, () => {
 ║   Opening Stock Import ✓                    ║
 ║   Stock Transfer Module ✓                   ║
 ║   Notification Templates Module ✓           ║
+║   Essentials Module ✓                       ║
 ╚══════════════════════════════════════════════╝
   `);
 });
