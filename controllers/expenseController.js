@@ -39,7 +39,7 @@ const getExpenseById = async (req, res) => {
 
 const createExpense = async (req, res) => {
   try {
-    const userId = req.user?.id || req.user?.userId || null;
+    const userId = req.user?.userId || req.user?.id || null;
     if (!req.body.amount && !req.body.total_amount) {
       return res.status(400).json({ success: false, error: 'Total amount is required' });
     }
@@ -53,7 +53,7 @@ const createExpense = async (req, res) => {
 
 const updateExpense = async (req, res) => {
   try {
-    const userId = req.user?.id || req.user?.userId || null;
+    const userId = req.user?.userId || req.user?.id || null;
     const expense = await svc.updateExpense(req.params.id, req.body, userId);
     res.json({ success: true, message: 'Expense updated successfully', expense });
   } catch (err) {

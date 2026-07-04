@@ -7,6 +7,13 @@
  */
 
 const pool = require('../config/database');
+const { types } = require('pg');
+
+// Prevent node-postgres from converting DATE columns into JS Date objects.
+// JS Date objects are timezone-sensitive and can silently shift the
+// calendar day backward/forward depending on the server's local timezone.
+// Keeping raw 'YYYY-MM-DD' strings avoids that entirely.
+types.setTypeParser(1082, (val) => val);
 
 // ── AUTO REF GENERATORS ──────────────────────────────────────
 
@@ -297,7 +304,6 @@ async function clockIn({ employee_name, employee_id, department, note }, created
   );
   return rows[0];
 }
-
 async function clockOut(id) {
   const now = new Date().toTimeString().slice(0, 5);
   const { rows } = await pool.query(
@@ -321,6 +327,33 @@ async function fetchAttendanceStats() {
     [today]
   );
   return rows[0];
+}
+
+async function createAttendanceRecord({ employee_name, employee_id, attendance_date, clock_in, clock_out, status, department, note, shift_name }) {
+  if (!employee_name || !attendance_date || !status) throw new Error('Employee, date and status are required');
+  const { rows } = await pool.query(
+    `INSERT INTO hrm_attendance (employee_name, employee_id, attendance_date, clock_in, clock_out, status, department, note, shift_name)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+     ON CONFLICT (employee_name, attendance_date)
+     DO UPDATE SET clock_in=$4, clock_out=$5, status=$6, department=$7, note=$8, shift_name=$9, updated_at=NOW()
+     RETURNING *`,
+    [employee_name, employee_id || null, attendance_date, clock_in || null, clock_out || null, status, department || null, note || '', shift_name || null]
+  );
+  return rows[0];
+}
+async function updateAttendanceRecord(id, data) {
+  const { employee_name, attendance_date, clock_in, clock_out, status, department, shift_name } = data;
+  const { rows } = await pool.query(
+    `UPDATE hrm_attendance SET employee_name=$1, attendance_date=$2, clock_in=$3, clock_out=$4, status=$5, department=$6, shift_name=$7, updated_at=NOW()
+     WHERE id=$8 RETURNING *`,
+    [employee_name, attendance_date, clock_in || null, clock_out || null, status, department || null, shift_name || null, id]
+  );
+  if (!rows.length) throw new Error('Attendance record not found');
+  return rows[0];
+}
+
+async function deleteAttendanceRecord(id) {
+  await pool.query(`DELETE FROM hrm_attendance WHERE id=$1`, [id]);
 }
 
 // ── PAYROLL ──────────────────────────────────────────────────
@@ -401,6 +434,40 @@ async function updatePayComponent(id, data) {
 
 async function deletePayComponent(id) {
   await pool.query(`DELETE FROM hrm_pay_components WHERE id=$1`, [id]);
+}
+
+// ── PAYROLL GROUPS ───────────────────────────────────────────
+
+async function fetchPayrollGroups() {
+  const { rows } = await pool.query(
+    `SELECT id, name, pay_schedule, employee_count, description, created_at FROM hrm_payroll_groups ORDER BY id`
+  );
+  return rows;
+}
+
+async function createPayrollGroup({ name, pay_schedule, employee_count, description }) {
+  if (!name) throw new Error('Group name is required');
+  const { rows } = await pool.query(
+    `INSERT INTO hrm_payroll_groups (name, pay_schedule, employee_count, description)
+     VALUES ($1,$2,$3,$4) RETURNING *`,
+    [name, pay_schedule || 'Monthly', employee_count || 0, description || '']
+  );
+  return rows[0];
+}
+
+async function updatePayrollGroup(id, data) {
+  const { name, pay_schedule, employee_count, description } = data;
+  const { rows } = await pool.query(
+    `UPDATE hrm_payroll_groups SET name=$1, pay_schedule=$2, employee_count=$3, description=$4, updated_at=NOW()
+     WHERE id=$5 RETURNING *`,
+    [name, pay_schedule, employee_count, description, id]
+  );
+  if (!rows.length) throw new Error('Payroll group not found');
+  return rows[0];
+}
+
+async function deletePayrollGroup(id) {
+  await pool.query(`DELETE FROM hrm_payroll_groups WHERE id=$1`, [id]);
 }
 
 // ── HOLIDAYS ─────────────────────────────────────────────────
@@ -529,11 +596,14 @@ module.exports = {
   // Shifts
   fetchShifts, createShift, updateShift, deleteShift,
   // Attendance
-  fetchAttendance, clockIn, clockOut, fetchAttendanceStats,
+fetchAttendance, clockIn, clockOut, fetchAttendanceStats,
+  createAttendanceRecord, updateAttendanceRecord, deleteAttendanceRecord,
   // Payroll
   fetchPayrolls, createPayroll, updatePayroll, deletePayroll,
-  // Pay Components
+// Pay Components
   fetchPayComponents, createPayComponent, updatePayComponent, deletePayComponent,
+  // Payroll Groups
+  fetchPayrollGroups, createPayrollGroup, updatePayrollGroup, deletePayrollGroup,
   // Holidays
   fetchHolidays, createHoliday, updateHoliday, deleteHoliday,
   // Sales Targets

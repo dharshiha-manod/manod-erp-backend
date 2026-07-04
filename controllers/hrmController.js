@@ -63,6 +63,9 @@ const clockIn            = async (req, res) => {
   } catch(e) { err(res,e,400); }
 };
 const clockOut           = async (req, res) => { try { ok(res, { record: await svc.clockOut(req.params.id) }); } catch(e) { err(res,e,400); } };
+const createAttendance = async (req, res) => { try { ok(res, { record: await svc.createAttendanceRecord(req.body) }, 201); } catch(e) { err(res,e,400); } };
+const updateAttendance = async (req, res) => { try { ok(res, { record: await svc.updateAttendanceRecord(req.params.id, req.body) }); } catch(e) { err(res,e,400); } };
+const deleteAttendance = async (req, res) => { try { await svc.deleteAttendanceRecord(req.params.id); ok(res, { message: 'Deleted' }); } catch(e) { err(res,e); } };
 
 // ── PAYROLL ──────────────────────────────────────────────────
 const getPayrolls        = async (req, res) => { try { ok(res, { payrolls: await svc.fetchPayrolls(req.query) }); } catch(e) { err(res,e); } };
@@ -80,6 +83,11 @@ const getPayComponents   = async (req, res) => { try { ok(res, { components: awa
 const createPayComponent = async (req, res) => { try { ok(res, { component: await svc.createPayComponent(req.body) }, 201); } catch(e) { err(res,e,400); } };
 const updatePayComponent = async (req, res) => { try { ok(res, { component: await svc.updatePayComponent(req.params.id, req.body) }); } catch(e) { err(res,e,400); } };
 const deletePayComponent = async (req, res) => { try { await svc.deletePayComponent(req.params.id); ok(res, { message: 'Deleted' }); } catch(e) { err(res,e); } };
+// ── PAYROLL GROUPS ───────────────────────────────────────────
+const getPayrollGroups    = async (req, res) => { try { ok(res, { groups: await svc.fetchPayrollGroups() }); } catch(e) { err(res,e); } };
+const createPayrollGroup  = async (req, res) => { try { ok(res, { group: await svc.createPayrollGroup(req.body) }, 201); } catch(e) { err(res,e,400); } };
+const updatePayrollGroup  = async (req, res) => { try { ok(res, { group: await svc.updatePayrollGroup(req.params.id, req.body) }); } catch(e) { err(res,e,400); } };
+const deletePayrollGroup  = async (req, res) => { try { await svc.deletePayrollGroup(req.params.id); ok(res, { message: 'Deleted' }); } catch(e) { err(res,e); } };
 
 // ── HOLIDAYS ─────────────────────────────────────────────────
 const getHolidays        = async (req, res) => { try { ok(res, { holidays: await svc.fetchHolidays() }); } catch(e) { err(res,e); } };
@@ -100,9 +108,11 @@ module.exports = {
   getLeaveTypes, createLeaveType, updateLeaveType, deleteLeaveType,
   getLeaves, createLeave, updateLeave, updateLeaveStatus, deleteLeave,
   getShifts, createShift, updateShift, deleteShift,
-  getAttendance, getAttendanceStats, clockIn, clockOut,
+ getAttendance, getAttendanceStats, clockIn, clockOut,
+  createAttendance, updateAttendance, deleteAttendance,
   getPayrolls, createPayroll, updatePayroll, deletePayroll,
-  getPayComponents, createPayComponent, updatePayComponent, deletePayComponent,
+getPayComponents, createPayComponent, updatePayComponent, deletePayComponent,
+  getPayrollGroups, createPayrollGroup, updatePayrollGroup, deletePayrollGroup,
   getHolidays, createHoliday, updateHoliday, deleteHoliday,
   getSalesTargets, createSalesTarget, updateSalesTarget, deleteSalesTarget,
 };

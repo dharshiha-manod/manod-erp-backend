@@ -51,6 +51,7 @@ const notificationTemplateRoutes = require('./routes/notificationTemplates'); //
 const hrmRoutes = require('./routes/hrm');
 const crmRoutes = require('./routes/crm');
 const essentialsRoutes = require('./routes/essentials'); // ← ESSENTIALS MODULE (NEW)
+const sellRoutes = require('./routes/sell'); // ← SELL MODULE (NEW)
 
 
 
@@ -71,6 +72,7 @@ app.use('/api/notification-templates',  notificationTemplateRoutes); // ← NOTI
 app.use('/api/hrm', hrmRoutes);
 app.use('/api/crm', crmRoutes);
 app.use('/api/essentials', essentialsRoutes); // ← ESSENTIALS MODULE (NEW)
+app.use('/api', sellRoutes); // ← SELL MODULE (NEW) — sales-invoice, pos-sales, quotations, sales-returns, shipments, discounts, import/sales
 
 // ── HEALTH CHECK ─────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
@@ -106,7 +108,14 @@ app.get('/', (req, res) => {
       purchases:                '/api/purchases',
       purchaseReturns:          '/api/purchase-returns',
       notificationTemplates:    '/api/notification-templates',
-      essentials:               '/api/essentials'
+      essentials:               '/api/essentials',
+      salesInvoice:             '/api/sales-invoice',
+      posSales:                 '/api/pos-sales',
+      quotations:               '/api/quotations',
+      salesReturns:             '/api/sales-returns',
+      shipments:                '/api/shipments',
+      discounts:                '/api/discounts',
+      importSales:              '/api/import/sales'
     }
   });
 });
@@ -141,6 +150,7 @@ app.listen(PORT, () => {
 ║   Stock Transfer Module ✓                   ║
 ║   Notification Templates Module ✓           ║
 ║   Essentials Module ✓                       ║
+║   Sell Module ✓                             ║
 ╚══════════════════════════════════════════════╝
   `);
 });

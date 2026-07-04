@@ -77,13 +77,15 @@ const fetchAllStockTransfers = async (filters = {}) => {
   `;
   const params = [];
 
-  if (search) {
+ if (search) {
     params.push(`%${search}%`);
     const n = params.length;
     q += ` AND (
       LOWER(st.transfer_number) LIKE LOWER($${n}) OR
       LOWER(st.location_from)   LIKE LOWER($${n}) OR
-      LOWER(st.location_to)     LIKE LOWER($${n})
+      LOWER(st.location_to)     LIKE LOWER($${n}) OR
+      LOWER(st.status)          LIKE LOWER($${n}) OR
+      LOWER(COALESCE(st.notes, '')) LIKE LOWER($${n})
     )`;
   }
   if (status) {
@@ -310,6 +312,7 @@ const deleteStockTransfer = async (id) => {
 };
 
 // ── DASHBOARD STATS ───────────────────────────────────────────────────────────
+// NEW
 const getStockTransferStats = async () => {
   const result = await pool.query(`
     SELECT
@@ -317,7 +320,12 @@ const getStockTransferStats = async () => {
       COUNT(*) FILTER (WHERE status = 'Pending')         AS pending_count,
       COUNT(*) FILTER (WHERE status = 'Completed')       AS completed_count,
       COUNT(*) FILTER (WHERE status = 'In Transit')      AS in_transit_count,
-      COUNT(*) FILTER (WHERE status = 'Cancelled')        AS cancelled_count
+      COUNT(*) FILTER (WHERE status = 'Cancelled')        AS cancelled_count,
+      (
+        SELECT COALESCE(SUM(sti.quantity * COALESCE(p.purchase_price_exc_tax, 0)), 0)
+        FROM stock_transfer_items sti
+        LEFT JOIN products p ON p.id = sti.product_id
+      )                                                   AS total_value
     FROM stock_transfers
   `);
   return result.rows[0];

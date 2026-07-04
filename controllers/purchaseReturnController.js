@@ -10,8 +10,8 @@ const service = require('../services/purchaseReturnService');
 // GET /api/purchase-returns
 const getAllReturns = async (req, res) => {
   try {
-    const { page = 1, limit = 25, search = '', supplier_id = '', date_from = '', date_to = '' } = req.query;
-    const { rows, total } = await service.fetchAllReturns({ page, limit, search, supplier_id, date_from, date_to });
+    const { page = 1, limit = 25, search = '', supplier_id = '', date_from = '', date_to = '', payment_status = '' } = req.query;
+    const { rows, total } = await service.fetchAllReturns({ page, limit, search, supplier_id, date_from, date_to, payment_status });
     res.status(200).json({
       success: true,
       total,

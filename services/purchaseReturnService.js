@@ -60,7 +60,7 @@ const generateReturnNumber = async () => {
 // ── FETCH ALL (paginated) ─────────────────────────────────────────────────────
 const fetchAllReturns = async (filters = {}) => {
   await ensureSchema();
-  const { page = 1, limit = 25, search = '', supplier_id = '', date_from = '', date_to = '' } = filters;
+  const { page = 1, limit = 25, search = '', supplier_id = '', date_from = '', date_to = '', payment_status = '' } = filters;
   const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
   const params = [];
   const wheres = [];
@@ -80,6 +80,10 @@ const fetchAllReturns = async (filters = {}) => {
   if (date_to) {
     params.push(date_to);
     wheres.push(`pr.return_date <= $${params.length}`);
+  }
+  if (payment_status) {
+    params.push(payment_status);
+    wheres.push(`pr.payment_status = $${params.length}`);
   }
 
   const where = wheres.length > 0 ? `WHERE ${wheres.join(' AND ')}` : '';

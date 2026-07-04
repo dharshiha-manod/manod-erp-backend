@@ -57,6 +57,9 @@ router.get   ('/attendance',           auth, requireAnyPermission(VIEW_HRM),   c
 router.get   ('/attendance/stats',     auth, requireAnyPermission(VIEW_HRM),   ctrl.getAttendanceStats);
 router.post  ('/attendance/clock-in',  auth,                                   ctrl.clockIn);
 router.patch ('/attendance/:id/clock-out', auth,                               ctrl.clockOut);
+router.post  ('/attendance',           auth, requireAnyPermission(MANAGE_HRM), ctrl.createAttendance);
+router.put   ('/attendance/:id',       auth, requireAnyPermission(MANAGE_HRM), ctrl.updateAttendance);
+router.delete('/attendance/:id',       auth, requireAnyPermission(MANAGE_HRM), ctrl.deleteAttendance);
 
 // ── PAYROLL ──────────────────────────────────────────────────
 router.get   ('/payroll',              auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.getPayrolls);
@@ -69,6 +72,12 @@ router.get   ('/pay-components',       auth, requireAnyPermission(MANAGE_HRM), c
 router.post  ('/pay-components',       auth, requireAnyPermission(MANAGE_HRM), ctrl.createPayComponent);
 router.put   ('/pay-components/:id',   auth, requireAnyPermission(MANAGE_HRM), ctrl.updatePayComponent);
 router.delete('/pay-components/:id',   auth, requireAnyPermission(MANAGE_HRM), ctrl.deletePayComponent);
+
+// ── PAYROLL GROUPS ───────────────────────────────────────────
+router.get   ('/payroll-groups',       auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.getPayrollGroups);
+router.post  ('/payroll-groups',       auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.createPayrollGroup);
+router.put   ('/payroll-groups/:id',   auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.updatePayrollGroup);
+router.delete('/payroll-groups/:id',   auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.deletePayrollGroup);
 
 // ── HOLIDAYS ─────────────────────────────────────────────────
 router.get   ('/holidays',             auth, requireAnyPermission(VIEW_HRM),   ctrl.getHolidays);
