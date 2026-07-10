@@ -174,8 +174,7 @@ const createReturn = async (body, userId) => {
     );
 
     const pr = ins.rows[0];
-
-    for (const item of items) {
+for (const item of items) {
       const qty  = parseFloat(item.quantity)   || 1;
       const price= parseFloat(item.unit_price) || parseFloat(item.unit_cost) || 0;
       const tot  = parseFloat(item.subtotal)   || qty * price;
@@ -186,6 +185,16 @@ const createReturn = async (body, userId) => {
         [pr.id, item.product_id || null, item.product_name || item.name || 'Unnamed',
          item.product_sku || item.sku || null, qty, price, +tot.toFixed(2)]
       );
+
+      // Goods going back to supplier — stock leaves the warehouse
+      const pid = parseInt(item.product_id, 10);
+      const qtyInt = Math.round(qty); // current_stock is INTEGER
+      if (pid && !isNaN(pid) && qtyInt > 0) {
+        await client.query(
+          `UPDATE products SET current_stock = GREATEST(0, COALESCE(current_stock, 0) - $1), updated_at = NOW() WHERE id = $2`,
+          [qtyInt, pid]
+        );
+      }
     }
 
     await client.query('COMMIT');
@@ -230,21 +239,48 @@ const updateReturn = async (id, body) => {
        body.reason||null, id]
     );
 
-    if (items) {
-      await client.query(`DELETE FROM purchase_return_items WHERE purchase_return_id = $1`, [id]);
-      for (const item of items) {
-        const qty  = parseFloat(item.quantity)   || 1;
-        const price= parseFloat(item.unit_price) || parseFloat(item.unit_cost) || 0;
-        const tot  = parseFloat(item.subtotal)   || qty * price;
-        await client.query(
-          `INSERT INTO purchase_return_items
-             (purchase_return_id, product_id, product_name, product_sku, quantity, unit_price, total_amount)
-           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-          [id, item.product_id||null, item.product_name||item.name||'Unnamed',
-           item.product_sku||item.sku||null, qty, price, +tot.toFixed(2)]
-        );
-      }
+if (items) {
+  // Reverse stock impact of the OLD items before replacing them
+  const oldItems = await client.query(
+    `SELECT product_id, quantity FROM purchase_return_items WHERE purchase_return_id = $1`,
+    [id]
+  );
+  for (const oi of oldItems.rows) {
+    const pid = parseInt(oi.product_id, 10);
+    const qty = Math.round(parseFloat(oi.quantity) || 0);
+    if (pid && !isNaN(pid) && qty > 0) {
+      await client.query(
+        `UPDATE products SET current_stock = COALESCE(current_stock,0) + $1, updated_at = NOW() WHERE id = $2`,
+        [qty, pid]
+      );
     }
+  }
+
+  await client.query(`DELETE FROM purchase_return_items WHERE purchase_return_id = $1`, [id]);
+
+  for (const item of items) {
+    const qty  = parseFloat(item.quantity)   || 1;
+    const price= parseFloat(item.unit_price) || parseFloat(item.unit_cost) || 0;
+    const tot  = parseFloat(item.subtotal)   || qty * price;
+    await client.query(
+      `INSERT INTO purchase_return_items
+         (purchase_return_id, product_id, product_name, product_sku, quantity, unit_price, total_amount)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [id, item.product_id||null, item.product_name||item.name||'Unnamed',
+       item.product_sku||item.sku||null, qty, price, +tot.toFixed(2)]
+    );
+
+ // Apply stock impact of the NEW items
+    const pid = parseInt(item.product_id, 10);
+    const qtyInt = Math.round(qty); // current_stock is INTEGER
+    if (pid && !isNaN(pid) && qtyInt > 0) {
+      await client.query(
+        `UPDATE products SET current_stock = GREATEST(0, COALESCE(current_stock,0) - $1), updated_at = NOW() WHERE id = $2`,
+        [qtyInt, pid]
+      );
+    }
+  }
+}
 
     await client.query('COMMIT');
     console.log(`✅ Purchase Return updated: id ${id}`);
@@ -259,13 +295,40 @@ const updateReturn = async (id, body) => {
 
 // ── DELETE ────────────────────────────────────────────────────────────────────
 const deleteReturn = async (id) => {
-  const result = await pool.query(
-    `DELETE FROM purchase_returns WHERE id = $1 RETURNING id, return_number`,
-    [id]
-  );
-  if (result.rows.length === 0) throw new Error('Purchase return not found');
-  console.log(`🗑️  Purchase Return deleted: ${result.rows[0].return_number}`);
-  return result.rows[0];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const items = await client.query(
+      `SELECT product_id, quantity FROM purchase_return_items WHERE purchase_return_id = $1`,
+      [id]
+    );
+    for (const item of items.rows) {
+      const pid = parseInt(item.product_id, 10);
+      const qty = Math.round(parseFloat(item.quantity) || 0); // current_stock is INTEGER — must pass a whole number
+      if (pid && !isNaN(pid) && qty > 0) {
+        await client.query(
+          `UPDATE products SET current_stock = COALESCE(current_stock, 0) + $1, updated_at = NOW() WHERE id = $2`,
+          [qty, pid]
+        );
+      }
+    }
+
+    const result = await client.query(
+      `DELETE FROM purchase_returns WHERE id = $1 RETURNING id, return_number`,
+      [id]
+    );
+    if (result.rows.length === 0) throw new Error('Purchase return not found');
+
+    await client.query('COMMIT');
+    console.log(`🗑️  Purchase Return deleted: ${result.rows[0].return_number}`);
+    return result.rows[0];
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 };
 
 module.exports = { fetchAllReturns, fetchReturnById, createReturn, updateReturn, deleteReturn };

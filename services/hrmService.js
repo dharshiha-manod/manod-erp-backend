@@ -55,11 +55,11 @@ async function createDepartment({ name, description }) {
   return rows[0];
 }
 
-async function updateDepartment(id, { name, description }) {
+async function updateDepartment(id, { name, description, dept_code }) {
   const { rows } = await pool.query(
-    `UPDATE hrm_departments SET name=$1, description=$2, updated_at=NOW()
-     WHERE id=$3 RETURNING *`,
-    [name, description, id]
+    `UPDATE hrm_departments SET name=$1, description=$2, dept_code=COALESCE($3, dept_code), updated_at=NOW()
+     WHERE id=$4 RETURNING *`,
+    [name, description, dept_code || null, id]
   );
   if (!rows.length) throw new Error('Department not found');
   return rows[0];
@@ -386,6 +386,155 @@ async function createPayroll({ employee_name, employee_id, department, designati
   return rows[0];
 }
 
+// ── PAYROLL PROCESSING ENGINE ────────────────────────────────
+
+async function fetchEligibleEmployeesForRun(monthYear) {
+  const { rows } = await pool.query(
+    `SELECT u.id, u.full_name, u.email, u.payroll_group_id, pg.name AS payroll_group_name
+     FROM users u
+     JOIN hrm_payroll_groups pg ON pg.id = u.payroll_group_id
+     WHERE u.payroll_group_id IS NOT NULL
+       AND u.id NOT IN (
+         SELECT employee_id FROM hrm_payroll
+         WHERE month_year = $1 AND employee_id IS NOT NULL
+       )
+     ORDER BY u.full_name`,
+    [monthYear]
+  );
+  return rows;
+}
+
+async function computeEmployeePayroll(employeeId) {
+  const empRes = await pool.query(
+    `SELECT u.id, u.full_name, u.email, u.payroll_group_id, pg.name AS payroll_group_name
+     FROM users u
+     LEFT JOIN hrm_payroll_groups pg ON pg.id = u.payroll_group_id
+     WHERE u.id = $1`,
+    [employeeId]
+  );
+  const emp = empRes.rows[0];
+  if (!emp) throw new Error('Employee not found');
+  if (!emp.payroll_group_id) throw new Error('Employee has no assigned Payroll Group');
+
+  const compRes = await pool.query(
+    `SELECT pc.id, pc.description, pc.component_type, pc.calc_method, pc.amount
+     FROM hrm_payroll_group_components gc
+     JOIN hrm_pay_components pc ON pc.id = gc.pay_component_id
+     WHERE gc.payroll_group_id = $1 AND pc.status = 'Active'
+     ORDER BY pc.id`,
+    [emp.payroll_group_id]
+  );
+
+  const overrideRes = await pool.query(
+    `SELECT pay_component_id, override_amount FROM hrm_employee_component_overrides WHERE employee_id = $1`,
+    [employeeId]
+  );
+  const overrideMap = Object.fromEntries(overrideRes.rows.map(o => [o.pay_component_id, Number(o.override_amount)]));
+
+  let grossEarnings = 0;
+  const earningComponents = compRes.rows.filter(c => c.component_type === 'Earning');
+  const items = [];
+
+  for (const c of earningComponents) {
+    const amt = overrideMap[c.id] != null ? overrideMap[c.id] : Number(c.amount || 0);
+    let value = c.calc_method === 'Percentage' ? 0 : amt; // percentage earnings resolved below (need base)
+    if (c.calc_method !== 'Percentage') {
+      grossEarnings += value;
+      items.push({ component_id: c.id, component_name: c.description, component_type: 'Earning', amount: value });
+    }
+  }
+  // Second pass: percentage-based earnings (e.g. bonus % of basic) applied against gross so far
+  for (const c of earningComponents) {
+    if (c.calc_method === 'Percentage') {
+      const pct = overrideMap[c.id] != null ? overrideMap[c.id] : Number(c.amount || 0);
+      const value = Math.round((grossEarnings * pct) / 100 * 100) / 100;
+      grossEarnings += value;
+      items.push({ component_id: c.id, component_name: c.description, component_type: 'Earning', amount: value });
+    }
+  }
+
+  let totalDeductions = 0;
+  const deductionComponents = compRes.rows.filter(c => c.component_type === 'Deduction');
+  for (const c of deductionComponents) {
+    const raw = overrideMap[c.id] != null ? overrideMap[c.id] : Number(c.amount || 0);
+    const value = c.calc_method === 'Percentage'
+      ? Math.round((grossEarnings * raw) / 100 * 100) / 100
+      : raw;
+    totalDeductions += value;
+    items.push({ component_id: c.id, component_name: c.description, component_type: 'Deduction', amount: value });
+  }
+
+  const netSalary = Math.round((grossEarnings - totalDeductions) * 100) / 100;
+
+  return {
+    employee: emp,
+    items,
+    grossEarnings,
+    totalDeductions,
+    netSalary,
+  };
+}
+
+async function runPayrollForEmployee(employeeId, monthYear, createdBy) {
+  const calc = await computeEmployeePayroll(employeeId);
+  const ref = await nextPayrollRef();
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const payrollRes = await client.query(
+      `INSERT INTO hrm_payroll
+         (reference_no, employee_name, employee_id, department, designation, month_year,
+          net_salary, gross_salary, total_deductions, status, payroll_group_id, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'Pending',$10,$11) RETURNING *`,
+      [
+        ref, calc.employee.full_name, employeeId, '—', '—', monthYear,
+        calc.netSalary, calc.grossEarnings, calc.totalDeductions,
+        calc.employee.payroll_group_id, createdBy || null,
+      ]
+    );
+    const payrollId = payrollRes.rows[0].id;
+
+    for (const item of calc.items) {
+      await client.query(
+        `INSERT INTO hrm_payroll_items (payroll_id, component_id, component_name, component_type, amount)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [payrollId, item.component_id, item.component_name, item.component_type, item.amount]
+      );
+    }
+    await client.query('COMMIT');
+    return payrollRes.rows[0];
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+async function runPayrollBulk(employeeIds, monthYear, createdBy) {
+  const results = [];
+  const errors = [];
+  for (const id of employeeIds) {
+    try {
+      const rec = await runPayrollForEmployee(id, monthYear, createdBy);
+      results.push(rec);
+    } catch (e) {
+      errors.push({ employee_id: id, error: e.message });
+    }
+  }
+  return { created: results, errors };
+}
+
+async function fetchPayrollItems(payrollId) {
+  const { rows } = await pool.query(
+    `SELECT id, component_id, component_name, component_type, amount
+     FROM hrm_payroll_items WHERE payroll_id = $1 ORDER BY id`,
+    [payrollId]
+  );
+  return rows;
+}
+
 async function updatePayroll(id, data) {
   const { employee_name, department, designation, month_year, net_salary, status } = data;
   const { rows } = await pool.query(
@@ -403,30 +552,29 @@ async function deletePayroll(id) {
 }
 
 // ── PAY COMPONENTS ───────────────────────────────────────────
-
 async function fetchPayComponents() {
   const { rows } = await pool.query(
-    `SELECT id, description, component_type, amount, applicable_from FROM hrm_pay_components ORDER BY id`
+    `SELECT id, description, component_type, amount, calc_method, status, applicable_from FROM hrm_pay_components ORDER BY id`
   );
   return rows;
 }
 
-async function createPayComponent({ description, component_type, amount, applicable_from }) {
+async function createPayComponent({ description, component_type, amount, calc_method, status, applicable_from }) {
   if (!description) throw new Error('Description is required');
   const { rows } = await pool.query(
-    `INSERT INTO hrm_pay_components (description, component_type, amount, applicable_from)
-     VALUES ($1,$2,$3,$4) RETURNING *`,
-    [description, component_type || 'Earning', amount || 0, applicable_from || null]
+    `INSERT INTO hrm_pay_components (description, component_type, amount, calc_method, status, applicable_from)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+    [description, component_type || 'Earning', amount || 0, calc_method || 'Fixed', status || 'Active', applicable_from || null]
   );
   return rows[0];
 }
 
 async function updatePayComponent(id, data) {
-  const { description, component_type, amount, applicable_from } = data;
+  const { description, component_type, amount, calc_method, status, applicable_from } = data;
   const { rows } = await pool.query(
-    `UPDATE hrm_pay_components SET description=$1, component_type=$2, amount=$3, applicable_from=$4, updated_at=NOW()
-     WHERE id=$5 RETURNING *`,
-    [description, component_type, amount, applicable_from, id]
+    `UPDATE hrm_pay_components SET description=$1, component_type=$2, amount=$3, calc_method=$4, status=$5, applicable_from=$6, updated_at=NOW()
+     WHERE id=$7 RETURNING *`,
+    [description, component_type, amount, calc_method, status, applicable_from, id]
   );
   if (!rows.length) throw new Error('Pay component not found');
   return rows[0];
@@ -468,6 +616,67 @@ async function updatePayrollGroup(id, data) {
 
 async function deletePayrollGroup(id) {
   await pool.query(`DELETE FROM hrm_payroll_groups WHERE id=$1`, [id]);
+}
+
+async function fetchEmployeesWithGroups() {
+  const { rows } = await pool.query(
+    `SELECT u.id, u.full_name, u.email, u.payroll_group_id, pg.name AS payroll_group_name
+     FROM users u
+     LEFT JOIN hrm_payroll_groups pg ON pg.id = u.payroll_group_id
+     ORDER BY u.full_name`
+  );
+  return rows;
+}
+
+async function assignPayrollGroup(userId, payrollGroupId) {
+  const { rows } = await pool.query(
+    `UPDATE users SET payroll_group_id=$1 WHERE id=$2 RETURNING id, full_name, email, payroll_group_id`,
+    [payrollGroupId || null, userId]
+  );
+  if (!rows.length) throw new Error('Employee not found');
+
+  // Keep the group's employee_count in sync
+  await pool.query(
+    `UPDATE hrm_payroll_groups SET employee_count = (
+       SELECT COUNT(*) FROM users WHERE payroll_group_id = hrm_payroll_groups.id
+     )`
+  );
+
+  return rows[0];
+}
+
+async function fetchGroupComponents(groupId) {
+  const { rows } = await pool.query(
+    `SELECT pc.id, pc.description, pc.component_type, pc.calc_method, pc.amount, pc.status
+     FROM hrm_payroll_group_components gc
+     JOIN hrm_pay_components pc ON pc.id = gc.pay_component_id
+     WHERE gc.payroll_group_id = $1
+     ORDER BY pc.id`,
+    [groupId]
+  );
+  return rows;
+}
+
+async function setGroupComponents(groupId, componentIds) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`DELETE FROM hrm_payroll_group_components WHERE payroll_group_id=$1`, [groupId]);
+    if (Array.isArray(componentIds) && componentIds.length) {
+      const values = componentIds.map((_, i) => `($1, $${i + 2})`).join(',');
+      await client.query(
+        `INSERT INTO hrm_payroll_group_components (payroll_group_id, pay_component_id) VALUES ${values}`,
+        [groupId, ...componentIds]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+  return fetchGroupComponents(groupId);
 }
 
 // ── HOLIDAYS ─────────────────────────────────────────────────
@@ -546,7 +755,62 @@ async function deleteSalesTarget(id) {
 }
 
 // ── DASHBOARD STATS ──────────────────────────────────────────
+// NEW
+// ── SETTINGS ─────────────────────────────────────────────────
 
+async function fetchSettings() {
+  const { rows } = await pool.query(
+    `SELECT * FROM hrm_settings WHERE id = 1`
+  );
+  if (!rows.length) throw new Error('Settings not found');
+  return rows[0];
+}
+
+async function updateSettings(data) {
+  const {
+    work_days_per_week, work_hours_per_day, overtime_rate_multiplier,
+    currency, payslip_note, leave_approval, attendance_mode,
+    leave_prefix, max_casual_leave_days, auto_approval_after_days, auto_approval_enabled, leave_instructions,
+    payroll_cycle, payroll_date, payroll_currency,
+    work_start_time, work_end_time, late_grace_minutes,
+  } = data;
+
+  const { rows } = await pool.query(
+    `UPDATE hrm_settings SET
+       work_days_per_week       = COALESCE($1,  work_days_per_week),
+       work_hours_per_day       = COALESCE($2,  work_hours_per_day),
+       overtime_rate_multiplier = COALESCE($3,  overtime_rate_multiplier),
+       currency                 = COALESCE($4,  currency),
+       payslip_note             = COALESCE($5,  payslip_note),
+       leave_approval           = COALESCE($6,  leave_approval),
+       attendance_mode          = COALESCE($7,  attendance_mode),
+       leave_prefix             = COALESCE($8,  leave_prefix),
+       max_casual_leave_days    = COALESCE($9,  max_casual_leave_days),
+       auto_approval_after_days = COALESCE($10, auto_approval_after_days),
+       auto_approval_enabled    = COALESCE($11, auto_approval_enabled),
+       leave_instructions       = COALESCE($12, leave_instructions),
+       payroll_cycle            = COALESCE($13, payroll_cycle),
+       payroll_date             = COALESCE($14, payroll_date),
+       payroll_currency         = COALESCE($15, payroll_currency),
+       work_start_time          = COALESCE($16, work_start_time),
+       work_end_time            = COALESCE($17, work_end_time),
+       late_grace_minutes       = COALESCE($18, late_grace_minutes),
+       updated_at = NOW()
+     WHERE id = 1
+     RETURNING *`,
+    [
+      work_days_per_week ?? null, work_hours_per_day ?? null, overtime_rate_multiplier ?? null,
+      currency ?? null, payslip_note ?? null, leave_approval ?? null, attendance_mode ?? null,
+      leave_prefix ?? null, max_casual_leave_days ?? null, auto_approval_after_days ?? null, auto_approval_enabled ?? null, leave_instructions ?? null,
+      payroll_cycle ?? null, payroll_date ?? null, payroll_currency ?? null,
+      work_start_time ?? null, work_end_time ?? null, late_grace_minutes ?? null,
+    ]
+  );
+  if (!rows.length) throw new Error('Settings not found');
+  return rows[0];
+}
+
+// ── DASHBOARD STATS ──────────────────────────────────────────
 async function fetchDashboardStats() {
   const today = new Date().toISOString().split('T')[0];
 
@@ -600,14 +864,18 @@ fetchAttendance, clockIn, clockOut, fetchAttendanceStats,
   createAttendanceRecord, updateAttendanceRecord, deleteAttendanceRecord,
   // Payroll
   fetchPayrolls, createPayroll, updatePayroll, deletePayroll,
+  fetchEligibleEmployeesForRun, computeEmployeePayroll, runPayrollForEmployee, runPayrollBulk, fetchPayrollItems,
 // Pay Components
   fetchPayComponents, createPayComponent, updatePayComponent, deletePayComponent,
-  // Payroll Groups
+// Payroll Groups
   fetchPayrollGroups, createPayrollGroup, updatePayrollGroup, deletePayrollGroup,
+fetchGroupComponents, setGroupComponents,
+  fetchEmployeesWithGroups, assignPayrollGroup,
   // Holidays
-  fetchHolidays, createHoliday, updateHoliday, deleteHoliday,
+fetchHolidays, createHoliday, updateHoliday, deleteHoliday,
   // Sales Targets
-  fetchSalesTargets, createSalesTarget, updateSalesTarget, deleteSalesTarget,
+ fetchSalesTargets, createSalesTarget, updateSalesTarget, deleteSalesTarget,
+   fetchSettings, updateSettings,
   // Dashboard
   fetchDashboardStats,
 };

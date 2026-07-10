@@ -18,9 +18,8 @@ app.use(cors({
   methods:        ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Serve uploaded files (Essentials → Documents attachments live here)
 app.use('/uploads', express.static('uploads'));
@@ -52,7 +51,7 @@ const hrmRoutes = require('./routes/hrm');
 const crmRoutes = require('./routes/crm');
 const essentialsRoutes = require('./routes/essentials'); // ← ESSENTIALS MODULE (NEW)
 const sellRoutes = require('./routes/sell'); // ← SELL MODULE (NEW)
-
+const settingsRoutes = require('./routes/settingsRoutes'); // adjust path
 
 
 
@@ -72,8 +71,10 @@ app.use('/api/notification-templates',  notificationTemplateRoutes); // ← NOTI
 app.use('/api/hrm', hrmRoutes);
 app.use('/api/crm', crmRoutes);
 app.use('/api/essentials', essentialsRoutes); // ← ESSENTIALS MODULE (NEW)
-app.use('/api', sellRoutes); // ← SELL MODULE (NEW) — sales-invoice, pos-sales, quotations, sales-returns, shipments, discounts, import/sales
-
+app.use('/api', sellRoutes); 
+app.use('/api/selling-price-groups', require('./routes/sellingPriceGroupRoutes'));// ← SELL MODULE (NEW) — sales-invoice, pos-sales, quotations, sales-returns, shipments, discounts, import/sales
+app.use('/api/product-selling-prices', require('./routes/productSellingPriceRoutes'));
+app.use('/api/settings', settingsRoutes);
 // ── HEALTH CHECK ─────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
   res.status(200).json({

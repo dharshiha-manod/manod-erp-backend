@@ -78,6 +78,20 @@ const createPayroll      = async (req, res) => {
 const updatePayroll      = async (req, res) => { try { ok(res, { payroll: await svc.updatePayroll(req.params.id, req.body) }); } catch(e) { err(res,e,400); } };
 const deletePayroll      = async (req, res) => { try { await svc.deletePayroll(req.params.id); ok(res, { message: 'Deleted' }); } catch(e) { err(res,e); } };
 
+const getEligibleForRun  = async (req, res) => { try { ok(res, { employees: await svc.fetchEligibleEmployeesForRun(req.query.month_year) }); } catch(e) { err(res,e); } };
+const previewPayroll     = async (req, res) => { try { ok(res, { preview: await svc.computeEmployeePayroll(req.params.employeeId) }); } catch(e) { err(res,e,400); } };
+const runPayroll         = async (req, res) => {
+  try {
+    const userId = req.user?.id || req.user?.userId || null;
+    const { employeeIds, month_year } = req.body;
+    if (!month_year) throw new Error('Month/Year is required');
+    if (!Array.isArray(employeeIds) || !employeeIds.length) throw new Error('Select at least one employee');
+    const result = await svc.runPayrollBulk(employeeIds, month_year, userId);
+    ok(res, result, 201);
+  } catch(e) { err(res,e,400); }
+};
+const getPayrollItems    = async (req, res) => { try { ok(res, { items: await svc.fetchPayrollItems(req.params.id) }); } catch(e) { err(res,e); } };
+
 // ── PAY COMPONENTS ───────────────────────────────────────────
 const getPayComponents   = async (req, res) => { try { ok(res, { components: await svc.fetchPayComponents() }); } catch(e) { err(res,e); } };
 const createPayComponent = async (req, res) => { try { ok(res, { component: await svc.createPayComponent(req.body) }, 201); } catch(e) { err(res,e,400); } };
@@ -88,7 +102,10 @@ const getPayrollGroups    = async (req, res) => { try { ok(res, { groups: await 
 const createPayrollGroup  = async (req, res) => { try { ok(res, { group: await svc.createPayrollGroup(req.body) }, 201); } catch(e) { err(res,e,400); } };
 const updatePayrollGroup  = async (req, res) => { try { ok(res, { group: await svc.updatePayrollGroup(req.params.id, req.body) }); } catch(e) { err(res,e,400); } };
 const deletePayrollGroup  = async (req, res) => { try { await svc.deletePayrollGroup(req.params.id); ok(res, { message: 'Deleted' }); } catch(e) { err(res,e); } };
-
+const getGroupComponents  = async (req, res) => { try { ok(res, { components: await svc.fetchGroupComponents(req.params.id) }); } catch(e) { err(res,e); } };
+const updateGroupComponents = async (req, res) => { try { ok(res, { components: await svc.setGroupComponents(req.params.id, req.body.componentIds || []) }); } catch(e) { err(res,e,400); } };
+const getEmployeesWithGroups = async (req, res) => { try { ok(res, { employees: await svc.fetchEmployeesWithGroups() }); } catch(e) { err(res,e); } };
+const assignPayrollGroup    = async (req, res) => { try { ok(res, { employee: await svc.assignPayrollGroup(req.params.id, req.body.payroll_group_id) }); } catch(e) { err(res,e,400); } };
 // ── HOLIDAYS ─────────────────────────────────────────────────
 const getHolidays        = async (req, res) => { try { ok(res, { holidays: await svc.fetchHolidays() }); } catch(e) { err(res,e); } };
 const createHoliday      = async (req, res) => { try { ok(res, { holiday: await svc.createHoliday(req.body) }, 201); } catch(e) { err(res,e,400); } };
@@ -96,10 +113,16 @@ const updateHoliday      = async (req, res) => { try { ok(res, { holiday: await 
 const deleteHoliday      = async (req, res) => { try { await svc.deleteHoliday(req.params.id); ok(res, { message: 'Deleted' }); } catch(e) { err(res,e); } };
 
 // ── SALES TARGETS ────────────────────────────────────────────
+// NEW
+// ── SALES TARGETS ────────────────────────────────────────────
 const getSalesTargets    = async (req, res) => { try { ok(res, { targets: await svc.fetchSalesTargets(req.query) }); } catch(e) { err(res,e); } };
 const createSalesTarget  = async (req, res) => { try { ok(res, { target: await svc.createSalesTarget(req.body) }, 201); } catch(e) { err(res,e,400); } };
 const updateSalesTarget  = async (req, res) => { try { ok(res, { target: await svc.updateSalesTarget(req.params.id, req.body) }); } catch(e) { err(res,e,400); } };
 const deleteSalesTarget  = async (req, res) => { try { await svc.deleteSalesTarget(req.params.id); ok(res, { message: 'Deleted' }); } catch(e) { err(res,e); } };
+
+// ── SETTINGS ─────────────────────────────────────────────────
+const getSettings        = async (req, res) => { try { ok(res, { settings: await svc.fetchSettings() }); } catch(e) { err(res,e); } };
+const updateSettings     = async (req, res) => { try { ok(res, { settings: await svc.updateSettings(req.body) }); } catch(e) { err(res,e,400); } };
 
 module.exports = {
   getDashboardStats,
@@ -110,9 +133,14 @@ module.exports = {
   getShifts, createShift, updateShift, deleteShift,
  getAttendance, getAttendanceStats, clockIn, clockOut,
   createAttendance, updateAttendance, deleteAttendance,
-  getPayrolls, createPayroll, updatePayroll, deletePayroll,
+getPayrolls, createPayroll, updatePayroll, deletePayroll,
+  getEligibleForRun, previewPayroll, runPayroll, getPayrollItems,
 getPayComponents, createPayComponent, updatePayComponent, deletePayComponent,
-  getPayrollGroups, createPayrollGroup, updatePayrollGroup, deletePayrollGroup,
+ getPayrollGroups, createPayrollGroup, updatePayrollGroup, deletePayrollGroup,
+getGroupComponents, updateGroupComponents,
+  getEmployeesWithGroups, assignPayrollGroup,
+// NEW
   getHolidays, createHoliday, updateHoliday, deleteHoliday,
   getSalesTargets, createSalesTarget, updateSalesTarget, deleteSalesTarget,
+  getSettings, updateSettings,
 };

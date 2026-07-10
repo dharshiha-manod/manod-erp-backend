@@ -4,14 +4,12 @@
  * Handles all Settings API requests
  * ====================================================
  */
-
-const settingsService = require('./settingsService');
-
+const settingsService = require('../services/settingsService');
+const DEFAULT_BUSINESS_ID = 1; // single-business app, no multi-tenant support
 // ── BUSINESS SETTINGS ──────────────────────────────────────────
 exports.getBusinessSettings = async (req, res) => {
   try {
-    const businessId = req.user.business_id;
-    const settings = await settingsService.getBusinessSettings(businessId);
+const businessId = DEFAULT_BUSINESS_ID; const settings = await settingsService.getBusinessSettings(businessId);
 
     if (!settings) {
       return res.status(404).json({
@@ -37,7 +35,9 @@ exports.getBusinessSettings = async (req, res) => {
 
 exports.updateBusinessSettings = async (req, res) => {
   try {
-    const businessId = req.user.business_id;
+    console.log('🔍 FULL req.user:', JSON.stringify(req.user));
+    const businessId = DEFAULT_BUSINESS_ID;
+    console.log('🔍 Resolved businessId:', businessId);
     const settings = await settingsService.updateBusinessSettings(businessId, req.body);
 
     res.status(200).json({
@@ -58,7 +58,7 @@ exports.updateBusinessSettings = async (req, res) => {
 // ── BUSINESS LOCATIONS ────────────────────────────────────────
 exports.getBusinessLocations = async (req, res) => {
   try {
-    const businessId = req.user.business_id;
+const businessId = DEFAULT_BUSINESS_ID;
     const locations = await settingsService.getBusinessLocations(businessId);
 
     res.status(200).json({
@@ -75,11 +75,9 @@ exports.getBusinessLocations = async (req, res) => {
     });
   }
 };
-
 exports.createBusinessLocation = async (req, res) => {
   try {
-    const businessId = req.user.business_id;
-    const location = await settingsService.createBusinessLocation(businessId, req.body);
+    const businessId = DEFAULT_BUSINESS_ID;    const location = await settingsService.createBusinessLocation(businessId, req.body);
 
     res.status(201).json({
       success: true,
@@ -98,7 +96,7 @@ exports.createBusinessLocation = async (req, res) => {
 
 exports.updateBusinessLocation = async (req, res) => {
   try {
-    const businessId = req.user.business_id;
+    const businessId = DEFAULT_BUSINESS_ID;
     const { id } = req.params;
     const location = await settingsService.updateBusinessLocation(businessId, id, req.body);
 

@@ -5,8 +5,41 @@
  * Controller stays thin — every DB call lives here.
  * ====================================================
  */
-
 const pool = require('../config/database');
+
+// ── SCHEMA MIGRATION (idempotent) ────────────────────────────────────────────
+// purchase_items didn't have a product_id column, so purchases could never
+// be linked back to products to adjust stock.
+let schemaReady = false;
+const ensureSchema = async () => {
+  if (schemaReady) return;
+  try {
+    await pool.query(`ALTER TABLE purchase_items ADD COLUMN IF NOT EXISTS product_id INTEGER;`);
+    schemaReady = true;
+  } catch (err) {
+    console.error('purchase_items schema migration warning:', err.message);
+    schemaReady = true;
+  }
+};
+
+// ── STOCK IMPACT ──────────────────────────────────────────────────────────────
+// 'apply'   → purchase received, stock goes UP
+// 'reverse' → purchase un-received / deleted, stock goes back DOWN
+const applyPurchaseStockImpact = async (purchaseId, direction, client = pool) => {
+  const items = await client.query(
+    `SELECT product_id, quantity FROM purchase_items WHERE purchase_id = $1 AND product_id IS NOT NULL`,
+    [purchaseId]
+  );
+  for (const item of items.rows) {
+    const delta = direction === 'apply'
+      ? Math.abs(parseFloat(item.quantity))
+      : -Math.abs(parseFloat(item.quantity));
+    await client.query(
+      `UPDATE products SET current_stock = GREATEST(0, COALESCE(current_stock, 0) + $1), updated_at = NOW() WHERE id = $2`,
+      [delta, item.product_id]
+    );
+  }
+};
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 
@@ -198,6 +231,7 @@ const fetchPurchaseById = async (id) => {
 
 // ── CREATE PURCHASE ──────────────────────────────────────────────────────────
 const createPurchase = async (body, userId) => {
+  await ensureSchema();
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -224,6 +258,11 @@ const createPurchase = async (body, userId) => {
       if (sup.rows.length > 0) supplierName = sup.rows[0].name;
     }
 
+ const purchaseStatus = (() => {
+      const s = body.purchase_status || 'Ordered';
+      return ['Received', 'Ordered', 'Pending', 'Cancelled'].includes(s) ? s : 'Ordered';
+    })();
+
     const purchaseResult = await client.query(
       `INSERT INTO purchases (
         reference_no, invoice_no, purchase_date,
@@ -245,7 +284,7 @@ const createPurchase = async (body, userId) => {
         body.supplier_id       || null,
         supplierName,
         body.location          || 'Manodtechnologies (BL0001)',
-        (()=>{const s=body.purchase_status||'Ordered';return ['Received','Ordered','Pending','Cancelled'].includes(s)?s:'Ordered';})(),
+        purchaseStatus,
         fin.payment_status,
         fin.subtotal,
         body.discount_type     || 'None',
@@ -274,14 +313,15 @@ const createPurchase = async (body, userId) => {
       const lineTotal = qty * cost * (1 - disc / 100);
       const selling  = cost * (1 + (parseFloat(item.margin_pct) || 0) / 100);
 
-      await client.query(
+     await client.query(
         `INSERT INTO purchase_items (
-          purchase_id, product_name, product_sku,
+          purchase_id, product_id, product_name, product_sku,
           quantity, unit_cost, discount_pct, line_total,
           margin_pct, selling_price
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
         [
           purchase.id,
+          parseInt(item.product_id || item.id, 10) || null,
           item.product_name || item.name || 'Unnamed Product',
           item.product_sku  || item.sku  || null,
           qty, cost, disc,
@@ -290,6 +330,11 @@ const createPurchase = async (body, userId) => {
           +selling.toFixed(4),
         ]
       );
+    }
+
+    // Purchase received → increase stock for every linked product
+    if (purchaseStatus === 'Received') {
+      await applyPurchaseStockImpact(purchase.id, 'apply', client);
     }
 
     // Insert initial payment if provided
@@ -322,12 +367,20 @@ const createPurchase = async (body, userId) => {
 
 // ── UPDATE PURCHASE ──────────────────────────────────────────────────────────
 const updatePurchase = async (id, body, userId) => {
+  await ensureSchema();
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
     const existing = await client.query(`SELECT * FROM purchases WHERE id = $1`, [id]);
     if (existing.rows.length === 0) throw new Error('Purchase not found');
+    const prevStatus = existing.rows[0].purchase_status;
+
+    // If it was already Received, reverse stock now — items may be replaced
+    // and/or status may change below, so we reconcile from a clean slate.
+    if (prevStatus === 'Received') {
+      await applyPurchaseStockImpact(id, 'reverse', client);
+    }
 
     const items = Array.isArray(body.items) ? body.items : null;
     const fin   = items ? calcFinancials(body, items) : null;
@@ -375,7 +428,7 @@ const updatePurchase = async (id, body, userId) => {
       );
     }
 
-    // Replace line items if provided
+  // Replace line items if provided
     if (items) {
       await client.query(`DELETE FROM purchase_items WHERE purchase_id = $1`, [id]);
       for (const item of items) {
@@ -387,12 +440,13 @@ const updatePurchase = async (id, body, userId) => {
 
         await client.query(
           `INSERT INTO purchase_items (
-            purchase_id, product_name, product_sku,
+            purchase_id, product_id, product_name, product_sku,
             quantity, unit_cost, discount_pct, line_total,
             margin_pct, selling_price
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
           [
             id,
+            parseInt(item.product_id || item.id, 10) || null,
             item.product_name || item.name || 'Unnamed Product',
             item.product_sku  || item.sku  || null,
             qty, cost, disc,
@@ -404,6 +458,13 @@ const updatePurchase = async (id, body, userId) => {
       }
       // Re-sync payment status after total changes
       await recalcPaymentStatus(id, client);
+    }
+
+    // Apply stock if the purchase ends up Received (whether it just changed
+    // to Received, or was Received all along and items got replaced)
+    const finalStatus = body.purchase_status || prevStatus;
+    if (finalStatus === 'Received') {
+      await applyPurchaseStockImpact(id, 'apply', client);
     }
 
     await client.query('COMMIT');
@@ -419,16 +480,33 @@ const updatePurchase = async (id, body, userId) => {
 
 // ── DELETE PURCHASE ──────────────────────────────────────────────────────────
 const deletePurchase = async (id) => {
-  // Cascade in DB handles items + payments
-  const result = await pool.query(
-    `DELETE FROM purchases WHERE id = $1 RETURNING id, reference_no`,
-    [id]
-  );
-  if (result.rows.length === 0) throw new Error('Purchase not found');
-  console.log(`🗑️  Purchase deleted: ${result.rows[0].reference_no}`);
-  return result.rows[0];
-};
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
+    const existing = await client.query(`SELECT purchase_status FROM purchases WHERE id = $1`, [id]);
+    if (existing.rows.length === 0) throw new Error('Purchase not found');
+
+    // Reverse stock before the items get cascade-deleted with the purchase
+    if (existing.rows[0].purchase_status === 'Received') {
+      await applyPurchaseStockImpact(id, 'reverse', client);
+    }
+
+    const result = await client.query(
+      `DELETE FROM purchases WHERE id = $1 RETURNING id, reference_no`,
+      [id]
+    );
+
+    await client.query('COMMIT');
+    console.log(`🗑️  Purchase deleted: ${result.rows[0].reference_no}`);
+    return result.rows[0];
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+};
 // ── ADD PAYMENT ──────────────────────────────────────────────────────────────
 const addPayment = async (purchaseId, body, userId) => {
   const client = await pool.connect();
@@ -536,12 +614,13 @@ const searchProducts = async (query = '') => {
     q += ` ORDER BY name LIMIT 50`;
     const result = await pool.query(q, params);
 
-    // Normalise column names — handle different product table schemas
+// Normalise column names — handle different product table schemas
     return result.rows.map(p => ({
       id:            p.id,
       name:          p.name || p.product_name || '',
       sku:           p.sku  || p.product_sku  || '',
-      default_price: p.unit_price || p.selling_price || p.price || p.default_price || 0,
+      default_price: p.purchase_price_exc_tax || p.purchase_price_inc_tax || 0,
+      selling_price: p.selling_price_exc_tax || 0,
       unit_name:     p.unit || p.unit_name || '',
     }));
   } catch (err) {

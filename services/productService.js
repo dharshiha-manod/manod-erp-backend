@@ -4,6 +4,9 @@
  * Business logic & database operations for:
  *   - Brands, Units, Variations, Categories, Products
  * ====================================================
+ * UPDATED: products now carry `item_type`
+ * ('raw_material' | 'finished_good' | 'both') so the
+ * Manufacturing module can filter dropdowns correctly.
  */
 
 const pool = require('../config/database');
@@ -509,11 +512,13 @@ const fetchAllProducts = async (filters = {}) => {
        p.alert_qty, p.manage_stock, p.description,
        p.weight, p.prep_time,
        p.tax, p.selling_price_tax_type, p.product_type,
+       p.item_type,
+       p.variation_template,
        p.purchase_price_exc_tax  AS exc_tax,
        p.purchase_price_inc_tax  AS inc_tax,
        p.margin,
        p.selling_price_exc_tax   AS exc_tax_sell,
-       p.image_url, p.status, p.current_stock,
+     p.image_url, p.status, p.current_stock, p.warranty,
        p.created_at, p.updated_at
      FROM products p
      LEFT JOIN product_units      pu ON pu.id = p.unit_id
@@ -539,7 +544,9 @@ const fetchProductById = async (id) => {
        p.business_location,
        p.alert_qty, p.manage_stock, p.description,
        p.weight, p.prep_time,
-       p.tax, p.selling_price_tax_type, p.product_type,
+      p.tax, p.selling_price_tax_type, p.product_type,
+       p.item_type,
+       p.variation_template,
        p.purchase_price_exc_tax  AS exc_tax,
        p.purchase_price_inc_tax  AS inc_tax,
        p.margin,
@@ -568,21 +575,21 @@ const skuExists = async (sku, excludeId = null) => {
 
 // Resolve unit/brand/category by name → id
 const resolveUnitId = async (unitNameOrId) => {
-  if (!unitNameOrId) return null;
+  if (!unitNameOrId || !String(unitNameOrId).trim()) return null;
   if (!isNaN(unitNameOrId)) return parseInt(unitNameOrId);
   const r = await pool.query('SELECT id FROM product_units WHERE LOWER(name) = LOWER($1)', [unitNameOrId]);
   return r.rows[0]?.id || null;
 };
 
 const resolveBrandId = async (brandNameOrId) => {
-  if (!brandNameOrId) return null;
+  if (!brandNameOrId || !String(brandNameOrId).trim()) return null;
   if (!isNaN(brandNameOrId)) return parseInt(brandNameOrId);
   const r = await pool.query('SELECT id FROM product_brands WHERE LOWER(name) = LOWER($1)', [brandNameOrId]);
   return r.rows[0]?.id || null;
 };
 
 const resolveCategoryId = async (catNameOrId) => {
-  if (!catNameOrId) return null;
+  if (!catNameOrId || !String(catNameOrId).trim()) return null;
   if (!isNaN(catNameOrId)) return parseInt(catNameOrId);
   const r = await pool.query('SELECT id FROM product_categories WHERE LOWER(name) = LOWER($1)', [catNameOrId]);
   return r.rows[0]?.id || null;
@@ -598,18 +605,20 @@ const validateProductData = (data) => {
 const createProduct = async (productData) => {
   const { isValid, errors } = validateProductData(productData);
   if (!isValid) throw new Error(errors.join(', '));
-
-  const {
+const {
     name, sku, barcode_type,
     unit, unit_id,
     brand, brand_id,
     category, category_id,
     sub_category, sub_category_id,
+    variation_template,
     business_location, alert_qty, manage_stock,
     description, weight, prep_time,
     tax, selling_price_tax_type, product_type,
+    item_type, warranty,
     exc_tax, inc_tax, margin, exc_tax_sell,
-    image_url, status
+    opening_stock,
+    image, image_url, status
   } = productData;
 
   if (sku && await skuExists(sku)) throw new Error('SKU already exists');
@@ -619,19 +628,19 @@ const createProduct = async (productData) => {
   const resolvedBrandId    = brand_id    || await resolveBrandId(brand);
   const resolvedCategoryId = category_id || await resolveCategoryId(category);
   const resolvedSubCatId   = sub_category_id || await resolveCategoryId(sub_category);
-
-  const result = await pool.query(
+const result = await pool.query(
     `INSERT INTO products (
        name, sku, barcode_type,
        unit_id, brand_id, category_id, sub_category_id,
+       variation_template,
        business_location, alert_qty, manage_stock,
        description, weight, prep_time,
-       tax, selling_price_tax_type, product_type,
+      tax, selling_price_tax_type, product_type, item_type, warranty,
        purchase_price_exc_tax, purchase_price_inc_tax, margin, selling_price_exc_tax,
-       image_url, status
+       current_stock, image_url, status
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-       $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
+       $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26
      )
      RETURNING id`,
     [
@@ -642,6 +651,7 @@ const createProduct = async (productData) => {
       resolvedBrandId,
       resolvedCategoryId,
       resolvedSubCatId,
+      variation_template?.trim() || null,
       business_location || 'Manodtechnologies (BL0001)',
       parseFloat(alert_qty) || 0,
       manage_stock !== false,
@@ -651,33 +661,36 @@ const createProduct = async (productData) => {
       tax || 'None',
       selling_price_tax_type || 'Exclusive',
       product_type || 'Single',
+     item_type || 'Finished Product',
+      warranty?.trim() || null,
       parseFloat(exc_tax) || 0,
       parseFloat(inc_tax) || 0,
       parseFloat(margin) || 0,
       parseFloat(exc_tax_sell) || 0,
-      image_url || null,
-      status || 'Active'
+      parseFloat(opening_stock) || 0,
+      image_url || image || null,
+status || 'Active'
     ]
   );
-
   return fetchProductById(result.rows[0].id);
 };
-
 const updateProduct = async (id, productData) => {
   const existing = await fetchProductById(id);
   if (!existing) throw new Error('Product not found');
-
-  const {
+const {
     name, sku, barcode_type,
     unit, unit_id,
     brand, brand_id,
     category, category_id,
     sub_category, sub_category_id,
+    variation_template,
     business_location, alert_qty, manage_stock,
     description, weight, prep_time,
-    tax, selling_price_tax_type, product_type,
+   tax, selling_price_tax_type, product_type,
+    item_type, warranty,
     exc_tax, inc_tax, margin, exc_tax_sell,
-    image_url, status
+    opening_stock,
+    image, image_url, status
   } = productData;
 
   if (sku && await skuExists(sku, id)) throw new Error('SKU already in use');
@@ -686,8 +699,7 @@ const updateProduct = async (id, productData) => {
   const resolvedBrandId    = brand_id !== undefined    ? brand_id    : (brand    ? await resolveBrandId(brand)    : undefined);
   const resolvedCategoryId = category_id !== undefined ? category_id : (category ? await resolveCategoryId(category) : undefined);
   const resolvedSubCatId   = sub_category_id !== undefined ? sub_category_id : (sub_category ? await resolveCategoryId(sub_category) : undefined);
-
-  const result = await pool.query(
+const result = await pool.query(
     `UPDATE products SET
        name                    = COALESCE($1,  name),
        sku                     = COALESCE($2,  sku),
@@ -696,23 +708,27 @@ const updateProduct = async (id, productData) => {
        brand_id                = COALESCE($5,  brand_id),
        category_id             = COALESCE($6,  category_id),
        sub_category_id         = COALESCE($7,  sub_category_id),
-       business_location       = COALESCE($8,  business_location),
-       alert_qty               = COALESCE($9,  alert_qty),
-       manage_stock            = COALESCE($10, manage_stock),
-       description             = COALESCE($11, description),
-       weight                  = COALESCE($12, weight),
-       prep_time               = COALESCE($13, prep_time),
-       tax                     = COALESCE($14, tax),
-       selling_price_tax_type  = COALESCE($15, selling_price_tax_type),
-       product_type            = COALESCE($16, product_type),
-       purchase_price_exc_tax  = COALESCE($17, purchase_price_exc_tax),
-       purchase_price_inc_tax  = COALESCE($18, purchase_price_inc_tax),
-       margin                  = COALESCE($19, margin),
-       selling_price_exc_tax   = COALESCE($20, selling_price_exc_tax),
-       image_url               = COALESCE($21, image_url),
-       status                  = COALESCE($22, status),
+       variation_template      = COALESCE($8,  variation_template),
+       business_location       = COALESCE($9,  business_location),
+       alert_qty               = COALESCE($10, alert_qty),
+       manage_stock            = COALESCE($11, manage_stock),
+       description             = COALESCE($12, description),
+       weight                  = COALESCE($13, weight),
+       prep_time               = COALESCE($14, prep_time),
+       tax                     = COALESCE($15, tax),
+       selling_price_tax_type  = COALESCE($16, selling_price_tax_type),
+   product_type            = COALESCE($17, product_type),
+       item_type               = COALESCE($18, item_type),
+       warranty                = COALESCE($19, warranty),
+       purchase_price_exc_tax  = COALESCE($20, purchase_price_exc_tax),
+       purchase_price_inc_tax  = COALESCE($21, purchase_price_inc_tax),
+       margin                  = COALESCE($22, margin),
+       selling_price_exc_tax   = COALESCE($23, selling_price_exc_tax),
+       current_stock           = COALESCE($24, current_stock),
+       image_url               = COALESCE($25, image_url),
+       status                  = COALESCE($26, status),
        updated_at              = CURRENT_TIMESTAMP
-     WHERE id = $23
+     WHERE id = $27
      RETURNING id`,
     [
       name?.trim()                  || null,
@@ -722,35 +738,45 @@ const updateProduct = async (id, productData) => {
       resolvedBrandId               ?? null,
       resolvedCategoryId            ?? null,
       resolvedSubCatId              ?? null,
+      variation_template?.trim()    || null,
       business_location             || null,
-      alert_qty !== undefined ? parseFloat(alert_qty) : null,
+(alert_qty !== undefined && alert_qty !== null && alert_qty !== "" && !isNaN(parseFloat(alert_qty))) ? parseFloat(alert_qty) : null,
       manage_stock !== undefined ? Boolean(manage_stock) : null,
       description?.trim()           || null,
-      weight     !== undefined ? parseFloat(weight)    : null,
-      prep_time  !== undefined ? parseInt(prep_time)   : null,
+      (weight !== undefined && weight !== null && weight !== "" && !isNaN(parseFloat(weight))) ? parseFloat(weight) : null,
+      (prep_time !== undefined && prep_time !== null && prep_time !== "" && !isNaN(parseInt(prep_time))) ? parseInt(prep_time) : null,
       tax                           || null,
       selling_price_tax_type        || null,
       product_type                  || null,
-      exc_tax    !== undefined ? parseFloat(exc_tax)   : null,
-      inc_tax    !== undefined ? parseFloat(inc_tax)   : null,
-      margin     !== undefined ? parseFloat(margin)    : null,
-      exc_tax_sell !== undefined ? parseFloat(exc_tax_sell) : null,
-      image_url                     || null,
-      status                        || null,
+    item_type                      || null,
+      warranty?.trim()               || null,
+     (exc_tax !== undefined && exc_tax !== null && exc_tax !== "" && !isNaN(parseFloat(exc_tax))) ? parseFloat(exc_tax) : null,
+      (inc_tax !== undefined && inc_tax !== null && inc_tax !== "" && !isNaN(parseFloat(inc_tax))) ? parseFloat(inc_tax) : null,
+      (margin !== undefined && margin !== null && margin !== "" && !isNaN(parseFloat(margin))) ? parseFloat(margin) : null,
+      (exc_tax_sell !== undefined && exc_tax_sell !== null && exc_tax_sell !== "" && !isNaN(parseFloat(exc_tax_sell))) ? parseFloat(exc_tax_sell) : null,
+    opening_stock !== undefined && opening_stock !== null && opening_stock !== '' && !isNaN(opening_stock) ? parseInt(opening_stock) : null,
+     image_url || image || null,
+   status                        || null,
       id
     ]
   );
 
   return fetchProductById(result.rows[0].id);
 };
-
 const deleteProduct = async (id) => {
-  const result = await pool.query(
-    'DELETE FROM products WHERE id = $1 RETURNING id, name, sku',
-    [id]
-  );
-  if (result.rows.length === 0) throw new Error('Product not found');
-  return result.rows[0];
+  try {
+    const result = await pool.query(
+      'DELETE FROM products WHERE id = $1 RETURNING id, name, sku',
+      [id]
+    );
+    if (result.rows.length === 0) throw new Error('Product not found');
+    return result.rows[0];
+  } catch (err) {
+    if (err.code === '23503') {
+      throw new Error('Cannot delete: this product is referenced in stock adjustments, sales, or other records. Deactivate it instead.');
+    }
+    throw err;
+  }
 };
 
 const updateProductStatus = async (id, status) => {

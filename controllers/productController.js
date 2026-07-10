@@ -11,6 +11,7 @@ const {
   fetchAllVariations, fetchVariationById, createVariation, updateVariation, deleteVariation,
   fetchAllCategories, fetchCategoryById, createCategory, updateCategory, deleteCategory,
   fetchAllProducts, fetchProductById, createProduct, updateProduct, deleteProduct, updateProductStatus,
+  fetchComponentEligibleProducts, fetchFinishedProducts,
 } = require('../services/productService');
 
 // ─────────────────────────────────────────────────────────────
@@ -371,7 +372,9 @@ const removeProduct = async (req, res) => {
     res.status(200).json({ success: true, message: 'Product deleted successfully', product });
   } catch (err) {
     console.error('❌ Delete Product Error:', err.message);
-    const status = err.message.includes('not found') ? 404 : 500;
+    const status = err.message.includes('not found') ? 404
+      : err.message.includes('Cannot delete') ? 409
+      : 500;
     res.status(status).json({ success: false, error: err.message });
   }
 };

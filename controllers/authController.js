@@ -127,15 +127,11 @@ const login = async (req, res) => {
     console.log('✅ Password verified');
 
     // Create JWT token
-    const token = jwt.sign(
-      { 
-        id: user.id, 
-        email: user.email,
-        name: user.full_name
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
+  const token = jwt.sign(
+  { id: user.id, email: user.email, name: user.name, business_id: user.business_id },
+  process.env.JWT_SECRET,
+  { expiresIn: '7d' }
+);
 
     console.log('🎫 Token created for user:', user.id);
 

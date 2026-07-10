@@ -146,6 +146,20 @@ const createAdjustment = async (body, userId) => {
       totalAmount += (parseFloat(it.quantity) || 0) * (parseFloat(it.unit_cost) || 0);
     }
 
+    // Block adjustments that would take any product's stock negative
+    for (const it of items) {
+      const productId = parseInt(it.product_id || it.id, 10);
+      const qty       = parseFloat(it.quantity) || 0;
+      const prodRes    = await client.query(
+        `SELECT name, COALESCE(current_stock,0) AS current_stock FROM products WHERE id = $1`,
+        [productId]
+      );
+      if (prodRes.rows.length === 0) throw new Error(`Product not found (id: ${productId})`);
+      const { name, current_stock } = prodRes.rows[0];
+      if (current_stock - qty < 0) {
+        throw new Error(`Insufficient stock for "${name}": current stock is ${current_stock}, cannot adjust by ${qty}`);
+      }
+    }
     // created_by = UUID — use $10::uuid so string from JWT is cast properly
     const hdrRes = await client.query(
       `INSERT INTO stock_adjustments
@@ -213,7 +227,26 @@ const updateAdjustment = async (id, body, userId) => {
       await applyStockImpact(id, 'reverse', client);
     }
 
-    const items  = Array.isArray(body.items) ? body.items : null;
+   const items  = Array.isArray(body.items) ? body.items : null;
+
+    // Block adjustments that would take any product's stock negative
+    // (only check when items are being changed and status isn't already Completed,
+    //  since a Completed adjustment's stock impact is already applied/reflected)
+    if (items && prev.status !== 'Completed') {
+      for (const it of items) {
+        const productId = parseInt(it.product_id || it.id, 10);
+        const qty        = parseFloat(it.quantity) || 0;
+        const prodRes     = await client.query(
+          `SELECT name, COALESCE(current_stock,0) AS current_stock FROM products WHERE id = $1`,
+          [productId]
+        );
+        if (prodRes.rows.length === 0) throw new Error(`Product not found (id: ${productId})`);
+        const { name, current_stock } = prodRes.rows[0];
+        if (current_stock - qty < 0) {
+          throw new Error(`Insufficient stock for "${name}": current stock is ${current_stock}, cannot adjust by ${qty}`);
+        }
+      }
+    }
     const sets   = [];
     const params = [];
     const add    = (col, val) => { if (val !== undefined) { params.push(val); sets.push(`${col}=$${params.length}`); } };
@@ -350,11 +383,13 @@ const getProductsList = async (search = '') => {
 const getLocations = async () => {
   try {
     const r = await pool.query(
-      `SELECT DISTINCT name AS location FROM business_locations
-       WHERE status='active' OR status IS NULL ORDER BY name`
+      `SELECT DISTINCT location_name AS location FROM business_locations
+       WHERE is_active = true OR is_active IS NULL ORDER BY location_name`
     );
     if (r.rows.length > 0) return r.rows.map(row => row.location);
-  } catch (_) {}
+  } catch (err) {
+    console.error('❌ getLocations (business_locations) error:', err.message);
+  }
   const r = await pool.query(
     `SELECT DISTINCT location FROM stock_adjustments
      WHERE location IS NOT NULL ORDER BY location`

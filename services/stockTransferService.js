@@ -45,6 +45,32 @@ const generateTransferNumber = async () => {
   return `ST-${year}-${String(next).padStart(3, '0')}`;
 };
 
+// ── STOCK IMPACT ────────────────────────────────────────────────────────────
+// Transfers move stock out of the tracked pool once "Completed" — same
+// convention as stockAdjustmentService.applyStockImpact. 'apply' decreases,
+// 'reverse' adds back (used on delete, status rollback, or item edit).
+// current_stock is an INTEGER column, so quantities are rounded before use.
+const applyTransferStockImpact = async (transferId, direction, client) => {
+  const items = await client.query(
+    `SELECT product_id, quantity FROM stock_transfer_items WHERE stock_transfer_id = $1`,
+    [transferId]
+  );
+  for (const item of items.rows) {
+    const pid = parseInt(item.product_id, 10);
+    const qty = Math.round(parseFloat(item.quantity) || 0);
+    if (!pid || isNaN(pid) || qty <= 0) continue;
+
+    const delta = direction === 'apply' ? -qty : qty;
+    await client.query(
+      `UPDATE products
+       SET current_stock = GREATEST(0, COALESCE(current_stock, 0) + $1),
+           updated_at = NOW()
+       WHERE id = $2`,
+      [delta, pid]
+    );
+  }
+};
+
 // ── FETCH ALL STOCK TRANSFERS (paginated + filtered) ─────────────────────────
 const fetchAllStockTransfers = async (filters = {}) => {
   const {
@@ -138,8 +164,10 @@ const fetchStockTransferById = async (id) => {
   const items = await pool.query(
     `SELECT
        sti.id, sti.stock_transfer_id, sti.product_id, sti.quantity,
-       p.name AS product_name, p.sku, p.purchase_price_exc_tax AS cost_price,
-       (sti.quantity * COALESCE(p.purchase_price_exc_tax, 0)) AS subtotal
+       COALESCE(p.name, sti.product_name, 'Deleted Product') AS product_name,
+       COALESCE(p.sku,  sti.product_sku)                     AS sku,
+       COALESCE(p.purchase_price_exc_tax, sti.unit_cost, 0)  AS cost_price,
+       (sti.quantity * COALESCE(p.purchase_price_exc_tax, sti.unit_cost, 0)) AS subtotal
      FROM stock_transfer_items sti
      LEFT JOIN products p ON p.id = sti.product_id
      WHERE sti.stock_transfer_id = $1
@@ -202,19 +230,38 @@ const createStockTransfer = async (body, userId) => {
     );
 
     const transfer = headerResult.rows[0];
-
-    // Insert line items
+// Insert line items — snapshot name/sku/cost so history survives product deletion
     for (const item of items) {
       const productId = item.product_id || item.id;
       if (!productId) throw new Error('Each item must reference a valid product_id');
       const qty = parseFloat(item.quantity) || 1;
 
+      const prodRes = await client.query(
+        `SELECT name, sku, purchase_price_exc_tax, COALESCE(current_stock,0) AS current_stock FROM products WHERE id = $1`,
+        [productId]
+      );
+      const prod = prodRes.rows[0];
+      if (!prod) throw new Error(`Product not found (id: ${productId})`);
+      if (qty > prod.current_stock) {
+        throw new Error(`Insufficient stock for "${prod.name}": current stock is ${prod.current_stock}, cannot transfer ${qty}`);
+      }
+
       await client.query(
         `INSERT INTO stock_transfer_items (
-          stock_transfer_id, product_id, quantity
-        ) VALUES ($1,$2,$3)`,
-        [transfer.id, productId, qty]
+          stock_transfer_id, product_id, quantity, product_name, product_sku, unit_cost
+        ) VALUES ($1,$2,$3,$4,$5,$6)`,
+        [
+          transfer.id, productId, qty,
+          item.product_name || prod.name || 'Unnamed',
+          item.product_sku  || prod.sku  || null,
+          prod.purchase_price_exc_tax || 0,
+        ]
       );
+    }
+    // Only a Completed transfer actually moves stock — Pending/In Transit
+    // transfers are just paperwork until confirmed.
+    if (transfer.status === 'Completed') {
+      await applyTransferStockImpact(transfer.id, 'apply', client);
     }
 
     await client.query('COMMIT');
@@ -236,12 +283,21 @@ const updateStockTransfer = async (id, body, userId) => {
 
     const existing = await client.query(`SELECT * FROM stock_transfers WHERE id = $1`, [id]);
     if (existing.rows.length === 0) throw new Error('Stock Transfer not found');
+    const prev = existing.rows[0];
 
     if (body.location_from && body.location_to && body.location_from === body.location_to) {
       throw new Error('Source and destination locations must be different');
     }
 
     const items = Array.isArray(body.items) ? body.items : null;
+
+    // If it was already Completed and either the items are changing or the
+    // status is moving away from Completed, reverse the old stock impact
+    // first — we'll re-apply below if it's staying/becoming Completed.
+    const willReverse = prev.status === 'Completed' && (items || (body.status && body.status !== 'Completed'));
+    if (willReverse) {
+      await applyTransferStockImpact(id, 'reverse', client);
+    }
 
     // Build dynamic SET clause
     const sets   = [];
@@ -273,18 +329,41 @@ const updateStockTransfer = async (id, body, userId) => {
     // Replace line items if provided
     if (items) {
       await client.query(`DELETE FROM stock_transfer_items WHERE stock_transfer_id = $1`, [id]);
-      for (const item of items) {
+     for (const item of items) {
         const productId = item.product_id || item.id;
         if (!productId) throw new Error('Each item must reference a valid product_id');
         const qty = parseFloat(item.quantity) || 1;
 
+        const prodRes = await client.query(
+          `SELECT name, sku, purchase_price_exc_tax, COALESCE(current_stock,0) AS current_stock FROM products WHERE id = $1`,
+          [productId]
+        );
+        const prod = prodRes.rows[0];
+        if (!prod) throw new Error(`Product not found (id: ${productId})`);
+        if (qty > prod.current_stock) {
+          throw new Error(`Insufficient stock for "${prod.name}": current stock is ${prod.current_stock}, cannot transfer ${qty}`);
+        }
+
         await client.query(
           `INSERT INTO stock_transfer_items (
-            stock_transfer_id, product_id, quantity
-          ) VALUES ($1,$2,$3)`,
-          [id, productId, qty]
+            stock_transfer_id, product_id, quantity, product_name, product_sku, unit_cost
+          ) VALUES ($1,$2,$3,$4,$5,$6)`,
+          [
+            id, productId, qty,
+            item.product_name || prod.name || 'Unnamed',
+            item.product_sku  || prod.sku  || null,
+            prod.purchase_price_exc_tax || 0,
+          ]
         );
       }
+    }
+
+    // Re-apply stock impact if the transfer is Completed after this update —
+    // either it was reversed above and needs re-applying with fresh items,
+    // or it just transitioned into Completed for the first time.
+    const finalStatus = body.status !== undefined ? body.status : prev.status;
+    if (finalStatus === 'Completed') {
+      await applyTransferStockImpact(id, 'apply', client);
     }
 
     await client.query('COMMIT');
@@ -300,15 +379,34 @@ const updateStockTransfer = async (id, body, userId) => {
 
 // ── DELETE STOCK TRANSFER ─────────────────────────────────────────────────────
 const deleteStockTransfer = async (id) => {
-  // Delete items first as a safety net in case no ON DELETE CASCADE FK exists
-  await pool.query(`DELETE FROM stock_transfer_items WHERE stock_transfer_id = $1`, [id]);
-  const result = await pool.query(
-    `DELETE FROM stock_transfers WHERE id = $1 RETURNING id, transfer_number`,
-    [id]
-  );
-  if (result.rows.length === 0) throw new Error('Stock Transfer not found');
-  console.log(`🗑️  Stock Transfer deleted: ${result.rows[0].transfer_number}`);
-  return result.rows[0];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const existing = await client.query(`SELECT * FROM stock_transfers WHERE id = $1`, [id]);
+    if (existing.rows.length === 0) throw new Error('Stock Transfer not found');
+
+    // If this transfer already moved stock, put it back before deleting.
+    if (existing.rows[0].status === 'Completed') {
+      await applyTransferStockImpact(id, 'reverse', client);
+    }
+
+    // Delete items first as a safety net in case no ON DELETE CASCADE FK exists
+    await client.query(`DELETE FROM stock_transfer_items WHERE stock_transfer_id = $1`, [id]);
+    const result = await client.query(
+      `DELETE FROM stock_transfers WHERE id = $1 RETURNING id, transfer_number`,
+      [id]
+    );
+
+    await client.query('COMMIT');
+    console.log(`🗑️  Stock Transfer deleted: ${result.rows[0].transfer_number}`);
+    return result.rows[0];
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 };
 
 // ── DASHBOARD STATS ───────────────────────────────────────────────────────────
@@ -353,4 +451,5 @@ module.exports = {
   deleteStockTransfer,
   getStockTransferStats,
   getProductsList,
+  applyTransferStockImpact,
 };

@@ -14,12 +14,11 @@ const getBusinessSettings = async (businessId) => {
             language, phone, email, address, city, state, country, 
             postal_code, tax_id, registration_number, created_at, updated_at
      FROM business_settings 
-     WHERE business_id = $1`,
+     WHERE business_id = $1::integer`,
     [businessId]
   );
   return result.rows[0] || null;
 };
-
 const updateBusinessSettings = async (businessId, data) => {
   const {
     business_name, currency, timezone, language, phone, email,
@@ -32,15 +31,29 @@ const updateBusinessSettings = async (businessId, data) => {
   }
 
   const result = await pool.query(
-    `UPDATE business_settings 
-     SET business_name = $1, currency = $2, timezone = $3, language = $4,
-         phone = $5, email = $6, address = $7, city = $8, state = $9,
-         country = $10, postal_code = $11, tax_id = $12, registration_number = $13,
-         updated_at = CURRENT_TIMESTAMP
-     WHERE business_id = $14
+    `INSERT INTO business_settings
+       (business_id, business_name, currency, timezone, language, phone, email,
+        address, city, state, country, postal_code, tax_id, registration_number,
+        created_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+     ON CONFLICT (business_id) DO UPDATE SET
+       business_name = EXCLUDED.business_name,
+       currency = EXCLUDED.currency,
+       timezone = EXCLUDED.timezone,
+       language = EXCLUDED.language,
+       phone = EXCLUDED.phone,
+       email = EXCLUDED.email,
+       address = EXCLUDED.address,
+       city = EXCLUDED.city,
+       state = EXCLUDED.state,
+       country = EXCLUDED.country,
+       postal_code = EXCLUDED.postal_code,
+       tax_id = EXCLUDED.tax_id,
+       registration_number = EXCLUDED.registration_number,
+       updated_at = CURRENT_TIMESTAMP
      RETURNING *`,
-    [business_name, currency, timezone, language, phone, email, address, city,
-     state, country, postal_code, tax_id, registration_number, businessId]
+    [businessId, business_name, currency, timezone, language, phone, email, address, city,
+     state, country, postal_code, tax_id, registration_number]
   );
 
   return result.rows[0];
