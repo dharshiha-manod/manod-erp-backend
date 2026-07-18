@@ -5,6 +5,7 @@
 'use strict';
 
 const svc = require('../services/stockAdjustmentService');
+const { logActivity } = require('../services/activityLogService');
 
 const getAllAdjustments = async (req, res) => {
   try {
@@ -38,7 +39,8 @@ const createAdjustment = async (req, res) => {
     if (!Array.isArray(req.body.items) || req.body.items.length === 0)
       return res.status(400).json({ success: false, error: 'At least one product item is required' });
 
-    const adj = await svc.createAdjustment(req.body, userId);
+   const adj = await svc.createAdjustment(req.body, userId);
+    logActivity({ userId, module: 'Stock', action: `Created Adjustment ${adj.reference_no || adj.id}`, detail: `Type: ${req.body.adjustment_type}`, req });
     res.status(201).json({ success: true, message: 'Stock Adjustment created successfully', stockAdjustment: adj });
   } catch (err) {
     console.error('createAdjustment:', err.message);
@@ -70,7 +72,8 @@ const deleteAdjustment = async (req, res) => {
 const approveAdjustment = async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId || null;
-    const adj    = await svc.approveAdjustment(req.params.id, userId);
+const adj    = await svc.approveAdjustment(req.params.id, userId);
+    logActivity({ userId, module: 'Stock', action: `Approved Adjustment ${adj.reference_no || req.params.id}`, req });
     res.json({ success: true, message: 'Stock Adjustment approved and stock updated', stockAdjustment: adj });
   } catch (err) {
     console.error('approveAdjustment:', err.message);

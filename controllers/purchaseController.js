@@ -7,6 +7,7 @@
  */
 
 const purchaseService = require('../services/purchaseService');
+const { logActivity }  = require('../services/activityLogService');
 
 // ── GET ALL PURCHASES (list with pagination + filters) ───────────────────────
 const getAllPurchases = async (req, res) => {
@@ -63,8 +64,9 @@ const createPurchase = async (req, res) => {
       return res.status(400).json({ success: false, error: 'At least one product item is required' });
     }
 
-    const purchase = await purchaseService.createPurchase(req.body, userId);
+  const purchase = await purchaseService.createPurchase(req.body, userId);
     console.log(`✅ Purchase created: ${purchase.reference_no}`);
+    logActivity({ userId, module: 'Purchases', action: `Created Purchase ${purchase.reference_no}`, detail: `Status: ${purchase.purchase_status}`, req });
     res.status(201).json({
       success: true,
       message: 'Purchase created successfully',
@@ -81,8 +83,9 @@ const createPurchase = async (req, res) => {
 const updatePurchase = async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId || null;
-    const purchase = await purchaseService.updatePurchase(req.params.id, req.body, userId);
+   const purchase = await purchaseService.updatePurchase(req.params.id, req.body, userId);
     console.log(`✅ Purchase updated: id ${req.params.id}`);
+    logActivity({ userId, module: 'Purchases', action: `Updated Purchase ${purchase.reference_no || req.params.id}`, req });
     res.status(200).json({
       success: true,
       message: 'Purchase updated successfully',

@@ -133,7 +133,21 @@ const createGroup = async (req, res) => {
     res.status(201).json({ success: true, message: 'Customer group created', group });
   } catch (err) {
     console.error('❌ Create Group Error:', err.message);
-    res.status(400).json({ success: false, error: err.message || 'Failed to create group' });
+    const status = err.message.includes('already exists') ? 409 : 400;
+    res.status(status).json({ success: false, error: err.message || 'Failed to create group' });
+  }
+};
+
+const updateGroup = async (req, res) => {
+  try {
+    const group = await contactService.updateGroup(req.params.id, req.body);
+    res.status(200).json({ success: true, message: 'Customer group updated', group });
+  } catch (err) {
+    console.error('❌ Update Group Error:', err.message);
+    let status = 400;
+    if (err.message === 'Group not found') status = 404;
+    if (err.message.includes('already exists')) status = 409;
+    res.status(status).json({ success: false, error: err.message || 'Failed to update group' });
   }
 };
 
@@ -148,6 +162,18 @@ const deleteGroup = async (req, res) => {
   }
 };
 
+// ── NEW: pricing info for Sales/POS auto-detect ──
+const getCustomerPricingInfo = async (req, res) => {
+  try {
+    const info = await contactService.fetchCustomerPricingInfo(req.params.id);
+    if (!info) return res.status(404).json({ success: false, error: 'Contact not found' });
+    res.status(200).json({ success: true, pricing: info });
+  } catch (err) {
+    console.error('❌ Get Customer Pricing Info Error:', err.message);
+    res.status(500).json({ success: false, error: 'Failed to fetch pricing info' });
+  }
+};
+
 module.exports = {
   getAllContacts,
   getContactById,
@@ -158,5 +184,7 @@ module.exports = {
   importContacts,
   getAllGroups,
   createGroup,
+  updateGroup,
   deleteGroup,
+  getCustomerPricingInfo,
 };

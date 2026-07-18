@@ -50,8 +50,10 @@ const notificationTemplateRoutes = require('./routes/notificationTemplates'); //
 const hrmRoutes = require('./routes/hrm');
 const crmRoutes = require('./routes/crm');
 const essentialsRoutes = require('./routes/essentials'); // ← ESSENTIALS MODULE (NEW)
-const sellRoutes = require('./routes/sell'); // ← SELL MODULE (NEW)
+const sellRoutes = require('./routes/sell');
+const registerRoutes = require('./routes/register');
 const settingsRoutes = require('./routes/settingsRoutes'); // adjust path
+const reportsRoutes = require('./routes/reports'); // ← REPORTS MODULE (NEW)
 
 
 
@@ -71,10 +73,13 @@ app.use('/api/notification-templates',  notificationTemplateRoutes); // ← NOTI
 app.use('/api/hrm', hrmRoutes);
 app.use('/api/crm', crmRoutes);
 app.use('/api/essentials', essentialsRoutes); // ← ESSENTIALS MODULE (NEW)
-app.use('/api', sellRoutes); 
+app.use('/api', sellRoutes);
+app.use('/api/register', registerRoutes);
 app.use('/api/selling-price-groups', require('./routes/sellingPriceGroupRoutes'));// ← SELL MODULE (NEW) — sales-invoice, pos-sales, quotations, sales-returns, shipments, discounts, import/sales
 app.use('/api/product-selling-prices', require('./routes/productSellingPriceRoutes'));
 app.use('/api/settings', settingsRoutes);
+app.use('/api/reports', reportsRoutes); // ← REPORTS MODULE (NEW)
+app.use('/api/product-selling-prices', require('./routes/productSellingPrices'));
 // ── HEALTH CHECK ─────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
   res.status(200).json({

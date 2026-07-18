@@ -7,6 +7,7 @@
  */
 
 const stockTransferService = require('../services/stockTransferService');
+const { logActivity } = require('../services/activityLogService');
 
 // ── GET ALL STOCK TRANSFERS (list with pagination + filters) ─────────────────
 const getAllStockTransfers = async (req, res) => {
@@ -66,13 +67,14 @@ const createStockTransfer = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Each item must reference a valid product' });
     }
 
-    const stockTransfer = await stockTransferService.createStockTransfer(req.body, userId);
+const stockTransfer = await stockTransferService.createStockTransfer(req.body, userId);
     console.log(`✅ Stock Transfer created: ${stockTransfer.reference_no}`);
+    logActivity({ userId, module: 'Stock Transfers', action: `Created Transfer ${stockTransfer.reference_no}`, detail: `${req.body.location_from} → ${req.body.location_to}`, req });
     res.status(201).json({
       success: true,
       message: 'Stock Transfer created successfully',
       stockTransfer,
-    });
+   });
   } catch (err) {
     console.error('❌ Create Stock Transfer Error:', err.message);
     const status = err.message.includes('already exists') ? 409 : 400;
@@ -84,8 +86,9 @@ const createStockTransfer = async (req, res) => {
 const updateStockTransfer = async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId || null;
-    const stockTransfer = await stockTransferService.updateStockTransfer(req.params.id, req.body, userId);
+   const stockTransfer = await stockTransferService.updateStockTransfer(req.params.id, req.body, userId);
     console.log(`✅ Stock Transfer updated: id ${req.params.id}`);
+    logActivity({ userId, module: 'Stock Transfers', action: `Updated Transfer ${stockTransfer.reference_no || req.params.id}`, req });
     res.status(200).json({
       success: true,
       message: 'Stock Transfer updated successfully',

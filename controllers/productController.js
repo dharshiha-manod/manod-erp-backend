@@ -13,6 +13,7 @@ const {
   fetchAllProducts, fetchProductById, createProduct, updateProduct, deleteProduct, updateProductStatus,
   fetchComponentEligibleProducts, fetchFinishedProducts,
 } = require('../services/productService');
+const { logActivity } = require('../services/activityLogService');
 
 // ─────────────────────────────────────────────────────────────
 // BRANDS
@@ -345,6 +346,7 @@ const addProduct = async (req, res) => {
   try {
     const product = await createProduct(req.body);
     console.log('✅ Product created:', product.name);
+    logActivity({ userId: req.user?.id || null, module: 'Products', action: `Created Product ${product.name}`, detail: `SKU: ${product.sku || product.sub_sku || ''}`, req });
     res.status(201).json({ success: true, message: 'Product created successfully', product });
   } catch (err) {
     console.error('❌ Create Product Error:', err.message);
@@ -355,8 +357,9 @@ const addProduct = async (req, res) => {
 
 const editProduct = async (req, res) => {
   try {
-    const product = await updateProduct(req.params.id, req.body);
+  const product = await updateProduct(req.params.id, req.body);
     console.log('✅ Product updated:', product.name);
+    logActivity({ userId: req.user?.id || null, module: 'Products', action: `Updated Product ${product.name}`, req });
     res.status(200).json({ success: true, message: 'Product updated successfully', product });
   } catch (err) {
     console.error('❌ Update Product Error:', err.message);
@@ -367,8 +370,9 @@ const editProduct = async (req, res) => {
 
 const removeProduct = async (req, res) => {
   try {
-    const product = await deleteProduct(req.params.id);
+const product = await deleteProduct(req.params.id);
     console.log('✅ Product deleted:', product.name);
+    logActivity({ userId: req.user?.id || null, module: 'Products', action: `Deleted Product ${product.name}`, req });
     res.status(200).json({ success: true, message: 'Product deleted successfully', product });
   } catch (err) {
     console.error('❌ Delete Product Error:', err.message);
@@ -392,6 +396,35 @@ const toggleProductStatus = async (req, res) => {
   }
 };
 
+// ── Manual reorder request ────────────────────────────────────────────────
+// Called when an admin/inventory user, after seeing a low-stock alert,
+// decides to actually reorder and clicks "Request Reorder" with a quantity.
+// This is the ONLY path that emails the supplier — the automatic low-stock
+// check never does.
+const requestReorder = async (req, res) => {
+  try {
+    const { quantity } = req.body;
+    if (!quantity || Number(quantity) <= 0) {
+      return res.status(400).json({ success: false, error: 'quantity must be greater than 0' });
+    }
+
+    const { requestReorderFromSupplier } = require('../services/notificationEngine');
+    const result = await requestReorderFromSupplier(req.params.id, Number(quantity), {
+      name: req.user?.full_name,
+      email: req.user?.email,
+    });
+
+    if (result.skipped) {
+      return res.status(400).json({ success: false, error: result.reason });
+    }
+
+    res.status(200).json({ success: true, message: 'Reorder request sent to supplier' });
+  } catch (err) {
+    console.error('❌ Request Reorder Error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
 module.exports = {
   // Brands
   getAllBrands, getBrandById, addBrand, editBrand, removeBrand,
@@ -403,4 +436,5 @@ module.exports = {
   getAllCategories, getCategoryById, addCategory, editCategory, removeCategory,
   // Products
   getAllProducts, getProductById, addProduct, editProduct, removeProduct, toggleProductStatus,
+  requestReorder,
 };

@@ -382,8 +382,25 @@ const updatePurchase = async (id, body, userId) => {
       await applyPurchaseStockImpact(id, 'reverse', client);
     }
 
-    const items = Array.isArray(body.items) ? body.items : null;
-    const fin   = items ? calcFinancials(body, items) : null;
+  const items = Array.isArray(body.items) ? body.items : null;
+
+    // Recompute financials whenever items were sent, OR when the payment
+    // amount was sent without items (edit form saving only the payment
+    // section). Fall back to existing line items from DB so subtotal/tax
+    // stay accurate even if items weren't resubmitted.
+    let fin = null;
+    if (items) {
+      fin = calcFinancials(body, items);
+    } else if (body.amount_paid !== undefined || body.payment_amount !== undefined) {
+      const existingItems = await client.query(
+        `SELECT quantity, unit_cost, discount_pct, line_total FROM purchase_items WHERE purchase_id = $1`,
+        [id]
+      );
+      fin = calcFinancials(
+        { ...body, discount_type: body.discount_type ?? existing.rows[0].discount_type, tax_label: body.tax_label ?? existing.rows[0].tax_label, shipping_charges: body.shipping_charges ?? existing.rows[0].shipping_charges },
+        existingItems.rows
+      );
+    }
 
     // Build dynamic SET clause
     const sets   = [];
@@ -428,7 +445,7 @@ const updatePurchase = async (id, body, userId) => {
       );
     }
 
-  // Replace line items if provided
+// Replace line items if provided
     if (items) {
       await client.query(`DELETE FROM purchase_items WHERE purchase_id = $1`, [id]);
       for (const item of items) {
@@ -456,8 +473,37 @@ const updatePurchase = async (id, body, userId) => {
           ]
         );
       }
-      // Re-sync payment status after total changes
-      await recalcPaymentStatus(id, client);
+
+      // IMPORTANT: do NOT call recalcPaymentStatus here.
+      // `fin` (above) already wrote the correct amount_paid / payment_due /
+      // payment_status straight from the edit form's "Amount Paid" field —
+      // that is the single source of truth on edit. recalcPaymentStatus
+      // re-sums the purchase_payments table instead, which still holds the
+      // stale payment row from creation time and would silently overwrite
+      // whatever the user just typed (this was the "Partial edit reverts
+      // to Paid" bug).
+      //
+      // Keep purchase_payments in sync with the new amount_paid so future
+      // recalcPaymentStatus calls (from addPayment/deletePayment) don't
+      // drift out of sync with what the edit form saved.
+      if (fin) {
+        await client.query(`DELETE FROM purchase_payments WHERE purchase_id = $1`, [id]);
+        if (fin.amount_paid > 0) {
+          await client.query(
+            `INSERT INTO purchase_payments (
+              purchase_id, amount, payment_method, paid_on, note, added_by
+            ) VALUES ($1,$2,$3,$4,$5,$6)`,
+            [
+              id,
+              fin.amount_paid,
+              body.payment_method || 'Cash',
+              body.payment_date   || new Date(),
+              body.payment_note   || null,
+              userId               || null,
+            ]
+          );
+        }
+      }
     }
 
     // Apply stock if the purchase ends up Received (whether it just changed

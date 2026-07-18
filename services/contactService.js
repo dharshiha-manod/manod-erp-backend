@@ -51,6 +51,23 @@ const normalizeType = (raw = '') => {
 };
 
 // ── Helper: auto-generate contact_id ─────────────────────────────────────────
+// ── Adjust advance balance ────────────────────────────────────────────────────
+// delta > 0  → credit (e.g. customer overpaid an invoice)
+// delta < 0  → use/debit (e.g. advance applied toward a new invoice)
+// Clamped at 0 so it can never go negative from a debit larger than the balance.
+const adjustAdvanceBalance = async (contactId, delta) => {
+  if (!contactId || !delta) return null;
+  const result = await pool.query(
+    `UPDATE contacts
+     SET advance_balance = GREATEST(0, COALESCE(advance_balance,0) + $1),
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = $2
+     RETURNING id, advance_balance`,
+    [delta, contactId]
+  );
+  return result.rows[0] || null;
+};
+
 const generateContactId = async (contactType) => {
   const prefix = normalizeType(contactType) === 'Customers' ? 'CO' : 'SUP';
   const result = await pool.query(
@@ -90,20 +107,20 @@ const fetchAllContacts = async (filters = {}) => {
     params.push(normalizedType);
     query += ` AND (c.contact_type = $${params.length} OR c.contact_type = 'Both')`;
   }
-  if (search) {
+ if (search) {
     params.push(`%${search}%`);
     const n = params.length;
     query += ` AND (
       LOWER(c.contact_name) LIKE LOWER($${n}) OR
       LOWER(c.business_name) LIKE LOWER($${n}) OR
       LOWER(c.email) LIKE LOWER($${n}) OR
-      c.mobile LIKE $${n} OR
+      c.phone LIKE $${n} OR
       LOWER(c.contact_id) LIKE LOWER($${n})
     )`;
   }
   if (mobile) {
     params.push(`%${mobile}%`);
-    query += ` AND c.mobile LIKE $${params.length}`;
+    query += ` AND c.phone LIKE $${params.length}`;
   }
   if (city) {
     params.push(`%${city}%`);
@@ -183,7 +200,7 @@ const createContact = async (data) => {
       contact_type, contact_id, is_individual, prefix,
       first_name, middle_name, last_name,
       business_name, contact_name,
-      mobile, alt_phone, landline, email, assigned_to,
+      phone, alt_phone, landline, email, assigned_to,
       tax_number, pay_term, credit_limit, opening_balance, advance_balance,
       address, city, state, country, zip, customer_group_id
     ) VALUES (
@@ -255,7 +272,7 @@ const updateContact = async (id, data) => {
     middle_name: existing.middle_name,
     last_name: existing.last_name,
     business_name: existing.business_name,
-    mobile: existing.mobile,
+    mobile: existing.phone,
     ...data,
   };
   const contactName = buildName(merged);
@@ -268,9 +285,9 @@ const updateContact = async (id, data) => {
       first_name        = COALESCE($4,  first_name),
       middle_name       = COALESCE($5,  middle_name),
       last_name         = COALESCE($6,  last_name),
-      business_name     = COALESCE($7,  business_name),
+   business_name     = COALESCE($7,  business_name),
       contact_name      = $8,
-      mobile            = COALESCE($9,  mobile),
+      phone             = COALESCE($9,  phone),
       alt_phone         = COALESCE($10, alt_phone),
       landline          = COALESCE($11, landline),
       email             = COALESCE($12, email),
@@ -296,8 +313,8 @@ const updateContact = async (id, data) => {
       data.middleName || null,
       data.lastName   || null,
       data.businessName || null,
-      contactName,                              // FIXED: always non-null
-      data.mobile     || null,
+    contactName,                              // FIXED: always non-null
+      data.mobile || data.phone || null,
       data.altPhone   || null,
       data.landline   || null,
       data.email      || null,
@@ -369,7 +386,9 @@ const bulkImportContacts = async (rows) => {
     try {
       if (!r.mobile) throw new Error('Mobile is required');
       const typeMap = { '1': 'Customers', '2': 'Suppliers', '3': 'Both' };
-      const contactType = typeMap[r.contactType] || normalizeType(r.contactType) || 'Suppliers';
+      const rawType = String(r.contactType || '').trim();
+      const contactType = typeMap[rawType] || normalizeType(rawType) || 'Suppliers';
+      console.log(`Row ${i + 1}: rawType="${rawType}" → contactType="${contactType}"`);
 
       const contact = await createContact({
         contactType,
@@ -403,25 +422,78 @@ const bulkImportContacts = async (rows) => {
 
 // ── Customer Groups CRUD ──────────────────────────────────────────────────────
 const fetchAllGroups = async () => {
-  const result = await pool.query(`SELECT * FROM customer_groups ORDER BY name`);
+  // Joined with selling_price_groups so the frontend gets the linked
+  // group's name directly — no extra lookup call needed.
+  const result = await pool.query(
+    `SELECT cg.*, spg.name AS selling_price_group_name
+     FROM customer_groups cg
+     LEFT JOIN selling_price_groups spg ON spg.id = cg.selling_price_group_id
+     ORDER BY cg.name`
+  );
   return result.rows;
 };
-
 const createGroup = async (data) => {
   if (!data.name || !data.name.trim()) throw new Error('Customer Group Name is required');
-  const result = await pool.query(
-    `INSERT INTO customer_groups (name, price_calc_type, calc_percent, selling_price_group)
-     VALUES ($1,$2,$3,$4) RETURNING *`,
-    [
-      data.name.trim(),
-      data.priceCalcType || 'Percentage',
-      parseFloat(data.calcPercent) || 0,
-      data.sellingPriceGroup || null,
-    ]
-  );
-  return result.rows[0];
+  try {
+    const result = await pool.query(
+      `INSERT INTO customer_groups (name, selling_price_group_id, description)
+       VALUES ($1,$2,$3) RETURNING *`,
+      [
+        data.name.trim(),
+        data.sellingPriceGroupId || null,
+        data.description || null,
+      ]
+    );
+    return result.rows[0];
+  } catch (err) {
+    if (err.code === '23505') throw new Error('A Customer Group with this name already exists');
+    throw err;
+  }
 };
 
+const updateGroup = async (id, data) => {
+  if (!data.name || !data.name.trim()) throw new Error('Customer Group Name is required');
+  try {
+    const result = await pool.query(
+      `UPDATE customer_groups SET
+        name = $1, selling_price_group_id = $2, description = $3
+       WHERE id = $4 RETURNING *`,
+      [
+        data.name.trim(),
+        data.sellingPriceGroupId || null,
+        data.description || null,
+        id,
+      ]
+    );
+    if (result.rows.length === 0) throw new Error('Group not found');
+    return result.rows[0];
+  } catch (err) {
+    if (err.code === '23505') throw new Error('A Customer Group with this name already exists');
+    throw err;
+  }
+};
+
+// ── NEW: resolve a customer's linked Selling Price Group ─────────────────────
+// Called by GET /contacts/:id/pricing-info (already wired in routes/contacts.js
+// and controllers/contactController.js — this was the missing piece).
+// Sales / Quotations / Invoices / POS use this to know which Selling Price
+// Group's product prices to auto-apply for a given customer.
+const fetchCustomerPricingInfo = async (contactId) => {
+  const result = await pool.query(
+    `SELECT
+       c.id                       AS contact_id,
+       c.customer_group_id,
+       cg.name                    AS customer_group_name,
+       cg.selling_price_group_id,
+       spg.name                   AS selling_price_group_name
+     FROM contacts c
+     LEFT JOIN customer_groups cg   ON cg.id  = c.customer_group_id
+     LEFT JOIN selling_price_groups spg ON spg.id = cg.selling_price_group_id
+     WHERE c.id = $1`,
+    [contactId]
+  );
+  return result.rows[0] || null;
+};
 const deleteGroup = async (id) => {
   const result = await pool.query(
     `DELETE FROM customer_groups WHERE id = $1 RETURNING id, name`,
@@ -431,15 +503,21 @@ const deleteGroup = async (id) => {
   return result.rows[0];
 };
 
+// ── NEW CODE ──
+
 module.exports = {
+  
   fetchAllContacts,
   fetchContactById,
   createContact,
   updateContact,
   deleteContact,
+  fetchCustomerPricingInfo,
   getContactStats,
   bulkImportContacts,
   fetchAllGroups,
   createGroup,
+  updateGroup,
   deleteGroup,
+  adjustAdvanceBalance,
 };

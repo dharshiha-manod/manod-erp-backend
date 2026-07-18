@@ -3,13 +3,30 @@
   // All DB operations for the Sell module
   // Uses the same `pool` pattern as your other services
   // ═══════════════════════════════════════════════════════════════
-
+// ── NEW CODE ──
   const db = require("../config/database"); // adjust path to match your project
+const contactService = require("./contactService");
+  const notificationEngine = require("./notificationEngine");
 
   // ─────────────────────────────────────────────────────────────
   // HELPER — run a query and return rows
   // ─────────────────────────────────────────────────────────────
   const q = (text, params) => db.query(text, params);
+  // ── SCHEMA MIGRATION (idempotent) ─────────────────────────────
+  // sales_invoices only ever stored the customer's NAME as text, so
+  // there was no reliable way to credit/debit that customer's
+  // advance_balance. This adds a real FK-style link.
+let sellSchemaReady = false;
+  const ensureSellSchema = async () => {
+    if (sellSchemaReady) return;
+    try {
+      await q(`ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS customer_id INTEGER;`);
+      await q(`ALTER TABLE pos_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER;`);
+      sellSchemaReady = true;
+    } catch (err) {
+      console.error("sales_invoices schema migration warning:", err.message);
+    }
+  };
 
   // ─────────────────────────────────────────────────────────────
   // MAP helpers — snake_case DB → camelCase API response
@@ -24,6 +41,7 @@
       docType:          row.doc_type,
       docStatus:        row.doc_status,
       customer:         row.customer,
+      customerId:       row.customer_id,
       customerType:     row.customer_type,
       warehouse:        row.warehouse,
       salesperson:      row.salesperson,
@@ -61,13 +79,14 @@
     };
   }
 
-  function mapPOSSale(row) {
+ function mapPOSSale(row) {
     if (!row) return null;
     return {
       id:            row.id,
       refNo:         row.ref_no,
       date:          row.date,
       customer:      row.customer,
+      customerId:    row.customer_id,
       location:      row.location,
       cashier:       row.cashier,
       paymentMethod: row.payment_method,
@@ -241,60 +260,85 @@
     return mapInvoice({ ...rows[0], items: rows[0].items.map(mapItem) });
   }
 
+// ── NEW CODE ──
   async function createInvoice(data) {
+    await ensureSellSchema();
+
     const {
       invoiceNo, invoiceDate, dueDate, docType = "Sales Invoice",
-      docStatus = "Draft", customer, customerType, warehouse,
+      docStatus = "Draft", customer, customerId = null, customerType, warehouse,
       salesperson, paymentMethod, paymentTerms, paymentStatus = "Unpaid",
       paidAmount = 0,
+      // Amount the user chose to apply from the customer's existing
+      // advance balance toward THIS invoice (from the Sale form).
+      useAdvanceAmount = 0,
       subtotal = 0, itemDiscountAmt = 0, globalDiscount = 0,
       taxAmt = 0, shippingAmt = 0, grandTotal = 0,
       affectsStock = false, notes, items = [],
     } = data;
 
+    // ── Apply advance balance toward this invoice, if requested ──
+    // Never trust the client-side amount blindly — clamp to what the
+    // customer actually has available AND what's still owed.
+    let advanceApplied = 0;
+    if (customerId && useAdvanceAmount > 0) {
+      const contact = await contactService.fetchContactById(customerId);
+      const available = Number(contact?.advance_balance || 0);
+      const stillDue  = Math.max(0, Number(grandTotal) - Number(paidAmount));
+      advanceApplied  = Math.min(Number(useAdvanceAmount), available, stillDue);
+      if (advanceApplied > 0) {
+        await contactService.adjustAdvanceBalance(customerId, -advanceApplied);
+      }
+    }
+    const finalPaidAmount = Number(paidAmount) + advanceApplied;
+
     const { rows } = await q(
       `INSERT INTO sales_invoices
         (invoice_no, invoice_date, due_date, doc_type, doc_status,
-        customer, customer_type, warehouse, salesperson,
+        customer, customer_id, customer_type, warehouse, salesperson,
         payment_method, payment_terms, payment_status, paid_amount,
         subtotal, item_discount_amt, global_discount,
         tax_amt, shipping_amt, grand_total,
         affects_stock, notes)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
       RETURNING *`,
       [invoiceNo, invoiceDate || new Date(), dueDate, docType, docStatus,
-      customer, customerType, warehouse, salesperson,
-      paymentMethod, paymentTerms, paymentStatus, paidAmount,
+      customer, customerId, customerType, warehouse, salesperson,
+      paymentMethod, paymentTerms, paymentStatus, finalPaidAmount,
       subtotal, itemDiscountAmt, globalDiscount,
       taxAmt, shippingAmt, grandTotal,
       affectsStock, notes]
     );
     const invoice = rows[0];
 
+    // ── Overpayment → credit the excess back as advance balance ──
+    // e.g. customer paid ₹5,000 on a ₹4,200 invoice — the ₹800 difference
+    // becomes credit sitting on their account for next time.
+    if (customerId) {
+      const excess = finalPaidAmount - Number(grandTotal);
+      if (excess > 0) {
+        await contactService.adjustAdvanceBalance(customerId, excess);
+      }
+    }
+
+
     // Insert line items
     if (items.length > 0) {
       try {
-      const itemValues = items.map((it, i) => {
-        const base = i * 7;
-        return `($${base+1},$${base+2},$${base+3},$${base+4},$${base+5},$${base+6},$${base+7},$${base+8},$${base+9},$${base+10})`;
-      });
-      const itemParams = items.flatMap(it => [
-        invoice.id, null, it.product, it.sku || null,
-        it.qty || 1, it.unit || "Pcs", it.unitPrice || 0,
-        it.discount || 0, it.tax || 18,
-        ((it.qty||1) * (it.unitPrice||0)) * (1 - (it.discount||0)/100) * (1 + (it.tax||18)/100),
-      ]);
       const cols = "(invoice_id,product_id,product,sku,qty,unit,unit_price,discount,tax,line_total)";
       await q(
         `INSERT INTO sales_invoice_items ${cols} VALUES ${items.map((_,i)=>{
           const b=i*10; return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},$${b+8},$${b+9},$${b+10})`;
         }).join(",")}`,
-    items.flatMap(it => [
+    items.flatMap(it => {
+          const tax = it.tax ?? 18;
+          return [
           invoice.id, null, it.product, it.sku || null,
           it.qty || 1, it.unit || "Pcs", it.unitPrice || 0,
-          it.discount || 0, it.tax || 18,
-          ((it.qty||1)*(it.unitPrice||0))*(1-(it.discount||0)/100)*(1+(it.tax||18)/100),
-     ])
+          it.discount || 0, tax,
+          ((it.qty||1)*(it.unitPrice||0))*(1-(it.discount||0)/100)*(1+tax/100),
+     ];
+        })
       );
       } catch (itemErr) {
         console.error("[createInvoice] item insert failed:", itemErr.message);
@@ -351,13 +395,31 @@
       }
       resolved.push({ pid, qty });
     }
-    for (const { pid, qty } of resolved) {
+  for (const { pid, qty } of resolved) {
       await q(
         `UPDATE products SET current_stock = GREATEST(0, COALESCE(current_stock,0) - $1), updated_at = NOW() WHERE id = $2`,
         [qty, pid]
       );
+      notificationEngine.checkAndAlertLowStock(pid).catch(err =>
+        console.error(`[createInvoice] low stock check failed for pid=${pid}:`, err.message)
+      );
     }
-  }
+ }
+
+    // Bump the saved Invoice Settings counter forward by 1 so the NEXT
+    // invoice generated from Settings gets a fresh number instead of
+    // repeating this same one. Best-effort — if it fails, invoice creation
+    // itself must still succeed, so this is wrapped and never throws.
+    try {
+      await q(
+        `UPDATE invoice_settings
+         SET invoice_start_number = invoice_start_number + 1,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE business_id = 'e4138fb0-00fa-4ab0-b2dd-4f44470b7e93'`
+      );
+    } catch (counterErr) {
+      console.error("[createInvoice] failed to increment invoice number counter:", counterErr.message);
+    }
 
     return getInvoiceById(invoice.id);
   }
@@ -476,9 +538,11 @@
     return mapPOSSale(rows[0]);
   }
 
-  async function createPOSSale(data) {
+ async function createPOSSale(data) {
+    await ensureSellSchema();
+
     const {
-      refNo, date, customer = "Walk-In Customer", location = "Manod HQ",
+      refNo, date, customer = "Walk-In Customer", customerId = null, location = "Manod HQ",
       cashier, paymentMethod = "Cash", paymentStatus = "Paid",
       discount = 0, taxAmt = 0, grandTotal = 0,
       affectsStock = true, notes, items = [],
@@ -486,12 +550,12 @@
 
     const { rows } = await q(
       `INSERT INTO pos_sales
-        (ref_no, date, customer, location, cashier,
+        (ref_no, date, customer, customer_id, location, cashier,
         payment_method, payment_status,
         discount, tax_amt, grand_total, affects_stock, notes)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
       RETURNING *`,
-      [refNo, date || new Date(), customer, location, cashier,
+      [refNo, date || new Date(), customer, customerId, location, cashier,
       paymentMethod, paymentStatus,
       discount, taxAmt, grandTotal, affectsStock, notes]
     );
@@ -533,10 +597,13 @@
       }
       resolved.push({ pid, qty });
     }
-    for (const { pid, qty } of resolved) {
+  for (const { pid, qty } of resolved) {
       await q(
         `UPDATE products SET current_stock = GREATEST(0, COALESCE(current_stock,0) - $1), updated_at = NOW() WHERE id = $2`,
         [qty, pid]
+      );
+      notificationEngine.checkAndAlertLowStock(pid).catch(err =>
+        console.error(`[createPOSSale] low stock check failed for pid=${pid}:`, err.message)
       );
     }
   }

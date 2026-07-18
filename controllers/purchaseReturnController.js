@@ -6,7 +6,7 @@
  */
 
 const service = require('../services/purchaseReturnService');
-
+const { logActivity } = require('../services/activityLogService');
 // GET /api/purchase-returns
 const getAllReturns = async (req, res) => {
   try {
@@ -47,7 +47,8 @@ const createReturn = async (req, res) => {
     if (!Array.isArray(req.body.items) || req.body.items.length === 0) {
       return res.status(400).json({ success: false, error: 'At least one product item is required' });
     }
-    const ret = await service.createReturn(req.body, userId);
+   const ret = await service.createReturn(req.body, userId);
+    logActivity({ userId, module: 'Purchase Returns', action: `Created Return ${ret.reference_no || ret.return_no || ret.id}`, detail: `Supplier: ${req.body.supplier_name || req.body.supplier_id || ''}`, req });
     res.status(201).json({ success: true, message: 'Purchase return created', purchaseReturn: ret });
   } catch (err) {
     console.error('❌ Create Purchase Return Error:', err.message);
@@ -59,7 +60,8 @@ const createReturn = async (req, res) => {
 // PUT /api/purchase-returns/:id
 const updateReturn = async (req, res) => {
   try {
-    const ret = await service.updateReturn(req.params.id, req.body);
+const ret = await service.updateReturn(req.params.id, req.body);
+    logActivity({ userId: req.user?.id || req.user?.userId || null, module: 'Purchase Returns', action: `Updated Return ${ret.reference_no || ret.return_no || req.params.id}`, req });
     res.status(200).json({ success: true, message: 'Purchase return updated', purchaseReturn: ret });
   } catch (err) {
     console.error('❌ Update Purchase Return Error:', err.message);

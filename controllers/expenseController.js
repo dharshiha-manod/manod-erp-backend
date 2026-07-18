@@ -5,6 +5,7 @@
 'use strict';
 
 const svc = require('../services/expenseService');
+const { logActivity } = require('../services/activityLogService');
 
 const getAllExpenses = async (req, res) => {
   try {
@@ -43,7 +44,8 @@ const createExpense = async (req, res) => {
     if (!req.body.amount && !req.body.total_amount) {
       return res.status(400).json({ success: false, error: 'Total amount is required' });
     }
-    const expense = await svc.createExpense(req.body, userId);
+  const expense = await svc.createExpense(req.body, userId);
+    logActivity({ userId, module: 'Expenses', action: `Added Expense ${expense.reference_no || expense.id}`, detail: `Amount: ${expense.amount || expense.total_amount || ''}`, req });
     res.status(201).json({ success: true, message: 'Expense saved successfully', expense });
   } catch (err) {
     console.error('createExpense:', err.message);
@@ -54,7 +56,8 @@ const createExpense = async (req, res) => {
 const updateExpense = async (req, res) => {
   try {
     const userId = req.user?.userId || req.user?.id || null;
-    const expense = await svc.updateExpense(req.params.id, req.body, userId);
+  const expense = await svc.updateExpense(req.params.id, req.body, userId);
+    logActivity({ userId, module: 'Expenses', action: `Updated Expense ${expense.reference_no || req.params.id}`, req });
     res.json({ success: true, message: 'Expense updated successfully', expense });
   } catch (err) {
     console.error('updateExpense:', err.message);

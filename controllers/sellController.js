@@ -1,9 +1,11 @@
 // ═══════════════════════════════════════════════════════════════
 // controllers/sellController.js
 // ═══════════════════════════════════════════════════════════════
-const sellService = require("../services/sellService");
+const sellService = require('../services/sellService');
+const { logActivity } = require('../services/activityLogService');
 const multer      = require("multer");
 const csv         = require("csv-parse/sync");
+const notificationEngine = require('../services/notificationEngine');
 
 // multer — memory storage for CSV upload
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -48,6 +50,35 @@ const getInvoiceById = async (req, res) => {
 const createInvoice = async (req, res) => {
   try {
     const data = await sellService.createInvoice(req.body);
+    logActivity({ userId: req.user?.id || null, module: 'Sales', action: `Created Invoice ${data.invoiceNo || data.id}`, detail: `${data.customer || ''} – ₹${data.grandTotal || 0}`, req });
+
+    (async () => {
+      try {
+        let customerEmail = data.email;
+        if (!customerEmail && data.customerId) {
+          const contactService = require('../services/contactService');
+          const contact = await contactService.fetchContactById(data.customerId);
+          customerEmail = contact?.email;
+        }
+        if (!customerEmail) {
+          console.log(`[Notify] SKIPPED customer_new_sale — no email on record for customer "${data.customer}"`);
+          return;
+        }
+        await notificationEngine.sendNotification('customer_new_sale', {
+          contact_name: data.customer,
+          email: customerEmail,
+          invoice_number: data.invoiceNo,
+          invoice_url: `${process.env.FRONTEND_URL || ''}/sales/invoice/${data.id}`,
+          total_amount: data.grandTotal,
+          paid_amount: data.paidAmount,
+          due_amount: Number(data.grandTotal || 0) - Number(data.paidAmount || 0),
+          due_date: data.dueDate,
+        });
+      } catch (e) {
+        console.error('[Notify] failed:', e.message);
+      }
+    })();
+
     created(res, data);
   } catch (e) {
     if (e.code === "23505") // unique violation
@@ -95,7 +126,8 @@ const getPOSSaleById = async (req, res) => {
 };
 const createPOSSale = async (req, res) => {
   try {
-    const data = await sellService.createPOSSale(req.body);
+   const data = await sellService.createPOSSale(req.body);
+    logActivity({ userId: req.user?.id || null, module: 'POS', action: `Completed Sale ${data.refNo || data.id}`, detail: `${data.customer || 'Walk-In'} – ₹${data.grandTotal || 0}`, req });
     created(res, data);
   } catch (e) {
     if (e.code === "23505")
@@ -191,7 +223,8 @@ const getReturnById = async (req, res) => {
 
 const createReturn = async (req, res) => {
   try {
-    const data = await sellService.createReturn(req.body);
+   const data = await sellService.createReturn(req.body);
+    logActivity({ userId: req.user?.id || null, module: 'Sales', action: `Created Sales Return ${data.returnNo || data.id}`, detail: `${data.customer || ''} – ₹${data.grandTotal || 0}`, req });
     created(res, data);
   } catch (e) {
     if (e.code === "23505")

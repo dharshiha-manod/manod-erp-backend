@@ -26,6 +26,7 @@ router.get('/stats', authenticateToken, requireAnyPermission(VIEW_CONTACTS), ctr
 // ── Customer Groups (must come before /:id) ──
 router.get('/groups', authenticateToken, requireAnyPermission(VIEW_CONTACTS), ctrl.getAllGroups);
 router.post('/groups', authenticateToken, requireAnyPermission(ADD_CONTACTS), ctrl.createGroup);
+router.put('/groups/:id', authenticateToken, requireAnyPermission(EDIT_CONTACTS), ctrl.updateGroup);
 router.delete('/groups/:id', authenticateToken, requireAnyPermission(DELETE_CONTACTS), ctrl.deleteGroup);
 
 // ── Import ──
@@ -33,6 +34,7 @@ router.post('/import', authenticateToken, requireAnyPermission(ADD_CONTACTS), ct
 
 // ── CRUD ──
 router.get('/', authenticateToken, requireAnyPermission(VIEW_CONTACTS), ctrl.getAllContacts);
+router.get('/:id/pricing-info', authenticateToken, requireAnyPermission(VIEW_CONTACTS), ctrl.getCustomerPricingInfo);
 router.get('/:id', authenticateToken, requireAnyPermission(VIEW_CONTACTS), ctrl.getContactById);
 router.post('/', authenticateToken, requireAnyPermission(ADD_CONTACTS), ctrl.createContact);
 router.put('/:id', authenticateToken, requireAnyPermission(EDIT_CONTACTS), ctrl.updateContact);

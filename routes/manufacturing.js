@@ -54,6 +54,11 @@ router.post("/production",       authenticateToken, (req, res) => send(res, svc.
 router.put("/production/:id",    authenticateToken, (req, res) => send(res, svc.updateProduction(req.params.id, req.body)));
 router.delete("/production/:id", authenticateToken, (req, res) => send(res, svc.deleteProduction(req.params.id)));
 
+// Start/finish a production run tied to a Work Order — flips machine/resource
+// status Idle → Running on start, Running → Idle on finish (your required flow)
+router.post("/work-orders/:id/start",  authenticateToken, (req, res) => send(res, svc.startProductionRun(req.params.id)));
+router.post("/work-orders/:id/finish", authenticateToken, (req, res) => send(res, svc.finishProductionRun(req.params.id)));
+
 // ══════════════════════════════════════════════════════════════════
 // RESOURCES
 // ══════════════════════════════════════════════════════════════════

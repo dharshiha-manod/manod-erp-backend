@@ -5,17 +5,18 @@
  * ====================================================
  */
 const settingsService = require('../services/settingsService');
-const DEFAULT_BUSINESS_ID = 1; // single-business app, no multi-tenant support
+const DEFAULT_BUSINESS_ID = 1; // integer id — business_settings, business_locations, barcode_settings
+const DEFAULT_BUSINESS_UUID = 'e4138fb0-00fa-4ab0-b2dd-4f44470b7e93'; // uuid — tax_rates, invoice_settings, receipt_printers
 // ── BUSINESS SETTINGS ──────────────────────────────────────────
 exports.getBusinessSettings = async (req, res) => {
   try {
 const businessId = DEFAULT_BUSINESS_ID; const settings = await settingsService.getBusinessSettings(businessId);
 
-    if (!settings) {
-      return res.status(404).json({
-        success: false,
-        message: 'Business settings not found',
-        code: 'SETTINGS_NOT_FOUND'
+  if (!settings) {
+      return res.status(200).json({
+        success: true,
+        data: null,
+        message: 'No business settings configured yet'
       });
     }
 
@@ -32,7 +33,6 @@ const businessId = DEFAULT_BUSINESS_ID; const settings = await settingsService.g
     });
   }
 };
-
 exports.updateBusinessSettings = async (req, res) => {
   try {
     console.log('🔍 FULL req.user:', JSON.stringify(req.user));
@@ -51,6 +51,30 @@ exports.updateBusinessSettings = async (req, res) => {
       success: false,
       message: error.message || 'Failed to update business settings',
       code: 'UPDATE_FAILED'
+    });
+  }
+};
+
+exports.uploadBusinessLogo = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No file uploaded', code: 'NO_FILE' });
+    }
+    const businessId = DEFAULT_BUSINESS_ID;
+    const logo_url = `/uploads/logos/${req.file.filename}`;
+    const settings = await settingsService.updateBusinessSettings(businessId, { logo_url });
+
+    res.status(200).json({
+      success: true,
+      message: 'Logo uploaded successfully',
+      data: settings
+    });
+  } catch (error) {
+    console.error('❌ Error uploading logo:', error.message);
+    res.status(400).json({
+      success: false,
+      message: error.message || 'Failed to upload logo',
+      code: 'UPLOAD_FAILED'
     });
   }
 };
@@ -125,7 +149,7 @@ exports.updateBusinessLocation = async (req, res) => {
 
 exports.deactivateBusinessLocation = async (req, res) => {
   try {
-    const businessId = req.user.business_id;
+    const businessId = DEFAULT_BUSINESS_ID;
     const { id } = req.params;
     const location = await settingsService.deactivateBusinessLocation(businessId, id);
 
@@ -155,7 +179,7 @@ exports.deactivateBusinessLocation = async (req, res) => {
 // ── TAX RATES ──────────────────────────────────────────────────
 exports.getTaxRates = async (req, res) => {
   try {
-    const businessId = req.user.business_id;
+    const businessId = DEFAULT_BUSINESS_UUID;
     const taxRates = await settingsService.getTaxRates(businessId);
 
     res.status(200).json({
@@ -174,8 +198,9 @@ exports.getTaxRates = async (req, res) => {
 };
 
 exports.createTaxRate = async (req, res) => {
+  console.log('🔍 req.user is:', req.user);
   try {
-    const businessId = req.user.business_id;
+ const businessId = DEFAULT_BUSINESS_UUID;
     const taxRate = await settingsService.createTaxRate(businessId, req.body);
 
     res.status(201).json({
@@ -195,7 +220,7 @@ exports.createTaxRate = async (req, res) => {
 
 exports.updateTaxRate = async (req, res) => {
   try {
-    const businessId = req.user.business_id;
+   const businessId = DEFAULT_BUSINESS_UUID;
     const { id } = req.params;
     const taxRate = await settingsService.updateTaxRate(businessId, id, req.body);
 
@@ -224,7 +249,7 @@ exports.updateTaxRate = async (req, res) => {
 
 exports.deleteTaxRate = async (req, res) => {
   try {
-    const businessId = req.user.business_id;
+    const businessId = DEFAULT_BUSINESS_UUID;
     const { id } = req.params;
     const taxRate = await settingsService.deleteTaxRate(businessId, id);
 
@@ -254,7 +279,7 @@ exports.deleteTaxRate = async (req, res) => {
 // ── INVOICE SETTINGS ───────────────────────────────────────────
 exports.getInvoiceSettings = async (req, res) => {
   try {
-    const businessId = req.user.business_id;
+    const businessId = DEFAULT_BUSINESS_UUID;
     const settings = await settingsService.getInvoiceSettings(businessId);
 
     res.status(200).json({
@@ -273,7 +298,7 @@ exports.getInvoiceSettings = async (req, res) => {
 
 exports.updateInvoiceSettings = async (req, res) => {
   try {
-    const businessId = req.user.business_id;
+    const businessId = DEFAULT_BUSINESS_UUID;
     const settings = await settingsService.updateInvoiceSettings(businessId, req.body);
 
     res.status(200).json({
@@ -294,7 +319,7 @@ exports.updateInvoiceSettings = async (req, res) => {
 // ── RECEIPT PRINTERS ───────────────────────────────────────────
 exports.getReceiptPrinters = async (req, res) => {
   try {
-    const businessId = req.user.business_id;
+    const businessId = DEFAULT_BUSINESS_UUID;
     const printers = await settingsService.getReceiptPrinters(businessId);
 
     res.status(200).json({
@@ -314,7 +339,7 @@ exports.getReceiptPrinters = async (req, res) => {
 
 exports.createReceiptPrinter = async (req, res) => {
   try {
-    const businessId = req.user.business_id;
+    const businessId = DEFAULT_BUSINESS_UUID;
     const printer = await settingsService.createReceiptPrinter(businessId, req.body);
 
     res.status(201).json({
@@ -332,9 +357,38 @@ exports.createReceiptPrinter = async (req, res) => {
   }
 };
 
+exports.updateReceiptPrinter = async (req, res) => {
+  try {
+    const businessId = DEFAULT_BUSINESS_UUID;
+    const { id } = req.params;
+    const printer = await settingsService.updateReceiptPrinter(businessId, id, req.body);
+
+    if (!printer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Receipt printer not found',
+        code: 'PRINTER_NOT_FOUND'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Receipt printer updated successfully',
+      data: printer
+    });
+  } catch (error) {
+    console.error('❌ Error updating receipt printer:', error.message);
+    res.status(400).json({
+      success: false,
+      message: error.message || 'Failed to update receipt printer',
+      code: 'UPDATE_FAILED'
+    });
+  }
+};
+
 exports.deleteReceiptPrinter = async (req, res) => {
   try {
-    const businessId = req.user.business_id;
+    const businessId = DEFAULT_BUSINESS_UUID;
     const { id } = req.params;
     const printer = await settingsService.deleteReceiptPrinter(businessId, id);
 
@@ -361,11 +415,50 @@ exports.deleteReceiptPrinter = async (req, res) => {
   }
 };
 
+// ── BARCODE SETTINGS ───────────────────────────────────────────
+exports.getBarcodeSettings = async (req, res) => {
+  try {
+    const businessId = DEFAULT_BUSINESS_ID;
+    const settings = await settingsService.getBarcodeSettings(businessId);
+
+    res.status(200).json({
+      success: true,
+      data: settings
+    });
+  } catch (error) {
+    console.error('❌ Error fetching barcode settings:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch barcode settings',
+      error: error.message
+    });
+  }
+};
+
+exports.updateBarcodeSettings = async (req, res) => {
+  try {
+    const businessId = DEFAULT_BUSINESS_ID;
+    const settings = await settingsService.updateBarcodeSettings(businessId, req.body);
+
+    res.status(200).json({
+      success: true,
+      message: 'Barcode settings updated successfully',
+      data: settings
+    });
+  } catch (error) {
+    console.error('❌ Error updating barcode settings:', error.message);
+    res.status(400).json({
+      success: false,
+      message: error.message || 'Failed to update barcode settings',
+      code: 'UPDATE_FAILED'
+    });
+  }
+};
+
 // ── EXPORT/IMPORT ────────────────────────────────────────────
 exports.exportSettings = async (req, res) => {
   try {
-    const businessId = req.user.business_id;
-    const settings = await settingsService.exportAllSettings(businessId);
+    const settings = await settingsService.exportAllSettings(DEFAULT_BUSINESS_ID, DEFAULT_BUSINESS_UUID);
 
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition', `attachment; filename="settings-${new Date().toISOString().split('T')[0]}.json"`);
@@ -382,8 +475,6 @@ exports.exportSettings = async (req, res) => {
 
 exports.importSettings = async (req, res) => {
   try {
-    const businessId = req.user.business_id;
-
     if (!req.body || typeof req.body !== 'object') {
       return res.status(400).json({
         success: false,
@@ -392,7 +483,7 @@ exports.importSettings = async (req, res) => {
       });
     }
 
-    const result = await settingsService.importSettings(businessId, req.body);
+    const result = await settingsService.importSettings(DEFAULT_BUSINESS_ID, DEFAULT_BUSINESS_UUID, req.body);
 
     res.status(200).json({
       success: true,

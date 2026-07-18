@@ -4,9 +4,9 @@
  * Full CRUD + Reset Password
  * ====================================================
  */
-
 const bcrypt = require('bcryptjs');
 const pool = require('../config/database');
+const { logActivity } = require('../services/activityLogService');
 
 // ── GET ALL USERS ──
 const getAllUsers = async (req, res) => {
@@ -59,16 +59,22 @@ const createUser = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Email already exists' });
     }
 
+    if (role) {
+      const roleCheck = await pool.query('SELECT id FROM roles WHERE LOWER(role_name) = LOWER($1)', [role]);
+      if (roleCheck.rows.length === 0) {
+        return res.status(400).json({ success: false, error: `Role "${role}" does not exist. Please create it first under Roles.` });
+      }
+    }
+
     const hashedPassword = await bcrypt.hash(password, 10);
-
-    const result = await pool.query(
-      `INSERT INTO users (email, password_hash, full_name, phone, role, department, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'active')
-       RETURNING id, email, full_name, phone, role, department, status, created_at`,
-      [email, hashedPassword, full_name || null, phone || null, role || 'employee', department || null]
-    );
-
+   const result = await pool.query(
+  `INSERT INTO users (email, password_hash, full_name, phone, role, department, status)
+   VALUES ($1, $2, $3, $4, $5, $6, 'active')
+   RETURNING id, email, full_name, phone, role, department, status, created_at`,
+  [email, hashedPassword, full_name || null, phone || null, (role || 'employee').trim(), department || null]
+);
     console.log('✅ User created:', result.rows[0].email);
+    logActivity({ userId: req.user?.id || null, module: 'Users', action: `Created User ${result.rows[0].email}`, detail: `Role: ${result.rows[0].role}`, req });
     res.status(201).json({ success: true, message: 'User created successfully', user: result.rows[0] });
   } catch (err) {
     console.error('❌ Create User Error:', err.message);
@@ -85,6 +91,13 @@ const updateUser = async (req, res) => {
     const existing = await pool.query('SELECT id FROM users WHERE id = $1', [id]);
     if (existing.rows.length === 0) {
       return res.status(404).json({ success: false, error: 'User not found' });
+    }
+
+    if (role) {
+      const roleCheck = await pool.query('SELECT id FROM roles WHERE LOWER(role_name) = LOWER($1)', [role]);
+      if (roleCheck.rows.length === 0) {
+        return res.status(400).json({ success: false, error: `Role "${role}" does not exist. Please create it first under Roles.` });
+      }
     }
 
     if (email) {
@@ -109,8 +122,8 @@ const updateUser = async (req, res) => {
        RETURNING id, email, full_name, phone, role, status, department`,
       [full_name, email, phone, role, status, department, id]
     );
-
-    console.log('✅ User updated:', result.rows[0].email);
+console.log('✅ User updated:', result.rows[0].email);
+    logActivity({ userId: req.user?.id || null, module: 'Users', action: `Updated User ${result.rows[0].email}`, detail: `Role: ${result.rows[0].role}, Status: ${result.rows[0].status}`, req });
     res.status(200).json({ success: true, message: 'User updated successfully', user: result.rows[0] });
   } catch (err) {
     console.error('❌ Update User Error:', err.message);
@@ -136,7 +149,8 @@ const deleteUser = async (req, res) => {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
 
-    console.log('✅ User deleted:', result.rows[0].email);
+   console.log('✅ User deleted:', result.rows[0].email);
+    logActivity({ userId: req.user?.id || null, module: 'Users', action: `Deleted User ${result.rows[0].email}`, req });
     res.status(200).json({ success: true, message: 'User deleted successfully', user: result.rows[0] });
   } catch (err) {
     console.error('❌ Delete User Error:', err.message);
@@ -218,6 +232,7 @@ const resetUserPassword = async (req, res) => {
     await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hashedPassword, id]);
 
     console.log('✅ Password reset for:', existing.rows[0].email);
+    logActivity({ userId: req.user?.id || null, module: 'Users', action: `Reset Password for ${existing.rows[0].email}`, req });
     res.status(200).json({ success: true, message: 'Password reset successfully' });
   } catch (err) {
     console.error('❌ Reset Password Error:', err.message);
