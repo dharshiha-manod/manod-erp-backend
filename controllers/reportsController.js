@@ -6,10 +6,21 @@
    * ====================================================
    */
 
-  'use strict';
+'use strict';
 
 const reportService = require('../services/reportService');
   const notificationEngine = require('../services/notificationEngine');
+
+  // ── NET PROFIT (DASHBOARD) ──────────────────────────────────────────────
+  const netProfitSummary = async (req, res) => {
+    try {
+      const data = await reportService.getNetProfitSummary(req.query);
+      res.json({ success: true, data });
+    } catch (err) {
+      console.error('❌ [reportsController.netProfitSummary]', err.message);
+      res.status(500).json({ success: false, error: 'Failed to load net profit summary' });
+    }
+  };
 
   // ── STOCK REPORT ──────────────────────────────────────────────────────────
   const stockReport = async (req, res) => {
@@ -251,6 +262,17 @@ const reportService = require('../services/reportService');
     }
   };
 
+// ── SALES BY CATEGORY REPORT ───────────────────────────────────────────────
+  const salesByCategoryReport = async (req, res) => {
+    try {
+      const { data } = await reportService.getSalesByCategoryReport(req.query);
+      res.json({ success: true, data });
+    } catch (err) {
+      console.error('❌ [reportsController.salesByCategoryReport]', err.message);
+      res.status(500).json({ success: false, error: 'Failed to load sales by category report' });
+    }
+  };
+
   // ── ACTIVITY LOG REPORT ───────────────────────────────────────────────────
   const activityLogReport = async (req, res) => {
     try {
@@ -272,8 +294,10 @@ const reportService = require('../services/reportService');
     }
   };
 
-  module.exports = {
+module.exports = {
+    netProfitSummary,
     activityLogReport,
+    salesByCategoryReport,
     stockReport,
     stockAdjustmentReport,
     itemsReport,

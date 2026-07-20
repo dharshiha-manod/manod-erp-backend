@@ -589,6 +589,9 @@ const _applyBomConsumption = async (client, bomId, quantity) => {
 };
 
 // Reverses the stock effect of a previously-saved production row (used before update/delete)
+// NEW — reversal uses the row's own scrap+good total, same formula used at
+// save time (quantity + scrap_qty), so reversal always matches what was
+// actually deducted, even if the BOM has since been edited
 const _reverseProductionStock = async (client, prodRow) => {
   if (prodRow.product_id) {
     await client.query(
@@ -601,7 +604,10 @@ const _reverseProductionStock = async (client, prodRow) => {
     const bom = bomRes.rows[0];
     if (bom) {
       const itemsRes = await client.query('SELECT * FROM mfg_bom_items WHERE bom_id=$1', [prodRow.bom_id]);
-      const scale = parseFloat(prodRow.quantity) / (parseFloat(bom.quantity) || 1);
+      // Must match the exact "totalAttempted" used in createProduction/updateProduction:
+      // good quantity + scrap quantity — NOT recomputed from current BOM base qty alone.
+      const totalAttempted = parseFloat(prodRow.quantity) + (parseFloat(prodRow.scrap_qty) || 0);
+      const scale = totalAttempted / (parseFloat(bom.quantity) || 1);
       for (const item of itemsRes.rows) {
         if (item.product_id) {
           const needed = (parseFloat(item.quantity) || 0) * scale;

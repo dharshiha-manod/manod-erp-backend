@@ -22,6 +22,11 @@ const authenticateToken = require('../middleware/auth');
 const ctrl               = require('../controllers/reportsController');
 
 // ═══════════════════════════════════════════════════════════════
+// NET PROFIT (DASHBOARD)  → /api/reports/net-profit
+// ═══════════════════════════════════════════════════════════════
+router.get('/net-profit', authenticateToken, ctrl.netProfitSummary);
+
+// ═══════════════════════════════════════════════════════════════
 // STOCK REPORT  → /api/reports/stock
 // ═══════════════════════════════════════════════════════════════
 router.get('/stock', authenticateToken, ctrl.stockReport);
@@ -99,6 +104,11 @@ router.get('/customer-groups', authenticateToken, ctrl.customerGroupsReport);
 // PURCHASE & SALE REPORT  → /api/reports/purchase-sale
 // ═══════════════════════════════════════════════════════════════
 router.get('/purchase-sale', authenticateToken, ctrl.purchaseSaleReport);
+
+// ═══════════════════════════════════════════════════════════════
+// SALES BY CATEGORY REPORT  → /api/reports/sales-by-category
+// ═══════════════════════════════════════════════════════════════
+router.get('/sales-by-category', authenticateToken, ctrl.salesByCategoryReport);
 
 // ═══════════════════════════════════════════════════════════════
 // ACTIVITY LOG REPORT  → /api/reports/activity-log

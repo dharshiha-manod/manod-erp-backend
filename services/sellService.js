@@ -1278,7 +1278,7 @@ let sellSchemaReady = false;
         const existing = await q("SELECT id FROM sales_invoices WHERE invoice_no=$1", [invoiceNo]);
         if (existing.rows.length > 0) continue; // skip duplicates
 
-        await createInvoice({
+      await createInvoice({
           invoiceNo,
           invoiceDate:   row["Date"] || new Date(),
           dueDate:       row["Due Date"] || null,
@@ -1288,6 +1288,7 @@ let sellSchemaReady = false;
           paymentMethod: row["Method"] || "Cash",
           paymentStatus: row["Payment Status"] || "Unpaid",
           paidAmount:    Number(row["Amount Paid (Rs.)"]) || 0,
+          subtotal:      Number(row["Total (Rs.)"]) || 0,
           grandTotal:    Number(row["Total (Rs.)"]) || 0,
           docStatus:     "Submitted",
           affectsStock:  false,

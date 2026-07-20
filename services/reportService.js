@@ -1717,9 +1717,50 @@ const getTaxByProductReport = async (filters = {}) => {
 
   return { rows, total, summary: summaryRes.rows[0] };
 };
+// ═══════════════════════════════════════════════════════════════════════════
+// SALES BY CATEGORY REPORT → sales_invoice_items joined to products/categories
+//    via SKU (same join key as getItemsReport, since sales_invoice_items
+//    has no reliable product_id). Returns % share of revenue per category.
+// ═══════════════════════════════════════════════════════════════════════════
+const getSalesByCategoryReport = async (filters = {}) => {
+  const { date_from = '', date_to = '' } = filters;
 
+  const where = ['1=1'];
+  const params = [];
+  pushDateRange(params, where, 'inv.invoice_date', date_from, date_to);
+  const whereClause = where.join(' AND ');
+
+  const { rows } = await pool.query(
+    `SELECT
+       COALESCE(pc.name, 'Uncategorized') AS category,
+       COALESCE(SUM(si.line_total), 0) AS revenue
+     FROM sales_invoice_items si
+     JOIN sales_invoices inv ON inv.id = si.invoice_id
+     LEFT JOIN products p ON LOWER(p.sku) = LOWER(si.sku)
+     LEFT JOIN product_categories pc ON pc.id = p.category_id
+     WHERE ${whereClause}
+     GROUP BY COALESCE(pc.name, 'Uncategorized')
+     ORDER BY revenue DESC`,
+    params
+  );
+
+  const total = rows.reduce((s, r) => s + Number(r.revenue), 0);
+
+  const data = rows.map((r) => ({
+    category: r.category,
+    revenue: Number(r.revenue),
+    pct: total > 0 ? Math.round((Number(r.revenue) / total) * 1000) / 10 : 0,
+  }));
+
+  return { data };
+};
 module.exports = {
+  getNetProfitSummary: async (filters = {}) => {
+    const { rows, summary } = await getProfitLossReport(filters);
+    return { rows, summary };
+  },
   getActivityLogReport,
+  getSalesByCategoryReport,
   getStockReport,
   getStockAdjustmentReport,
   getItemsReport,
