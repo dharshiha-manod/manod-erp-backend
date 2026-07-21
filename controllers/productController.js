@@ -4,7 +4,6 @@
  * Handles: Brands, Units, Variations, Categories, Products
  * ====================================================
  */
-
 const {
   fetchAllBrands, fetchBrandById, createBrand, updateBrand, deleteBrand,
   fetchAllUnits, fetchUnitById, createUnit, updateUnit, deleteUnit,
@@ -12,6 +11,7 @@ const {
   fetchAllCategories, fetchCategoryById, createCategory, updateCategory, deleteCategory,
   fetchAllProducts, fetchProductById, createProduct, updateProduct, deleteProduct, updateProductStatus,
   fetchComponentEligibleProducts, fetchFinishedProducts,
+  bulkImportProducts,
 } = require('../services/productService');
 const { logActivity } = require('../services/activityLogService');
 
@@ -425,6 +425,24 @@ const requestReorder = async (req, res) => {
   }
 };
 
+// ── BULK IMPORT PRODUCTS (Excel/CSV via Import Products page) ────────────────
+const importProducts = async (req, res) => {
+  try {
+    const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
+    if (rows.length === 0) {
+      return res.status(400).json({ success: false, error: 'No rows to import' });
+    }
+    const userId = req.user?.id || req.user?.userId || null;
+    const result = await bulkImportProducts(rows, userId);
+    console.log(`✅ Product import: ${result.created} created, ${result.failed} failed`);
+    logActivity({ userId, module: 'Products', action: `Imported ${result.created} product(s)`, req });
+    res.status(200).json({ success: true, ...result });
+  } catch (err) {
+    console.error('❌ Import Products Error:', err.message);
+    res.status(500).json({ success: false, error: err.message || 'Failed to import products' });
+  }
+};
+
 module.exports = {
   // Brands
   getAllBrands, getBrandById, addBrand, editBrand, removeBrand,
@@ -437,4 +455,5 @@ module.exports = {
   // Products
   getAllProducts, getProductById, addProduct, editProduct, removeProduct, toggleProductStatus,
   requestReorder,
+  importProducts,
 };

@@ -502,6 +502,42 @@ const deleteGroup = async (id) => {
   if (result.rows.length === 0) throw new Error('Group not found');
   return result.rows[0];
 };
+// ── Find or create a supplier by name/code — used by Product Import ─────────
+// Unlike createContact, this does NOT require a mobile number: Excel product
+// sheets typically only carry a supplier name/code, not their phone number.
+// Matches an existing Supplier/Both contact by contact_name or contact_id
+// (case-insensitive); creates a minimal Suppliers contact if no match.
+// Accepts an optional pg client so callers running inside a transaction
+// reuse the same connection; falls back to the shared pool otherwise.
+const findOrCreateSupplierByName = async (nameOrCode, client = pool) => {
+  const ref = String(nameOrCode || '').trim();
+  if (!ref) { console.log('⚠️ findOrCreateSupplierByName: empty ref'); return null; }
+  console.log('🔎 findOrCreateSupplierByName called with:', ref);
+
+  const existing = await client.query(
+    `SELECT id FROM contacts
+     WHERE contact_type IN ('Suppliers','Both')
+       AND (LOWER(contact_name) = LOWER($1) OR LOWER(contact_id) = LOWER($1))
+     LIMIT 1`,
+    [ref]
+  );
+  if (existing.rows[0]) return existing.rows[0].id;
+try {
+    const contactId = await generateContactId('Suppliers');
+    const created = await client.query(
+      `INSERT INTO contacts (
+        contact_type, contact_id, is_individual, business_name, contact_name, phone
+      ) VALUES ('Suppliers', $1, false, $2, $2, '')
+      RETURNING id`,
+      [contactId, ref]
+    );
+    console.log('✅ Supplier created:', ref, '→ id', created.rows[0].id);
+    return created.rows[0].id;
+  } catch (err) {
+    console.error('❌ findOrCreateSupplierByName failed for', ref, ':', err.message);
+    throw err;
+  }
+};
 
 // ── NEW CODE ──
 
@@ -520,4 +556,5 @@ module.exports = {
   updateGroup,
   deleteGroup,
   adjustAdvanceBalance,
+  findOrCreateSupplierByName,
 };

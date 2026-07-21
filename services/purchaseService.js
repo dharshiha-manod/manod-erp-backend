@@ -91,8 +91,20 @@ const recalcPaymentStatus = async (purchaseId, client = pool) => {
 
 // ── CALCULATE FINANCIALS FROM BODY ───────────────────────────────────────────
 const calcFinancials = (body, items) => {
-  const subtotal      = items.reduce((s, i) => s + (parseFloat(i.line_total) || 0), 0);
-  const discountType  = body.discount_type  || 'None';
+  // Compute each line's total from qty/cost/discount rather than trusting a
+  // possibly-missing item.line_total — callers like the bulk product import
+  // (opening stock) only pass quantity/unit_cost/discount_pct, so relying on
+  // line_total silently produced subtotal = 0 and, in turn, grand_total = 0.
+  const subtotal = items.reduce((s, i) => {
+    if (i.line_total !== undefined && i.line_total !== null && i.line_total !== '') {
+      return s + (parseFloat(i.line_total) || 0);
+    }
+    const qty  = parseFloat(i.quantity)  || 0;
+    const cost = parseFloat(i.unit_cost) || 0;
+    const disc = parseFloat(i.discount_pct) || 0;
+    return s + qty * cost * (1 - disc / 100);
+  }, 0);
+  const discountType  = body.discount_type  || 'None';  
   const discountAmt   = parseFloat(body.discount_amount) || 0;
   const discountValue = discountType === 'Percentage'
     ? subtotal * (discountAmt / 100)
@@ -136,7 +148,7 @@ const fetchAllPurchases = async (filters = {}) => {
   let q = `
     SELECT
       p.id, p.reference_no, p.invoice_no, p.purchase_date, p.location,
-      p.supplier_id, p.supplier_name,
+      p.supplier_id, COALESCE(p.supplier_name, c.name) AS supplier_name,
       p.purchase_status, p.payment_status,
       p.subtotal, p.discount_amount, p.tax_amount, p.shipping_charges,
       p.grand_total, p.amount_paid, p.payment_due,
@@ -145,6 +157,7 @@ const fetchAllPurchases = async (filters = {}) => {
       COALESCE(u.full_name, u.email, '') AS added_by_name
     FROM purchases p
     LEFT JOIN users u ON u.id::text = p.added_by::text
+    LEFT JOIN contacts c ON c.id = p.supplier_id
     WHERE 1=1
   `;
   const params = [];
@@ -205,7 +218,9 @@ const fetchAllPurchases = async (filters = {}) => {
 // ── FETCH ONE PURCHASE (full detail with items + payments) ───────────────────
 const fetchPurchaseById = async (id) => {
   const purchaseResult = await pool.query(
-    `SELECT * FROM purchases p
+    `SELECT p.*, COALESCE(p.supplier_name, c.name) AS supplier_name
+     FROM purchases p
+     LEFT JOIN contacts c ON c.id = p.supplier_id
      WHERE p.id = $1`,
     [id]
   );
@@ -252,9 +267,12 @@ const createPurchase = async (body, userId) => {
     const fin = calcFinancials(body, items);
 
     // Resolve supplier name
-    let supplierName = body.supplier_name || null;
+   let supplierName = body.supplier_name || null;
     if (!supplierName && body.supplier_id) {
-      const sup = await client.query(`SELECT name FROM contacts WHERE id = $1`, [body.supplier_id]);
+      const sup = await client.query(
+        `SELECT COALESCE(name, contact_name) AS name FROM contacts WHERE id = $1`,
+        [body.supplier_id]
+      );
       if (sup.rows.length > 0) supplierName = sup.rows[0].name;
     }
 
@@ -332,11 +350,25 @@ const createPurchase = async (body, userId) => {
       );
     }
 
+   // Backfill each product's default_supplier_id if it doesn't have one yet —
+    // keeps Product ↔ Purchase supplier linkage in sync both directions.
+    if (body.supplier_id) {
+      for (const item of items) {
+        const pid = parseInt(item.product_id || item.id, 10);
+        if (pid) {
+          await client.query(
+            `UPDATE products SET default_supplier_id = COALESCE(default_supplier_id, $1)
+             WHERE id = $2`,
+            [body.supplier_id, pid]
+          );
+        }
+      }
+    }
+
     // Purchase received → increase stock for every linked product
     if (purchaseStatus === 'Received') {
       await applyPurchaseStockImpact(purchase.id, 'apply', client);
     }
-
     // Insert initial payment if provided
     if (fin.amount_paid > 0) {
       await client.query(
@@ -420,7 +452,9 @@ const updatePurchase = async (id, body, userId) => {
     setField('notes',            body.notes);
     setField('shipping_details', body.shipping_details);
     setField('document_path',    body.document_path);
-    setField('pay_term',         body.pay_term);
+setField('pay_term',         body.pay_term);
+    setField('supplier_id',      body.supplier_id !== undefined ? (body.supplier_id || null) : undefined);
+    setField('supplier_name',    body.supplier_name);
     setField('discount_type',    body.discount_type);
     setField('tax_label',        body.tax_label);
     setField('shipping_charges', body.shipping_charges !== undefined ? parseFloat(body.shipping_charges) : undefined);
@@ -472,6 +506,20 @@ const updatePurchase = async (id, body, userId) => {
             +selling.toFixed(4),
           ]
         );
+      }
+
+  // Backfill supplier onto products that don't have one yet
+      if (body.supplier_id) {
+        for (const item of items) {
+          const pid = parseInt(item.product_id || item.id, 10);
+          if (pid) {
+            await client.query(
+              `UPDATE products SET default_supplier_id = COALESCE(default_supplier_id, $1)
+               WHERE id = $2`,
+              [body.supplier_id, pid]
+            );
+          }
+        }
       }
 
       // IMPORTANT: do NOT call recalcPaymentStatus here.
@@ -649,25 +697,32 @@ const getSuppliersList = async () => {
 const searchProducts = async (query = '') => {
   try {
     const params = [];
-    let q = `SELECT * FROM products WHERE 1=1`;
+    let q = `
+      SELECT p.*, sup.name AS default_supplier_name
+      FROM products p
+      LEFT JOIN contacts sup ON sup.id = p.default_supplier_id
+      WHERE 1=1
+    `;
     if (query.trim()) {
       params.push(`%${query.trim()}%`);
       q += ` AND (
-        LOWER(name) LIKE LOWER($${params.length}) OR
-        LOWER(COALESCE(sku, '')) LIKE LOWER($${params.length})
+        LOWER(p.name) LIKE LOWER($${params.length}) OR
+        LOWER(COALESCE(p.sku, '')) LIKE LOWER($${params.length})
       )`;
     }
-    q += ` ORDER BY name LIMIT 50`;
+    q += ` ORDER BY p.name LIMIT 50`;
     const result = await pool.query(q, params);
 
 // Normalise column names — handle different product table schemas
     return result.rows.map(p => ({
-      id:            p.id,
-      name:          p.name || p.product_name || '',
-      sku:           p.sku  || p.product_sku  || '',
-      default_price: p.purchase_price_exc_tax || p.purchase_price_inc_tax || 0,
-      selling_price: p.selling_price_exc_tax || 0,
-      unit_name:     p.unit || p.unit_name || '',
+      id:                    p.id,
+      name:                  p.name || p.product_name || '',
+      sku:                   p.sku  || p.product_sku  || '',
+      default_price:         p.purchase_price_exc_tax || p.purchase_price_inc_tax || 0,
+      selling_price:         p.selling_price_exc_tax || 0,
+      unit_name:             p.unit || p.unit_name || '',
+      default_supplier_id:   p.default_supplier_id || null,
+      default_supplier_name: p.default_supplier_name || '',
     }));
   } catch (err) {
     console.error('Product search error:', err.message);

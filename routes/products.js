@@ -18,7 +18,7 @@ const {
   getAllVariations, getVariationById, addVariation, editVariation, removeVariation,
   getAllCategories, getCategoryById,  addCategory,  editCategory,  removeCategory,
   getAllProducts, getProductById, addProduct, editProduct, removeProduct, toggleProductStatus,
-  requestReorder,
+  requestReorder, importProducts,
 } = require('../controllers/productController');
 
 const {
@@ -75,6 +75,7 @@ router.delete('/warranties/:id', authenticateToken, requirePermission('Product',
 // PRODUCTS   /api/products
 // NOTE: all named sub-routes above MUST come before /:id
 // ─────────────────────────────────────────────────────────────
+router.post  ('/import',       authenticateToken, requirePermission('Product','Add product'),    importProducts);
 router.get   ('/',             authenticateToken, requirePermission('Product','View product'),   getAllProducts);
 router.post  ('/',             authenticateToken, requirePermission('Product','Add product'),    addProduct);
 router.get   ('/:id',          authenticateToken, requirePermission('Product','View product'),   getProductById);

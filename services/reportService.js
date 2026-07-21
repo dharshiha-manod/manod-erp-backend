@@ -21,11 +21,11 @@ const pool = require('../config/database');
 function pushDateRange(params, whereArr, column, date_from, date_to) {
   if (date_from) {
     params.push(date_from);
-    whereArr.push(`${column} >= $${params.length}`);
+    whereArr.push(`${column} >= $${params.length}::date`);
   }
   if (date_to) {
     params.push(date_to);
-    whereArr.push(`${column} <= $${params.length}`);
+    whereArr.push(`${column} < ($${params.length}::date + INTERVAL '1 day')`);
   }
 }
 

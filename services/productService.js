@@ -10,6 +10,23 @@
  */
 
 const pool = require('../config/database');
+const contactService = require('./contactService');
+
+// ── SCHEMA MIGRATION (idempotent) ────────────────────────────────────────────
+// products didn't have a default_supplier_id column — needed to remember
+// which supplier a product is normally purchased from (set during manual
+// entry or Product Import), so Purchases can auto-select it.
+let productSchemaReady = false;
+const ensureProductSchema = async () => {
+  if (productSchemaReady) return;
+  try {
+    await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS default_supplier_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL;`);
+    productSchemaReady = true;
+  } catch (err) {
+    console.error('products schema migration warning:', err.message);
+    productSchemaReady = true;
+  }
+};
 
 // ─────────────────────────────────────────────────────────────
 // BRANDS
@@ -501,7 +518,7 @@ const fetchAllProducts = async (filters = {}) => {
   dataParams.push(limit);  const limitIdx = dataParams.length;
   dataParams.push(offset); const offsetIdx = dataParams.length;
 
-  const result = await pool.query(
+const result = await pool.query(
     `SELECT
        p.id, p.name, p.sku, p.barcode_type,
        p.unit_id,   pu.name  AS unit,
@@ -519,12 +536,14 @@ const fetchAllProducts = async (filters = {}) => {
        p.margin,
        p.selling_price_exc_tax   AS exc_tax_sell,
      p.image_url, p.status, p.current_stock, p.warranty,
+  p.default_supplier_id, sup.contact_name AS default_supplier_name,
        p.created_at, p.updated_at
      FROM products p
-     LEFT JOIN product_units      pu ON pu.id = p.unit_id
-     LEFT JOIN product_brands     pb ON pb.id = p.brand_id
-     LEFT JOIN product_categories pc ON pc.id = p.category_id
-     LEFT JOIN product_categories sc ON sc.id = p.sub_category_id
+     LEFT JOIN product_units      pu  ON pu.id = p.unit_id
+     LEFT JOIN product_brands     pb  ON pb.id = p.brand_id
+     LEFT JOIN product_categories pc  ON pc.id = p.category_id
+     LEFT JOIN product_categories sc  ON sc.id = p.sub_category_id
+     LEFT JOIN contacts           sup ON sup.id = p.default_supplier_id
      ${where}
      ORDER BY p.created_at DESC
      LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
@@ -551,13 +570,15 @@ const fetchProductById = async (id) => {
        p.purchase_price_inc_tax  AS inc_tax,
        p.margin,
        p.selling_price_exc_tax   AS exc_tax_sell,
-       p.image_url, p.status, p.current_stock,
+       p.image_url, p.status, p.current_stock, p.warranty,
+       p.default_supplier_id, sup.name AS default_supplier_name,
        p.created_at, p.updated_at
      FROM products p
-     LEFT JOIN product_units      pu ON pu.id = p.unit_id
-     LEFT JOIN product_brands     pb ON pb.id = p.brand_id
-     LEFT JOIN product_categories pc ON pc.id = p.category_id
-     LEFT JOIN product_categories sc ON sc.id = p.sub_category_id
+     LEFT JOIN product_units      pu  ON pu.id = p.unit_id
+     LEFT JOIN product_brands     pb  ON pb.id = p.brand_id
+     LEFT JOIN product_categories pc  ON pc.id = p.category_id
+     LEFT JOIN product_categories sc  ON sc.id = p.sub_category_id
+     LEFT JOIN contacts           sup ON sup.id = p.default_supplier_id
      WHERE p.id = $1`,
     [id]
   );
@@ -595,6 +616,35 @@ const resolveCategoryId = async (catNameOrId) => {
   return r.rows[0]?.id || null;
 };
 
+// Resolve default_supplier by name/code or numeric id — supports both a
+// direct supplier_id and a supplier name/code coming from Product Import.
+const resolveSupplierId = async (supplierNameOrId) => {
+  if (!supplierNameOrId || !String(supplierNameOrId).trim()) return null;
+  if (!isNaN(supplierNameOrId)) return parseInt(supplierNameOrId);
+  const r = await pool.query(
+    `SELECT id FROM contacts
+     WHERE contact_type IN ('Suppliers','Both')
+       AND (LOWER(contact_name) = LOWER($1) OR LOWER(contact_id) = LOWER($1))
+     LIMIT 1`,
+    [String(supplierNameOrId).trim()]
+  );
+  return r.rows[0]?.id || null;
+};
+
+// Find an existing product by exact SKU, or by exact name match if SKU is
+// absent — used by Product Import to decide "create" vs "update" per row.
+const findExistingProductForImport = async ({ name, sku }) => {
+  if (sku && String(sku).trim()) {
+    const bySku = await pool.query('SELECT id FROM products WHERE LOWER(sku) = LOWER($1)', [String(sku).trim()]);
+    if (bySku.rows[0]) return bySku.rows[0].id;
+  }
+  if (name && String(name).trim()) {
+    const byName = await pool.query('SELECT id FROM products WHERE LOWER(name) = LOWER($1)', [String(name).trim()]);
+    if (byName.rows[0]) return byName.rows[0].id;
+  }
+  return null;
+};
+
 const validateProductData = (data) => {
   const errors = [];
   if (!data.name?.trim()) errors.push('Product name is required');
@@ -603,6 +653,7 @@ const validateProductData = (data) => {
 };
 
 const createProduct = async (productData) => {
+  await ensureProductSchema();
   const { isValid, errors } = validateProductData(productData);
   if (!isValid) throw new Error(errors.join(', '));
 const {
@@ -618,6 +669,7 @@ const {
     item_type, warranty,
     exc_tax, inc_tax, margin, exc_tax_sell,
     opening_stock,
+    default_supplier_id, default_supplier,
     image, image_url, status
   } = productData;
 
@@ -628,6 +680,7 @@ const {
   const resolvedBrandId    = brand_id    || await resolveBrandId(brand);
   const resolvedCategoryId = category_id || await resolveCategoryId(category);
   const resolvedSubCatId   = sub_category_id || await resolveCategoryId(sub_category);
+  const resolvedSupplierId = default_supplier_id || await resolveSupplierId(default_supplier);
 const result = await pool.query(
     `INSERT INTO products (
        name, sku, barcode_type,
@@ -637,10 +690,10 @@ const result = await pool.query(
        description, weight, prep_time,
       tax, selling_price_tax_type, product_type, item_type, warranty,
        purchase_price_exc_tax, purchase_price_inc_tax, margin, selling_price_exc_tax,
-       current_stock, image_url, status
+       current_stock, image_url, status, default_supplier_id
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-       $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26
+       $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27
      )
      RETURNING id`,
     [
@@ -669,12 +722,14 @@ const result = await pool.query(
       parseFloat(exc_tax_sell) || 0,
       parseFloat(opening_stock) || 0,
       image_url || image || null,
-status || 'Active'
+status || 'Active',
+      resolvedSupplierId
     ]
   );
   return fetchProductById(result.rows[0].id);
 };
 const updateProduct = async (id, productData) => {
+  await ensureProductSchema();
   const existing = await fetchProductById(id);
   if (!existing) throw new Error('Product not found');
 const {
@@ -690,6 +745,7 @@ const {
     item_type, warranty,
     exc_tax, inc_tax, margin, exc_tax_sell,
     opening_stock,
+    default_supplier_id, default_supplier,
     image, image_url, status
   } = productData;
 
@@ -699,6 +755,7 @@ const {
   const resolvedBrandId    = brand_id !== undefined    ? brand_id    : (brand    ? await resolveBrandId(brand)    : undefined);
   const resolvedCategoryId = category_id !== undefined ? category_id : (category ? await resolveCategoryId(category) : undefined);
   const resolvedSubCatId   = sub_category_id !== undefined ? sub_category_id : (sub_category ? await resolveCategoryId(sub_category) : undefined);
+  const resolvedSupplierId = default_supplier_id !== undefined ? default_supplier_id : (default_supplier ? await resolveSupplierId(default_supplier) : undefined);
 const result = await pool.query(
     `UPDATE products SET
        name                    = COALESCE($1,  name),
@@ -727,8 +784,9 @@ const result = await pool.query(
        current_stock           = COALESCE($24, current_stock),
        image_url               = COALESCE($25, image_url),
        status                  = COALESCE($26, status),
+       default_supplier_id     = COALESCE($27, default_supplier_id),
        updated_at              = CURRENT_TIMESTAMP
-     WHERE id = $27
+     WHERE id = $28
      RETURNING id`,
     [
       name?.trim()                  || null,
@@ -757,6 +815,7 @@ const result = await pool.query(
     opening_stock !== undefined && opening_stock !== null && opening_stock !== '' && !isNaN(opening_stock) ? parseInt(opening_stock) : null,
      image_url || image || null,
    status                        || null,
+      resolvedSupplierId            ?? null,
       id
     ]
   );
@@ -790,6 +849,121 @@ const updateProductStatus = async (id, status) => {
 };
 
 // ─────────────────────────────────────────────────────────────
+// BULK IMPORT PRODUCTS (from Excel/CSV via Import Products page)
+// ─────────────────────────────────────────────────────────────
+// For each row:
+//   1. Find or create the product (by SKU, else by name).
+//   2. If a supplier name/code is present, find or create that supplier
+//      as a contact, and link it as the product's default_supplier_id.
+//   3. If opening stock > 0, create a real Purchase transaction (status
+//      'Received') instead of writing current_stock directly — this keeps
+//      the Purchase List and stock-from-purchases invariant intact.
+// Runs row-by-row (not one big transaction) so a single bad row doesn't
+// block the rest of the file — mirrors bulkImportContacts' error style.
+const bulkImportProducts = async (rows, userId) => {
+  await ensureProductSchema();
+  const purchaseService = require('./purchaseService'); // lazy require avoids circular import at module load
+
+  const created = [];
+  const errors  = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const client = await pool.connect();
+    try {
+      if (!r.name || !String(r.name).trim()) throw new Error('Product name is required');
+      if (!r.unit || !String(r.unit).trim()) throw new Error('Unit is required');
+
+      await client.query('BEGIN');
+
+      // ── Resolve / link supplier (name or code) ──
+      let supplierId = null;
+      const supplierRef = (r.supplierName || r.supplier_name || r.supplierCode || r.supplier_code || '').toString().trim();
+      if (supplierRef) {
+        supplierId = await contactService.findOrCreateSupplierByName(supplierRef, client);
+      }
+
+      // ── Find existing product (by SKU, else name) or create it ──
+      let productId = await findExistingProductForImport({ name: r.name, sku: r.sku });
+const openingStockQty = parseFloat(r.openingStock ?? r.opening_stock) || 0;
+      const purchasePrice   = parseFloat(r.purchasePrice ?? r.purchase_price ?? r.exc_tax) || 0;
+      const sellingPrice    = parseFloat(r.sellingPrice  ?? r.selling_price  ?? r.exc_tax_sell) || 0;
+    const paidAmount      = parseFloat(r.paidAmount ?? r.paid_amount ?? r['Paid Amount']) || 0;
+
+      const resolvedUnitId     = await resolveUnitId(r.unit);
+      const resolvedBrandId    = await resolveBrandId(r.brand);
+      const resolvedCategoryId = await resolveCategoryId(r.category);
+
+      if (!resolvedUnitId) throw new Error(`Unit "${r.unit}" not found`);
+
+      if (!productId) {
+        const insertRes = await client.query(
+          `INSERT INTO products (
+             name, sku, unit_id, brand_id, category_id,
+             purchase_price_exc_tax, selling_price_exc_tax,
+             current_stock, status, default_supplier_id
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'Active',$9)
+           RETURNING id`,
+          [
+            r.name.trim(),
+            r.sku?.trim() || null,
+            resolvedUnitId,
+            resolvedBrandId,
+            resolvedCategoryId,
+            purchasePrice,
+            sellingPrice,
+            0, // stock is applied via the Purchase transaction below, not written directly
+            supplierId,
+          ]
+        );
+        productId = insertRes.rows[0].id;
+      } else if (supplierId) {
+        // Existing product — link/refresh its default supplier if the sheet provided one
+        await client.query(
+          `UPDATE products SET default_supplier_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+          [supplierId, productId]
+        );
+      }
+
+      await client.query('COMMIT');
+
+      // ── Opening stock → real Purchase transaction (outside the row txn;
+      // purchaseService manages its own transaction/stock-impact logic) ──
+    if (openingStockQty > 0) {
+        await purchaseService.createPurchase(
+          {
+            supplier_id: supplierId,
+            purchase_status: 'Received',
+            location: r.openingStockLocation || r.opening_stock_location || undefined,
+            notes: 'Auto-created from Product Import (opening stock)',
+            items: [{
+              product_id: productId,
+              product_name: r.name.trim(),
+              product_sku: r.sku || null,
+              quantity: openingStockQty,
+              unit_cost: purchasePrice,
+              discount_pct: 0,
+              margin_pct: 0,
+            }],
+            amount_paid: paidAmount,
+          },
+          userId
+        );
+      }
+
+      created.push({ id: productId, name: r.name });
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      errors.push({ row: i + 1, error: err.message });
+    } finally {
+      client.release();
+    }
+  }
+
+  return { created: created.length, failed: errors.length, errors };
+};
+
+// ─────────────────────────────────────────────────────────────
 // EXPORTS
 // ─────────────────────────────────────────────────────────────
 module.exports = {
@@ -803,4 +977,5 @@ module.exports = {
   fetchAllCategories, fetchCategoryById, createCategory, updateCategory, deleteCategory,
   // Products
   fetchAllProducts, fetchProductById, createProduct, updateProduct, deleteProduct, updateProductStatus,
+  bulkImportProducts,
 };
