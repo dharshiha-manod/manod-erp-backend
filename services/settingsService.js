@@ -8,68 +8,19 @@
 const pool = require('../config/database');
 
 // ── BUSINESS SETTINGS ──────────────────────────────────────────
+// NEW
 const getBusinessSettings = async (businessId) => {
   const result = await pool.query(
     `SELECT id, business_id, business_name, currency, timezone, 
             language, phone, email, address, city, state, country, 
-            postal_code, tax_id, registration_number, logo_url, created_at, updated_at
+            postal_code, tax_id, registration_number, logo_url, created_at, updated_at,
+            profit_percent, stock_method, transaction_edit_days, date_format, time_format,
+            currency_precision, qty_precision, symbol_placement, financial_year_start_month, start_date
      FROM business_settings 
      WHERE business_id = $1::integer`,
     [businessId]
   );
   return result.rows[0] || null;
-};
-const updateBusinessSettings = async (businessId, data) => {
-  const existing = await getBusinessSettings(businessId);
-
-  const business_name = data.business_name ?? existing?.business_name;
-  const currency = data.currency ?? existing?.currency;
-  const timezone = data.timezone ?? existing?.timezone;
-  const language = data.language ?? existing?.language;
-  const phone = data.phone ?? existing?.phone;
-  const email = data.email ?? existing?.email;
-  const address = data.address ?? existing?.address;
-  const city = data.city ?? existing?.city;
-  const state = data.state ?? existing?.state;
-  const country = data.country ?? existing?.country;
-  const postal_code = data.postal_code ?? existing?.postal_code;
-  const tax_id = data.tax_id ?? existing?.tax_id;
-  const registration_number = data.registration_number ?? existing?.registration_number;
-  const logo_url = data.logo_url ?? existing?.logo_url;
-
-  // Only require business_name/currency on first-ever creation
-  if (!existing && (!business_name || !currency)) {
-    throw new Error('Business name and currency are required');
-  }
-
-  const result = await pool.query(
-    `INSERT INTO business_settings
-       (business_id, business_name, currency, timezone, language, phone, email,
-        address, city, state, country, postal_code, tax_id, registration_number, logo_url,
-        created_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-     ON CONFLICT (business_id) DO UPDATE SET
-       business_name = EXCLUDED.business_name,
-       currency = EXCLUDED.currency,
-       timezone = EXCLUDED.timezone,
-       language = EXCLUDED.language,
-       phone = EXCLUDED.phone,
-       email = EXCLUDED.email,
-       address = EXCLUDED.address,
-       city = EXCLUDED.city,
-       state = EXCLUDED.state,
-       country = EXCLUDED.country,
-       postal_code = EXCLUDED.postal_code,
-       tax_id = EXCLUDED.tax_id,
-       registration_number = EXCLUDED.registration_number,
-       logo_url = EXCLUDED.logo_url,
-       updated_at = CURRENT_TIMESTAMP
-     RETURNING *`,
-    [businessId, business_name, currency, timezone, language, phone, email, address, city,
-     state, country, postal_code, tax_id, registration_number, logo_url]
-  );
-
-  return result.rows[0];
 };
 
 // ── BUSINESS LOCATIONS ────────────────────────────────────────
@@ -136,62 +87,100 @@ const createBusinessLocation = async (businessId, data) => {
 
   return result.rows[0];
 };
-const updateBusinessLocation = async (businessId, locationId, data) => {
-  const {
-    location_name, address, city, state, country, postal_code, phone, is_default,
-    email, website, alt_contact, invoice_scheme_pos, invoice_scheme_sale,
-    invoice_layout_pos, invoice_layout_sale, price_group,
-    custom_field_1, custom_field_2, custom_field_3, custom_field_4, payment_options
-  } = data;
+// NEW
+const updateBusinessSettings = async (businessId, data) => {
+  const existing = await getBusinessSettings(businessId);
 
-  if (is_default) {
-    await pool.query(
-      `UPDATE business_locations SET is_default = false WHERE business_id = $1 AND id != $2`,
-      [businessId, locationId]
-    );
+  const business_name = data.business_name ?? existing?.business_name;
+  const currency = data.currency ?? existing?.currency;
+  const timezone = data.timezone ?? existing?.timezone;
+  const language = data.language ?? existing?.language;
+  const phone = data.phone ?? existing?.phone;
+  const email = data.email ?? existing?.email;
+  const address = data.address ?? existing?.address;
+  const city = data.city ?? existing?.city;
+  const state = data.state ?? existing?.state;
+  const country = data.country ?? existing?.country;
+  const postal_code = data.postal_code ?? existing?.postal_code;
+  const tax_id = data.tax_id ?? existing?.tax_id;
+  const registration_number = data.registration_number ?? existing?.registration_number;
+  const logo_url = data.logo_url ?? existing?.logo_url;
+  const profit_percent = data.profit_percent ?? existing?.profit_percent;
+  const stock_method = data.stock_method ?? existing?.stock_method;
+  const transaction_edit_days = data.transaction_edit_days ?? existing?.transaction_edit_days;
+  const date_format = data.date_format ?? existing?.date_format;
+  const time_format = data.time_format ?? existing?.time_format;
+  const currency_precision = data.currency_precision ?? existing?.currency_precision;
+  const qty_precision = data.qty_precision ?? existing?.qty_precision;
+  const symbol_placement = data.symbol_placement ?? existing?.symbol_placement;
+  const financial_year_start_month = data.financial_year_start_month ?? existing?.financial_year_start_month;
+  const start_date = data.start_date ?? existing?.start_date;
+
+  // Only require business_name/currency on first-ever creation
+  if (!existing && (!business_name || !currency)) {
+    throw new Error('Business name and currency are required');
   }
 
   const result = await pool.query(
-    `UPDATE business_locations 
-     SET location_name = COALESCE($1, location_name),
-         address = COALESCE($2, address),
-         city = COALESCE($3, city),
-         state = COALESCE($4, state),
-         country = COALESCE($5, country),
-         postal_code = COALESCE($6, postal_code),
-         phone = COALESCE($7, phone),
-         is_default = COALESCE($8, is_default),
-         email = COALESCE($9, email),
-         website = COALESCE($10, website),
-         alt_contact = COALESCE($11, alt_contact),
-         invoice_scheme_pos = COALESCE($12, invoice_scheme_pos),
-         invoice_scheme_sale = COALESCE($13, invoice_scheme_sale),
-         invoice_layout_pos = COALESCE($14, invoice_layout_pos),
-         invoice_layout_sale = COALESCE($15, invoice_layout_sale),
-         price_group = COALESCE($16, price_group),
-         custom_field_1 = COALESCE($17, custom_field_1),
-         custom_field_2 = COALESCE($18, custom_field_2),
-         custom_field_3 = COALESCE($19, custom_field_3),
-         custom_field_4 = COALESCE($20, custom_field_4),
-         payment_options = COALESCE($21, payment_options),
-         updated_at = CURRENT_TIMESTAMP
-     WHERE id = $22 AND business_id = $23
+    `INSERT INTO business_settings
+       (business_id, business_name, currency, timezone, language, phone, email,
+        address, city, state, country, postal_code, tax_id, registration_number, logo_url,
+        profit_percent, stock_method, transaction_edit_days, date_format, time_format,
+        currency_precision, qty_precision, symbol_placement, financial_year_start_month, start_date,
+        created_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
+             $16,$17,$18,$19,$20,$21,$22,$23,$24,$25, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+     ON CONFLICT (business_id) DO UPDATE SET
+       business_name = EXCLUDED.business_name,
+       currency = EXCLUDED.currency,
+       timezone = EXCLUDED.timezone,
+       language = EXCLUDED.language,
+       phone = EXCLUDED.phone,
+       email = EXCLUDED.email,
+       address = EXCLUDED.address,
+       city = EXCLUDED.city,
+       state = EXCLUDED.state,
+       country = EXCLUDED.country,
+       postal_code = EXCLUDED.postal_code,
+       tax_id = EXCLUDED.tax_id,
+       registration_number = EXCLUDED.registration_number,
+       logo_url = EXCLUDED.logo_url,
+       profit_percent = EXCLUDED.profit_percent,
+       stock_method = EXCLUDED.stock_method,
+       transaction_edit_days = EXCLUDED.transaction_edit_days,
+       date_format = EXCLUDED.date_format,
+       time_format = EXCLUDED.time_format,
+       currency_precision = EXCLUDED.currency_precision,
+       qty_precision = EXCLUDED.qty_precision,
+       symbol_placement = EXCLUDED.symbol_placement,
+       financial_year_start_month = EXCLUDED.financial_year_start_month,
+       start_date = EXCLUDED.start_date,
+       updated_at = CURRENT_TIMESTAMP
      RETURNING *`,
-    [location_name, address, city, state, country, postal_code, phone, is_default,
-     email, website, alt_contact, invoice_scheme_pos, invoice_scheme_sale,
-     invoice_layout_pos, invoice_layout_sale, price_group,
-     custom_field_1, custom_field_2, custom_field_3, custom_field_4,
-     payment_options ? JSON.stringify(payment_options) : null,
-     locationId, businessId]
+    [businessId, business_name, currency, timezone, language, phone, email, address, city,
+     state, country, postal_code, tax_id, registration_number, logo_url,
+     profit_percent, stock_method, transaction_edit_days, date_format, time_format,
+     currency_precision, qty_precision, symbol_placement, financial_year_start_month, start_date]
   );
 
- return result.rows[0] || null;
+  return result.rows[0];
 };
 
+// NEW
 const deactivateBusinessLocation = async (businessId, locationId) => {
   const result = await pool.query(
     `UPDATE business_locations 
      SET is_active = false, updated_at = CURRENT_TIMESTAMP
+     WHERE id = $1 AND business_id = $2
+     RETURNING *`,
+    [locationId, businessId]
+  );
+  return result.rows[0] || null;
+};
+
+const deleteBusinessLocation = async (businessId, locationId) => {
+  const result = await pool.query(
+    `DELETE FROM business_locations
      WHERE id = $1 AND business_id = $2
      RETURNING *`,
     [locationId, businessId]
@@ -212,6 +201,7 @@ const getTaxRates = async (businessId) => {
   return result.rows;
 };
 
+// NEW — paste this in its place
 const createTaxRate = async (businessId, data) => {
   const { tax_name, rate, description, is_default } = data;
 
@@ -246,6 +236,58 @@ const createTaxRate = async (businessId, data) => {
   return result.rows[0];
 };
 
+const updateBusinessLocation = async (businessId, locationId, data) => {
+  const {
+    location_name, address, city, state, country, postal_code, phone, is_default,
+    email, website, alt_contact, invoice_scheme_pos, invoice_scheme_sale,
+    invoice_layout_pos, invoice_layout_sale, price_group,
+    custom_field_1, custom_field_2, custom_field_3, custom_field_4, payment_options
+  } = data;
+
+  if (is_default) {
+    await pool.query(
+      `UPDATE business_locations SET is_default = false WHERE business_id = $1 AND id != $2`,
+      [businessId, locationId]
+    );
+  }
+
+  const result = await pool.query(
+    `UPDATE business_locations
+     SET location_name = COALESCE($1, location_name),
+         address = COALESCE($2, address),
+         city = COALESCE($3, city),
+         state = COALESCE($4, state),
+         country = COALESCE($5, country),
+         postal_code = COALESCE($6, postal_code),
+         phone = COALESCE($7, phone),
+         is_default = COALESCE($8, is_default),
+         email = COALESCE($9, email),
+         website = COALESCE($10, website),
+         alt_contact = COALESCE($11, alt_contact),
+         invoice_scheme_pos = COALESCE($12, invoice_scheme_pos),
+         invoice_scheme_sale = COALESCE($13, invoice_scheme_sale),
+         invoice_layout_pos = COALESCE($14, invoice_layout_pos),
+         invoice_layout_sale = COALESCE($15, invoice_layout_sale),
+         price_group = COALESCE($16, price_group),
+         custom_field_1 = COALESCE($17, custom_field_1),
+         custom_field_2 = COALESCE($18, custom_field_2),
+         custom_field_3 = COALESCE($19, custom_field_3),
+         custom_field_4 = COALESCE($20, custom_field_4),
+         payment_options = COALESCE($21, payment_options),
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = $22 AND business_id = $23
+     RETURNING *`,
+    [location_name, address, city, state, country, postal_code, phone, is_default,
+     email, website, alt_contact, invoice_scheme_pos, invoice_scheme_sale,
+     invoice_layout_pos, invoice_layout_sale, price_group,
+     custom_field_1, custom_field_2, custom_field_3, custom_field_4,
+     payment_options ? JSON.stringify(payment_options) : null,
+     locationId, businessId]
+  );
+
+  return result.rows[0] || null;
+};
+// NEW
 const updateTaxRate = async (businessId, taxId, data) => {
   const { tax_name, rate, description, is_default } = data;
 
@@ -509,11 +551,13 @@ module.exports = {
   getBarcodeSettings,
   updateBarcodeSettings,
   
+// NEW
   // Business Locations
   getBusinessLocations,
   createBusinessLocation,
   updateBusinessLocation,
   deactivateBusinessLocation,
+  deleteBusinessLocation,
   
   // Tax Rates
   getTaxRates,

@@ -21,6 +21,10 @@
  */
 const pool = require('../config/database');
 const { logActivity } = require('./activityLogService');
+// Used to auto-raise Purchase Orders when a Work Order's BOM components
+// are short on stock (see createPurchaseOrderFromShortfall below).
+const purchaseService = require('./purchaseService');
+const stockLocationService = require('./stockLocationService');
 
 // ─────────────────────────────────────────────────────────────
 // Shared helpers
@@ -464,6 +468,42 @@ const deleteWorkOrder = async (id) => {
   logActivity({ module: 'Manufacturing', action: `Deleted Work Order ${r.rows[0].wo_number}` });
   return { success: true };
 };
+
+// ─────────────────────────────────────────────────────────────
+// MAKE-TO-ORDER HOOK — called from services/sellService.js the moment a
+// sale can't be fulfilled from stock. If the product has an active BOM
+// (i.e. it's something we manufacture, not just stock), auto-raise a
+// high-priority Work Order for the shortfall instead of only failing the
+// sale. Returns null (does nothing) if there's no recipe to build from —
+// callers should still surface the original "insufficient stock" error.
+const autoCreateWorkOrderForShortfall = async ({ productId, shortfallQty, note }) => {
+  if (!productId || !shortfallQty || shortfallQty <= 0) return null;
+  const bomRes = await pool.query(
+    `SELECT id FROM mfg_bom WHERE product_id=$1 AND status='active' ORDER BY created_at DESC LIMIT 1`,
+    [productId]
+  );
+  const bom = bomRes.rows[0];
+  if (!bom) return null;
+
+  const qty = Math.ceil(shortfallQty);
+  const today = new Date().toISOString().slice(0, 10);
+  try {
+    return await createWorkOrder({
+      product_id: productId,
+      quantity: qty,
+      bom_id: bom.id,
+      start_date: today,
+      priority: 'high',
+      status: 'planned',
+      notes: note || `Auto-created — insufficient stock to fulfil a sale (short by ${qty} units).`,
+    });
+  } catch (err) {
+    // Never let a make-to-order convenience feature break the sale flow —
+    // log and swallow (e.g. a machine under maintenance blocking assignment).
+    console.error('[autoCreateWorkOrderForShortfall] failed:', err.message);
+    return null;
+  }
+};
 // ═══════════════════════════════════════════════════════════════════
 // WORK ORDERS  (product_id linked; no stock effect on its own)
 // ═══════════════════════════════════════════════════════════════════
@@ -495,6 +535,106 @@ const _assertMaterialsAvailable = async (client, bomId, quantity) => {
   if (shortages.length) {
     throw new Error(`Cannot start production — insufficient raw material stock: ${shortages.join('; ')}`);
   }
+};
+
+// Structured version of the shortage check above — used to actually build
+// Purchase Order line items (product, supplier, qty, cost) rather than a
+// human-readable string.
+const _computeBomShortfall = async (bomId, quantity) => {
+  const bomRes = await pool.query('SELECT * FROM mfg_bom WHERE id=$1', [bomId]);
+  const bom = bomRes.rows[0];
+  if (!bom) throw new Error('BOM/recipe not found');
+
+  const itemsRes = await pool.query('SELECT * FROM mfg_bom_items WHERE bom_id=$1', [bomId]);
+  const scale = parseFloat(quantity) / (parseFloat(bom.quantity) || 1);
+  const shortfalls = [];
+
+  for (const item of itemsRes.rows) {
+    if (!item.product_id) continue;
+    const needed = (parseFloat(item.quantity) || 0) * scale;
+    const compRes = await pool.query(
+      'SELECT id, name, current_stock, default_supplier_id, purchase_price_exc_tax FROM products WHERE id=$1',
+      [item.product_id]
+    );
+    const comp = compRes.rows[0];
+    if (!comp) continue;
+    const available = parseFloat(comp.current_stock) || 0;
+    const shortBy = needed - available;
+    if (shortBy > 0.0001) {
+      shortfalls.push({
+        product_id: comp.id,
+        name: comp.name,
+        needed,
+        available,
+        short_by: shortBy,
+        default_supplier_id: comp.default_supplier_id,
+        unit_cost: parseFloat(comp.purchase_price_exc_tax) || 0,
+      });
+    }
+  }
+  return shortfalls;
+};
+
+// ── AUTO-PURCHASE-ORDER FROM SHORTAGE ───────────────────────────────
+// For a given Work Order, checks its BOM against real current_stock for
+// the remaining (unproduced) quantity, groups any shortfall by each
+// component's default_supplier_id on the Products table, and raises one
+// real Purchase Order per supplier via purchaseService.createPurchase —
+// the same function the Purchases module itself uses. Components with no
+// default supplier set are reported back so the user can fix the Product
+// record rather than silently being dropped.
+const createPurchaseOrderFromShortfall = async (woId, userId) => {
+  const woRes = await pool.query('SELECT * FROM mfg_work_orders WHERE id=$1', [woId]);
+  const wo = woRes.rows[0];
+  if (!wo) throw new Error('Work order not found');
+  if (!wo.bom_id) throw new Error('This work order has no BOM/recipe linked — nothing to check for shortage.');
+
+  const producedPct = parseFloat(wo.progress) || 0;
+  const remainingQty = parseFloat(wo.quantity) * (1 - producedPct / 100);
+  const qtyToCheck = remainingQty > 0 ? remainingQty : parseFloat(wo.quantity);
+
+  const shortfalls = await _computeBomShortfall(wo.bom_id, qtyToCheck);
+  if (shortfalls.length === 0) {
+    return { created: [], unassigned: [], message: 'No shortage detected — all components have enough stock for the remaining quantity.' };
+  }
+
+  const bySupplier = {};
+  const unassigned = [];
+  for (const s of shortfalls) {
+    if (s.default_supplier_id) (bySupplier[s.default_supplier_id] ||= []).push(s);
+    else unassigned.push(s);
+  }
+
+  const created = [];
+  for (const [supplierId, items] of Object.entries(bySupplier)) {
+    const po = await purchaseService.createPurchase({
+      supplier_id: parseInt(supplierId),
+      purchase_status: 'Pending',
+      notes: `Auto-generated: material shortage for Work Order ${wo.wo_number}`,
+      items: items.map(i => ({
+        product_id: i.product_id,
+        product_name: i.name,
+        quantity: Math.ceil(i.short_by),
+        unit_cost: i.unit_cost,
+      })),
+    }, userId);
+    created.push(po);
+  }
+
+  logActivity({
+    module: 'Manufacturing',
+    action: `Auto-PO for shortage on ${wo.wo_number}`,
+    detail: `${created.length} purchase order(s), ${unassigned.length} item(s) with no default supplier`,
+  });
+
+  return {
+    created,
+    unassigned,
+    message: created.length
+      ? `${created.length} purchase order${created.length > 1 ? 's' : ''} created for the shortage.` +
+        (unassigned.length ? ` ${unassigned.length} item(s) skipped — set a default supplier on that Product.` : '')
+      : 'Shortage found, but none of the components have a default supplier set. Add one on the Product record to auto-generate a PO.',
+  };
 };
 
 const startProductionRun = async (woId) => {
@@ -550,8 +690,9 @@ const finishProductionRun = async (woId) => {
 // PRODUCTION RUNS — the stock-moving event
 // ═══════════════════════════════════════════════════════════════════
 
-// Deducts components for a BOM scaled to `quantity`, returns { totalCost, componentsUsed }
-const _applyBomConsumption = async (client, bomId, quantity) => {
+// Deducts components for a BOM scaled to `quantity`, at a specific stock
+// location, returns { totalCost, componentsUsed }
+const _applyBomConsumption = async (client, bomId, quantity, location) => {
   const bomRes = await client.query('SELECT * FROM mfg_bom WHERE id=$1', [bomId]);
   const bom = bomRes.rows[0];
   if (!bom) throw new Error('Selected BOM/recipe not found');
@@ -568,19 +709,13 @@ const _applyBomConsumption = async (client, bomId, quantity) => {
 
     if (item.product_id) {
       const compRes = await client.query(
-        'SELECT id, name, current_stock FROM products WHERE id=$1 FOR UPDATE',
+        'SELECT id, name FROM products WHERE id=$1 FOR UPDATE',
         [item.product_id]
       );
       const comp = compRes.rows[0];
       if (!comp) throw new Error(`Linked component product not found: ${item.item_name || 'unknown'}`);
 
-      const newStock = parseFloat(comp.current_stock || 0) - needed;
-      if (newStock < 0) {
-        throw new Error(
-          `Not enough stock for "${comp.name}". Available: ${comp.current_stock ?? 0}, needed: ${needed.toFixed(2)}`
-        );
-      }
-      await client.query('UPDATE products SET current_stock=$1, updated_at=NOW() WHERE id=$2', [newStock, item.product_id]);
+      await stockLocationService.adjustStockAtLocation(client, item.product_id, location, -needed);
       componentsUsed.push({ product_id: item.product_id, name: comp.name, deducted: needed });
     }
   }
@@ -593,11 +728,9 @@ const _applyBomConsumption = async (client, bomId, quantity) => {
 // save time (quantity + scrap_qty), so reversal always matches what was
 // actually deducted, even if the BOM has since been edited
 const _reverseProductionStock = async (client, prodRow) => {
+const location = prodRow.location || await stockLocationService.getDefaultLocationName(client);
   if (prodRow.product_id) {
-    await client.query(
-      'UPDATE products SET current_stock = current_stock - $1, updated_at=NOW() WHERE id=$2',
-      [prodRow.quantity, prodRow.product_id]
-    );
+    await stockLocationService.adjustStockAtLocation(client, prodRow.product_id, location, -parseFloat(prodRow.quantity), { allowNegative: true });
   }
   if (prodRow.bom_id) {
     const bomRes = await client.query('SELECT * FROM mfg_bom WHERE id=$1', [prodRow.bom_id]);
@@ -611,10 +744,7 @@ const _reverseProductionStock = async (client, prodRow) => {
       for (const item of itemsRes.rows) {
         if (item.product_id) {
           const needed = (parseFloat(item.quantity) || 0) * scale;
-          await client.query(
-            'UPDATE products SET current_stock = current_stock + $1, updated_at=NOW() WHERE id=$2',
-            [needed, item.product_id]
-          );
+          await stockLocationService.adjustStockAtLocation(client, item.product_id, location, needed, { allowNegative: true });
         }
       }
     }
@@ -663,7 +793,7 @@ const createProduction = async (data) => {
     await client.query('BEGIN');
 
     const prodRes = await client.query(
-      'SELECT id, name, current_stock FROM products WHERE id=$1 FOR UPDATE',
+      'SELECT id, name, current_stock, purchase_price_exc_tax FROM products WHERE id=$1 FOR UPDATE',
       [product_id]
     );
     const finishedProduct = prodRes.rows[0];
@@ -678,7 +808,7 @@ const createProduction = async (data) => {
     const totalAttempted = parseFloat(quantity) + scrapQty;
 
     if (bom_id) {
-      const applied = await _applyBomConsumption(client, bom_id, totalAttempted);
+      const applied = await _applyBomConsumption(client, bom_id, totalAttempted, location);
       totalCost = applied.totalCost;
       componentsUsed = applied.componentsUsed;
       const bomRow = await client.query('SELECT product_code FROM mfg_bom WHERE id=$1', [bom_id]);
@@ -688,8 +818,32 @@ const createProduction = async (data) => {
     }
 
     // Only GOOD units (quantity) go into finished stock — scrap never does
-    const newFinishedStock = parseFloat(finishedProduct.current_stock || 0) + parseFloat(quantity);
-    await client.query('UPDATE products SET current_stock=$1, updated_at=NOW() WHERE id=$2', [newFinishedStock, product_id]);
+    const oldStock = parseFloat(finishedProduct.current_stock || 0);
+    const newFinishedStock = oldStock + parseFloat(quantity);
+
+    // ── Weighted-average cost rollup ──────────────────────────────
+    // Accounting's live Inventory / Owner's Capital figures (see
+    // accountingService.js source_key formulas) are computed straight
+    // off products.current_stock * purchase_price_exc_tax. Before this,
+    // a manufactured batch changed current_stock but never touched that
+    // cost field, so the balance sheet still valued finished goods at
+    // whatever price they were last purchased/manually set at — wrong
+    // for anything actually built from a BOM. Blend the real per-unit
+    // cost of this run into the existing weighted-average cost instead.
+    const unitCost = parseFloat(quantity) > 0 ? totalCost / parseFloat(quantity) : 0;
+    const oldCost = parseFloat(finishedProduct.purchase_price_exc_tax) || 0;
+    const newAvgCost = unitCost > 0
+      ? (newFinishedStock > 0 ? (oldStock * oldCost + parseFloat(quantity) * unitCost) / newFinishedStock : unitCost)
+      : oldCost; // no BOM/cost basis for this run — leave the existing cost alone
+
+    // Add the produced good units to this location's stock (this also keeps
+    // products.current_stock in sync via stockLocationService's internal SUM).
+    await stockLocationService.adjustStockAtLocation(client, product_id, location, parseFloat(quantity));
+    // Cost rollup lives only on products, not per-location — write it separately.
+    await client.query(
+      'UPDATE products SET purchase_price_exc_tax=$1, updated_at=NOW() WHERE id=$2',
+      [newAvgCost, product_id]
+    );
 
   const refNo = ref_no || await nextRef(client, 'mfg_production', 'PRD');
     const woId = data.wo_id || null;
@@ -740,7 +894,7 @@ const updateProduction = async (id, data) => {
     await _reverseProductionStock(client, existing);
 
     const prodRes = await client.query(
-      'SELECT id, name, current_stock FROM products WHERE id=$1 FOR UPDATE',
+      'SELECT id, name, current_stock, purchase_price_exc_tax FROM products WHERE id=$1 FOR UPDATE',
       [product_id]
     );
     const finishedProduct = prodRes.rows[0];
@@ -750,7 +904,7 @@ const updateProduction = async (id, data) => {
     let recipeLabel = null;
     const totalAttempted = parseFloat(quantity) + scrapQty;
     if (bom_id) {
-      const applied = await _applyBomConsumption(client, bom_id, totalAttempted);
+      const applied = await _applyBomConsumption(client, bom_id, totalAttempted, location);
       totalCost = applied.totalCost;
       const bomRow = await client.query('SELECT product_code FROM mfg_bom WHERE id=$1', [bom_id]);
       recipeLabel = bomRow.rows[0]?.product_code || `BOM-${bom_id}`;
@@ -758,8 +912,19 @@ const updateProduction = async (id, data) => {
       totalCost = parseFloat(data.total_cost) || 0;
     }
 
-    const newFinishedStock = parseFloat(finishedProduct.current_stock || 0) + parseFloat(quantity);
-    await client.query('UPDATE products SET current_stock=$1, updated_at=NOW() WHERE id=$2', [newFinishedStock, product_id]);
+    const oldStock = parseFloat(finishedProduct.current_stock || 0);
+    const newFinishedStock = oldStock + parseFloat(quantity);
+    const unitCost = parseFloat(quantity) > 0 ? totalCost / parseFloat(quantity) : 0;
+    const oldCost = parseFloat(finishedProduct.purchase_price_exc_tax) || 0;
+    const newAvgCost = unitCost > 0
+      ? (newFinishedStock > 0 ? (oldStock * oldCost + parseFloat(quantity) * unitCost) / newFinishedStock : unitCost)
+      : oldCost;
+
+    await stockLocationService.adjustStockAtLocation(client, product_id, location, parseFloat(quantity));
+    await client.query(
+      'UPDATE products SET purchase_price_exc_tax=$1, updated_at=NOW() WHERE id=$2',
+      [newAvgCost, product_id]
+    );
 
     const updateRes = await client.query(
       `UPDATE mfg_production SET ref_no=$1, location=$2, product=$3, product_id=$4, quantity=$5,
@@ -1228,9 +1393,62 @@ const fetchReportsSummary = async (from, to) => {
   };
 };
 
-// ═══════════════════════════════════════════════════════════════════
-// SCHEDULE — dedicated manufacturing schedule entries (Schedule tab)
-// ═══════════════════════════════════════════════════════════════════
+
+// ── COST VARIANCE (Standard vs Actual) ──────────────────────────
+const fetchCostVariance = async (from, to) => {
+  const fromDate = from || '2000-01-01';
+  const toDate   = to   || '2099-12-31';
+
+  const runsRes = await pool.query(
+    `SELECT p.id, p.ref_no, p.product, p.product_id, p.quantity, p.total_cost, p.bom_id, p.date
+     FROM mfg_production p
+     WHERE p.bom_id IS NOT NULL AND p.date BETWEEN $1 AND $2
+     ORDER BY p.date DESC`,
+    [fromDate, toDate]
+  );
+
+  const rows = [];
+  let totalActual = 0, totalStandard = 0;
+
+  for (const run of runsRes.rows) {
+    const bomRes = await pool.query('SELECT * FROM mfg_bom WHERE id=$1', [run.bom_id]);
+    const bom = bomRes.rows[0];
+    if (!bom) continue;
+
+    const itemsRes = await pool.query('SELECT * FROM mfg_bom_items WHERE bom_id=$1', [run.bom_id]);
+    const scale = parseFloat(run.quantity) / (parseFloat(bom.quantity) || 1);
+    const standardCost = itemsRes.rows.reduce(
+      (sum, item) => sum + (parseFloat(item.quantity) || 0) * scale * (parseFloat(item.cost) || 0),
+      0
+    );
+    const actualCost = parseFloat(run.total_cost) || 0;
+    const variance = actualCost - standardCost;
+
+    totalActual += actualCost;
+    totalStandard += standardCost;
+
+    rows.push({
+      ref_no: run.ref_no,
+      product: run.product,
+      date: run.date,
+      quantity: run.quantity,
+      standard_cost: Math.round(standardCost * 100) / 100,
+      actual_cost: Math.round(actualCost * 100) / 100,
+      variance: Math.round(variance * 100) / 100,
+      variance_pct: standardCost > 0 ? Math.round((variance / standardCost) * 10000) / 100 : 0,
+      status: variance > 0.01 ? 'unfavorable' : (variance < -0.01 ? 'favorable' : 'on_standard'),
+    });
+  }
+
+  return {
+    from: fromDate, to: toDate,
+    total_standard_cost: Math.round(totalStandard * 100) / 100,
+    total_actual_cost: Math.round(totalActual * 100) / 100,
+    total_variance: Math.round((totalActual - totalStandard) * 100) / 100,
+    runs: rows,
+  };
+};
+
 const fetchSchedule = () =>
   pool.query('SELECT * FROM mfg_schedule ORDER BY start_date DESC, created_at DESC').then(r => r.rows);
 
@@ -1284,6 +1502,8 @@ module.exports = {
 // Work Orders
   fetchWorkOrders, createWorkOrder, updateWorkOrder, deleteWorkOrder, fetchWorkOrderById,
   startProductionRun, finishProductionRun,
+  createPurchaseOrderFromShortfall,      // Purchases module integration
+  autoCreateWorkOrderForShortfall,       // Sales module integration (make-to-order)
   // Production (transactional stock logic)
   fetchProduction, createProduction, updateProduction, deleteProduction,
   // Resources
@@ -1300,6 +1520,6 @@ module.exports = {
   fetchMaintenance, createMaintenance, updateMaintenance, deleteMaintenance,
   // Schedule
   fetchSchedule, createSchedule, updateSchedule, deleteSchedule,
-  // Reports
-  fetchReportsSummary,
+// Reports
+  fetchReportsSummary, fetchCostVariance,
 };

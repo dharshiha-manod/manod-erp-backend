@@ -5,9 +5,9 @@
  * Uses the same pool pattern as purchaseService.js
  * ====================================================
  */
-
 const pool = require('../config/database');
 const { types } = require('pg');
+const bankIntegrationService = require('./bankIntegrationService');
 
 // Prevent node-postgres from converting DATE columns into JS Date objects.
 // JS Date objects are timezone-sensitive and can silently shift the
@@ -537,6 +537,10 @@ async function fetchPayrollItems(payrollId) {
 
 async function updatePayroll(id, data) {
   const { employee_name, department, designation, month_year, net_salary, status } = data;
+
+  const before = await pool.query(`SELECT status FROM hrm_payroll WHERE id = $1`, [id]);
+  const prevStatus = before.rows[0]?.status;
+
   const { rows } = await pool.query(
     `UPDATE hrm_payroll
      SET employee_name=$1, department=$2, designation=$3, month_year=$4, net_salary=$5, status=$6, updated_at=NOW()
@@ -544,7 +548,24 @@ async function updatePayroll(id, data) {
     [employee_name, department, designation, month_year, net_salary, status, id]
   );
   if (!rows.length) throw new Error('Payroll not found');
-  return rows[0];
+  const payroll = rows[0];
+
+  // Auto-mirror the salary payout into Cash & Bank only on the transition
+  // into 'Paid' — re-saving an already-Paid record won't double-post.
+  if (status === 'Paid' && prevStatus !== 'Paid') {
+    bankIntegrationService.safeRecord({
+      sourceModule: 'Payroll',
+      sourceId: payroll.id,
+      sourceEvent: 'salary-payment',
+      txnType: 'Debit',
+      amount: payroll.net_salary,
+      paymentMethod: 'Bank Transfer',
+      description: `Salary payment — ${payroll.employee_name} (${payroll.month_year})`,
+      txnDate: new Date(),
+    }).catch(() => {});
+  }
+
+  return payroll;
 }
 
 async function deletePayroll(id) {

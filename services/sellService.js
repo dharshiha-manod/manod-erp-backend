@@ -4,10 +4,31 @@
   // Uses the same `pool` pattern as your other services
   // ═══════════════════════════════════════════════════════════════
 // ── NEW CODE ──
-  const db = require("../config/database"); // adjust path to match your project
+const db = require("../config/database"); // adjust path to match your project
+const stockLocationService = require("./stockLocationService");
 const contactService = require("./contactService");
   const notificationEngine = require("./notificationEngine");
-
+  const bankIntegrationService = require("./bankIntegrationService");
+  // Manufacturing module integration: when a sale can't be fulfilled from
+  // stock, auto-raise a make-to-order Work Order for the shortfall instead
+  // of only failing the sale (see _tryAutoWorkOrder below).
+  const manufacturingService = require("./manufacturingService");
+  const _tryAutoWorkOrder = async (productId, name, currentStock, requestedQty) => {
+    const shortfall = requestedQty - currentStock;
+    try {
+      const wo = await manufacturingService.autoCreateWorkOrderForShortfall({
+        productId,
+        shortfallQty: shortfall,
+        note: `Auto-created — a sale for ${requestedQty} of "${name}" couldn't be fulfilled (only ${currentStock} in stock).`,
+      });
+      return wo
+        ? ` A Work Order (${wo.wo_number}) has been auto-created to produce the missing ${Math.ceil(shortfall)} unit(s).`
+        : "";
+    } catch (err) {
+      console.error("[_tryAutoWorkOrder] failed:", err.message);
+      return "";
+    }
+  };
   // ─────────────────────────────────────────────────────────────
   // HELPER — run a query and return rows
   // ─────────────────────────────────────────────────────────────
@@ -331,7 +352,7 @@ let sellSchemaReady = false;
           const b=i*10; return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},$${b+8},$${b+9},$${b+10})`;
         }).join(",")}`,
     items.flatMap(it => {
-          const tax = it.tax ?? 18;
+        const tax = (it.tax === null || it.tax === undefined || it.tax === '') ? 18 : it.tax;
           return [
           invoice.id, null, it.product, it.sku || null,
           it.qty || 1, it.unit || "Pcs", it.unitPrice || 0,
@@ -340,6 +361,33 @@ let sellSchemaReady = false;
      ];
         })
       );
+  // ── Phase 1 GST split (additive — never blocks invoice creation) ──
+      try {
+        const taxCalcService = require('./taxCalcService');
+        const settings = await taxCalcService.getSettings();
+        let buyerState = null;
+        if (customerId) {
+          const c = await contactService.fetchContactById(customerId);
+          buyerState = c?.state || null;
+        }
+        const { rows: insertedItems } = await q(
+          `SELECT id, tax, line_total, unit_price, qty, discount FROM sales_invoice_items WHERE invoice_id = $1`,
+          [invoice.id]
+        );
+        for (const row of insertedItems) {
+          const rate = Number(row.tax) || 0;
+          const taxableValue = (Number(row.qty) || 1) * (Number(row.unit_price) || 0) * (1 - (Number(row.discount) || 0) / 100);
+          const split = taxCalcService.calculateGST(taxableValue, rate, buyerState, settings.business_state);
+          await q(
+            `UPDATE sales_invoice_items SET cgst_rate=$1, sgst_rate=$2, igst_rate=$3,
+             cgst_amt=$4, sgst_amt=$5, igst_amt=$6 WHERE id=$7`,
+            [split.isInterState ? 0 : rate / 2, split.isInterState ? 0 : rate / 2, split.isInterState ? rate : 0,
+             split.cgst, split.sgst, split.igst, row.id]
+          );
+        }
+      } catch (gstErr) {
+        console.error('[createInvoice] GST split population warning:', gstErr.message);
+      }
       } catch (itemErr) {
         console.error("[createInvoice] item insert failed:", itemErr.message);
         throw itemErr;
@@ -389,23 +437,21 @@ let sellSchemaReady = false;
         continue;
       }
 
-      const qty = it.qty || 1;
-      if (qty > prows[0].current_stock) {
-        throw new Error(`Insufficient stock for "${prows[0].name}": current stock is ${prows[0].current_stock}, cannot sell ${qty}`);
+   const qty = it.qty || 1;
+      const stockHere = await stockLocationService.stockAtLocation(db, pid, location || warehouse);
+      if (qty > stockHere) {
+        const extra = await _tryAutoWorkOrder(pid, prows[0].name, stockHere, qty);
+        throw new Error(`Insufficient stock for "${prows[0].name}" at "${location || warehouse}": have ${stockHere}, cannot sell ${qty}.${extra}`);
       }
       resolved.push({ pid, qty });
     }
-  for (const { pid, qty } of resolved) {
-      await q(
-        `UPDATE products SET current_stock = GREATEST(0, COALESCE(current_stock,0) - $1), updated_at = NOW() WHERE id = $2`,
-        [qty, pid]
-      );
+    for (const { pid, qty } of resolved) {
+      await stockLocationService.adjustStockAtLocation(db, pid, location || warehouse, -qty);
       notificationEngine.checkAndAlertLowStock(pid).catch(err =>
         console.error(`[createInvoice] low stock check failed for pid=${pid}:`, err.message)
       );
     }
- }
-
+  }
     // Bump the saved Invoice Settings counter forward by 1 so the NEXT
     // invoice generated from Settings gets a fresh number instead of
     // repeating this same one. Best-effort — if it fails, invoice creation
@@ -421,8 +467,23 @@ let sellSchemaReady = false;
       console.error("[createInvoice] failed to increment invoice number counter:", counterErr.message);
     }
 
+    // Auto-mirror this receipt into Cash & Bank — best-effort, never blocks
+    // or affects the invoice that was just created.
+    if (finalPaidAmount > 0) {
+      bankIntegrationService.safeRecord({
+        sourceModule: "Sales",
+        sourceId: invoice.id,
+        sourceEvent: "receipt",
+        txnType: "Credit",
+        amount: finalPaidAmount,
+        paymentMethod,
+        description: `Payment received — Invoice ${invoice.invoice_no || invoice.id}`,
+        txnDate: invoiceDate || new Date(),
+      }).catch(() => {});
+    }
+
     return getInvoiceById(invoice.id);
-  }
+  } 
 
   async function updateInvoice(id, data) {
     const fields = [];
@@ -447,11 +508,28 @@ let sellSchemaReady = false;
 
     if (fields.length === 0) return getInvoiceById(id);
 
-    params.push(id);
+   params.push(id);
     await q(
       `UPDATE sales_invoices SET ${fields.join(",")} WHERE id = $${params.length}`,
       params
     );
+
+    // Auto-mirror an edited/added payment amount into Cash & Bank.
+    // sourceEvent includes the new paid_amount so edits create a fresh,
+    // distinct auto-transaction rather than colliding with the original.
+    if (data.paidAmount !== undefined && Number(data.paidAmount) > 0) {
+      bankIntegrationService.safeRecord({
+        sourceModule: "Sales",
+        sourceId: id,
+        sourceEvent: `receipt-update-${Number(data.paidAmount)}`,
+        txnType: "Credit",
+        amount: data.paidAmount,
+        paymentMethod: data.paymentMethod,
+        description: `Payment update — Invoice #${id}`,
+        txnDate: new Date(),
+      }).catch(() => {});
+    }
+
     return getInvoiceById(id);
   }
 
@@ -593,7 +671,8 @@ let sellSchemaReady = false;
       if (prows.length === 0) throw new Error(`Product not found (id: ${pid})`);
       const qty = it.qty || 1;
       if (qty > prows[0].current_stock) {
-        throw new Error(`Insufficient stock for "${prows[0].name}": current stock is ${prows[0].current_stock}, cannot sell ${qty}`);
+        const extra = await _tryAutoWorkOrder(pid, prows[0].name, prows[0].current_stock, qty);
+        throw new Error(`Insufficient stock for "${prows[0].name}": current stock is ${prows[0].current_stock}, cannot sell ${qty}.${extra}`);
       }
       resolved.push({ pid, qty });
     }

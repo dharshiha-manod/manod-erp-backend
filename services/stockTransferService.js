@@ -19,8 +19,8 @@
  * so totals are computed on the fly by joining products.purchase_price_exc_tax.
  * ====================================================
  */
-
 const pool = require('../config/database');
+const stockLocationService = require('./stockLocationService');
 
 const DEFAULT_BUSINESS_ID = 1; // single-business setup for now
 
@@ -46,11 +46,15 @@ const generateTransferNumber = async () => {
 };
 
 // ── STOCK IMPACT ────────────────────────────────────────────────────────────
-// Transfers move stock out of the tracked pool once "Completed" — same
-// convention as stockAdjustmentService.applyStockImpact. 'apply' decreases,
-// 'reverse' adds back (used on delete, status rollback, or item edit).
-// current_stock is an INTEGER column, so quantities are rounded before use.
+// Transfers move stock from location_from to location_to once "Completed".
+// 'apply' moves it out of location_from and into location_to; 'reverse'
+// (delete, status rollback, item edit) undoes exactly that same movement.
 const applyTransferStockImpact = async (transferId, direction, client) => {
+  const transferRes = await client.query(`SELECT location_from, location_to FROM stock_transfers WHERE id = $1`, [transferId]);
+  const transfer = transferRes.rows[0];
+  if (!transfer) return;
+  const { location_from, location_to } = transfer;
+
   const items = await client.query(
     `SELECT product_id, quantity FROM stock_transfer_items WHERE stock_transfer_id = $1`,
     [transferId]
@@ -60,17 +64,15 @@ const applyTransferStockImpact = async (transferId, direction, client) => {
     const qty = Math.round(parseFloat(item.quantity) || 0);
     if (!pid || isNaN(pid) || qty <= 0) continue;
 
-    const delta = direction === 'apply' ? -qty : qty;
-    await client.query(
-      `UPDATE products
-       SET current_stock = GREATEST(0, COALESCE(current_stock, 0) + $1),
-           updated_at = NOW()
-       WHERE id = $2`,
-      [delta, pid]
-    );
+    if (direction === 'apply') {
+      await stockLocationService.adjustStockAtLocation(client, pid, location_from, -qty);
+      await stockLocationService.adjustStockAtLocation(client, pid, location_to, qty);
+    } else {
+      await stockLocationService.adjustStockAtLocation(client, pid, location_from, qty, { allowNegative: true });
+      await stockLocationService.adjustStockAtLocation(client, pid, location_to, -qty, { allowNegative: true });
+    }
   }
 };
-
 // ── FETCH ALL STOCK TRANSFERS (paginated + filtered) ─────────────────────────
 const fetchAllStockTransfers = async (filters = {}) => {
   const {
@@ -236,14 +238,15 @@ const createStockTransfer = async (body, userId) => {
       if (!productId) throw new Error('Each item must reference a valid product_id');
       const qty = parseFloat(item.quantity) || 1;
 
-      const prodRes = await client.query(
-        `SELECT name, sku, purchase_price_exc_tax, COALESCE(current_stock,0) AS current_stock FROM products WHERE id = $1`,
+    const prodRes = await client.query(
+        `SELECT name, sku, purchase_price_exc_tax FROM products WHERE id = $1`,
         [productId]
       );
       const prod = prodRes.rows[0];
       if (!prod) throw new Error(`Product not found (id: ${productId})`);
-      if (qty > prod.current_stock) {
-        throw new Error(`Insufficient stock for "${prod.name}": current stock is ${prod.current_stock}, cannot transfer ${qty}`);
+      const stockAtSource = await stockLocationService.stockAtLocation(client, productId, body.location_from);
+      if (qty > stockAtSource) {
+        throw new Error(`Insufficient stock for "${prod.name}" at "${body.location_from}": have ${stockAtSource}, cannot transfer ${qty}`);
       }
 
       await client.query(
@@ -334,14 +337,16 @@ const updateStockTransfer = async (id, body, userId) => {
         if (!productId) throw new Error('Each item must reference a valid product_id');
         const qty = parseFloat(item.quantity) || 1;
 
-        const prodRes = await client.query(
-          `SELECT name, sku, purchase_price_exc_tax, COALESCE(current_stock,0) AS current_stock FROM products WHERE id = $1`,
+      const prodRes = await client.query(
+          `SELECT name, sku, purchase_price_exc_tax FROM products WHERE id = $1`,
           [productId]
         );
         const prod = prodRes.rows[0];
         if (!prod) throw new Error(`Product not found (id: ${productId})`);
-        if (qty > prod.current_stock) {
-          throw new Error(`Insufficient stock for "${prod.name}": current stock is ${prod.current_stock}, cannot transfer ${qty}`);
+        const sourceLocation = body.location_from || prev.location_from;
+        const stockAtSource = await stockLocationService.stockAtLocation(client, productId, sourceLocation);
+        if (qty > stockAtSource) {
+          throw new Error(`Insufficient stock for "${prod.name}" at "${sourceLocation}": have ${stockAtSource}, cannot transfer ${qty}`);
         }
 
         await client.query(

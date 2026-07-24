@@ -54,6 +54,7 @@ const sellRoutes = require('./routes/sell');
 const registerRoutes = require('./routes/register');
 const settingsRoutes = require('./routes/settingsRoutes'); // adjust path
 const reportsRoutes = require('./routes/reports'); // ← REPORTS MODULE (NEW)
+const accountingRoutes = require('./routes/accounting'); // ← ACCOUNTING MODULE (NEW)
 
 
 
@@ -79,6 +80,7 @@ app.use('/api/selling-price-groups', require('./routes/sellingPriceGroupRoutes')
 app.use('/api/product-selling-prices', require('./routes/productSellingPriceRoutes'));
 app.use('/api/settings', settingsRoutes);
 app.use('/api/reports', reportsRoutes); // ← REPORTS MODULE (NEW)
+app.use('/api/accounting', accountingRoutes); // ← ACCOUNTING MODULE (NEW)  
 app.use('/api/product-selling-prices', require('./routes/productSellingPrices'));
 // ── HEALTH CHECK ─────────────────────────────────────────────
 app.get('/api/health', (req, res) => {

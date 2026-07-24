@@ -131,7 +131,7 @@ console.log('✅ User updated:', result.rows[0].email);
   }
 };
 
-// ── DELETE USER ──
+// ── DELETE USER (soft delete — preserves message/sales/log history) ──
 const deleteUser = async (req, res) => {
   try {
     const { id } = req.params;
@@ -140,18 +140,39 @@ const deleteUser = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Cannot delete your own account' });
     }
 
-    const result = await pool.query(
-      'DELETE FROM users WHERE id = $1 RETURNING id, email, full_name',
-      [id]
-    );
+    // Try hard delete first (works cleanly for users with zero related records)
+    try {
+      const result = await pool.query(
+        'DELETE FROM users WHERE id = $1 RETURNING id, email, full_name',
+        [id]
+      );
+      if (result.rows.length === 0) {
+        return res.status(404).json({ success: false, error: 'User not found' });
+      }
+      console.log('✅ User deleted:', result.rows[0].email);
+      logActivity({ userId: req.user?.id || null, module: 'Users', action: `Deleted User ${result.rows[0].email}`, req });
+      return res.status(200).json({ success: true, message: 'User deleted successfully', user: result.rows[0] });
+    } catch (fkErr) {
+      // 23503 = foreign_key_violation — user has messages/sales/expenses/logs referencing them
+      if (fkErr.code !== '23503') throw fkErr;
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'User not found' });
+      const result = await pool.query(
+        `UPDATE users SET status = 'inactive' WHERE id = $1
+         RETURNING id, email, full_name, status`,
+        [id]
+      );
+      if (result.rows.length === 0) {
+        return res.status(404).json({ success: false, error: 'User not found' });
+      }
+      console.log('⚠️ User has related records — deactivated instead:', result.rows[0].email);
+      logActivity({ userId: req.user?.id || null, module: 'Users', action: `Deactivated User ${result.rows[0].email} (has related records)`, req });
+      return res.status(200).json({
+        success: true,
+        softDeleted: true,
+        message: 'This user has existing messages/records, so they were deactivated instead of deleted (their history is preserved).',
+        user: result.rows[0],
+      });
     }
-
-   console.log('✅ User deleted:', result.rows[0].email);
-    logActivity({ userId: req.user?.id || null, module: 'Users', action: `Deleted User ${result.rows[0].email}`, req });
-    res.status(200).json({ success: true, message: 'User deleted successfully', user: result.rows[0] });
   } catch (err) {
     console.error('❌ Delete User Error:', err.message);
     res.status(500).json({ success: false, error: 'Failed to delete user' });

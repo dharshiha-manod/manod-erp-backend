@@ -4,6 +4,7 @@
 'use strict';
 
 const pool = require('../config/database');
+const bankIntegrationService = require('./bankIntegrationService');
 
 // ── Reference number ─────────────────────────────────────────────────────
 const generateReferenceNo = async (client = pool) => {
@@ -80,7 +81,7 @@ const createExpense = async (data, userId) => {
     amount_paid = 0, payment_method = 'Cash', payment_due,
   } = data;
 
-  if (!amount && !total_amount) throw new Error('Total amount is required');
+if (!amount && !total_amount) throw new Error('Total amount is required');
   const finalTotal = parseFloat(total_amount || amount);
 
   let cleanRefundAmount = null, cleanRefundDate = null;
@@ -97,11 +98,16 @@ const createExpense = async (data, userId) => {
   const refNo = expense_number && expense_number.trim()
     ? expense_number.trim() : await generateReferenceNo();
 
-  const finalPaymentDue = payment_due !== undefined
-    ? parseFloat(payment_due)
-    : (payment_status === 'paid' ? 0 : finalTotal);
-
-  const netExpense = finalTotal - (cleanRefundAmount || 0);
+  // payment_due is ALWAYS derived server-side from net_expense (total minus
+  // any refund) — never trust a client-sent payment_due, or a refunded
+  // expense's form (which computes payment_due off the raw total, unaware
+  // of the refund) turns a fully-refunded ₹10,000 expense into a fresh
+  // ₹10,000 unpaid bill in Accounts Payable.
+ const netExpense = finalTotal - (cleanRefundAmount || 0);
+  const paidNowForDue = parseFloat(amount_paid) || 0;
+  const finalPaymentDue = payment_status === 'paid'
+    ? 0
+    : Math.max(0, netExpense - paidNowForDue);
 
   const result = await pool.query(
     `INSERT INTO expenses
@@ -121,13 +127,48 @@ const createExpense = async (data, userId) => {
       expense_for || null,
       is_refund, cleanRefundAmount, cleanRefundDate, refund_reason || null, refund_method || null,
       is_recurring, recurring_interval || null, recurring_interval_unit || 'Days', recurring_repetitions || null,
-      attachment_url || null, netExpense, userId,
+   attachment_url || null, netExpense, userId,
     ]
   );
-  return result.rows[0];
+const expense = result.rows[0];
+
+  // Auto-mirror this expense payment into Cash & Bank.
+  const paidNow = parseFloat(amount_paid) || 0;
+  if (paidNow > 0) {
+    bankIntegrationService.safeRecord({
+      sourceModule: 'Expense',
+      sourceId: expense.id,
+      sourceEvent: 'payment',
+      txnType: 'Debit',
+      amount: paidNow,
+      paymentMethod: payment_method,
+      description: `Expense payment — ${expense.expense_number}`,
+      txnDate: expense_date || new Date(),
+      userId,
+    }).catch(() => {});
+  }
+
+  // Auto-mirror a refund entered at creation time into Cash & Bank — a real
+  // cash inflow (Credit), same as how a refund added later via updateExpense
+  // is mirrored.
+  if (cleanRefundAmount > 0) {
+    bankIntegrationService.safeRecord({
+      sourceModule: 'Expense',
+      sourceId: expense.id,
+      sourceEvent: `refund-${cleanRefundAmount}`,
+      txnType: 'Credit',
+      amount: cleanRefundAmount,
+      paymentMethod: refund_method || 'Cash',
+      description: `Expense refund received — ${expense.expense_number}`,
+      txnDate: cleanRefundDate || new Date(),
+      userId,
+    }).catch(() => {});
+  }
+
+  return expense;
 };
 
-const updateExpense = async (id, data, userId) => {
+const updateExpense = async (id, data, userId) => { 
   const existing = await fetchExpenseById(id);
   if (!existing) throw new Error('Expense not found');
 
@@ -153,34 +194,75 @@ const updateExpense = async (id, data, userId) => {
     params.push(data.category_name);
     sets.push(`category = $${params.length}`);
   }
-
-  // payment_due — use client-sent value if present, else derive
-  if (data.payment_due !== undefined) {
-    params.push(cleanVal('payment_due', data.payment_due));
-    sets.push(`payment_due = $${params.length}`);
-  } else if (data.total_amount !== undefined && data.payment_status !== undefined) {
-    const totalVal = parseFloat(data.total_amount) || 0;
-    const pDue = data.payment_status === 'paid' ? 0
-      : data.payment_status === 'partial' ? Math.max(0, totalVal - (parseFloat(data.amount_paid) || 0))
-      : totalVal;
-    params.push(pDue);
-    sets.push(`payment_due = $${params.length}`);
-  }
-
-  // net_expense
+// net_expense — a refund reduces what this expense actually cost.
   const totalForNet = parseFloat(data.total_amount || existing.total_amount) || 0;
-  const refundForNet = data.is_refund ? parseFloat(data.refund_amount || 0) : 0;
-  params.push(totalForNet - refundForNet);
+  const isRefundNow = data.is_refund !== undefined ? data.is_refund : existing.is_refund;
+  const refundForNet = isRefundNow ? parseFloat(data.refund_amount ?? existing.refund_amount ?? 0) : 0;
+  const netExpense = totalForNet - refundForNet;
+  params.push(netExpense);
   sets.push(`net_expense = $${params.length}`);
+
+  // payment_due — always derived server-side from net_expense (not the raw
+  // total_amount), so a refunded expense's "amount owed" reflects the refund
+  // instead of showing up as a fresh unpaid bill in Accounts Payable.
+  const statusForDue = data.payment_status !== undefined ? data.payment_status : existing.payment_status;
+  const paidForDue = data.amount_paid !== undefined ? parseFloat(data.amount_paid) || 0 : parseFloat(existing.amount_paid) || 0;
+  const pDue = statusForDue === 'paid' ? 0 : Math.max(0, netExpense - paidForDue);
+  params.push(pDue);
+  sets.push(`payment_due = $${params.length}`); 
 
   sets.push('updated_at = NOW()');
   params.push(id);
 
-  const result = await pool.query(
+ const result = await pool.query(
     `UPDATE expenses SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
     params
   );
-  return result.rows[0];
+  const updated = result.rows[0];
+
+// Auto-mirror an increased payment amount into Cash & Bank. Only fires
+  // when amount_paid went up from what it was before this edit.
+  if (data.amount_paid !== undefined) {
+    const before = parseFloat(existing.amount_paid) || 0;
+    const after = parseFloat(data.amount_paid) || 0;
+    const delta = after - before;
+    if (delta > 0) {
+      bankIntegrationService.safeRecord({
+        sourceModule: 'Expense',
+        sourceId: id,
+        sourceEvent: `payment-update-${after}`,
+        txnType: 'Debit',
+        amount: delta,
+        paymentMethod: data.payment_method || existing.payment_method,
+        description: `Expense payment update — ${updated.expense_number}`,
+        txnDate: new Date(),
+      }).catch(() => {});
+    }
+  }
+
+  // Auto-mirror a NEW refund into Cash & Bank — money coming back from the
+  // vendor is a real cash inflow (Credit). Only fires the first time this
+  // refund_amount is set (existing had none/lower), so re-saving the same
+  // expense doesn't double-record the credit.
+  if (data.is_refund) {
+    const refundBefore = existing.is_refund ? parseFloat(existing.refund_amount) || 0 : 0;
+    const refundAfter = parseFloat(data.refund_amount) || 0;
+    const refundDelta = refundAfter - refundBefore;
+    if (refundDelta > 0) {
+      bankIntegrationService.safeRecord({
+        sourceModule: 'Expense',
+        sourceId: id,
+        sourceEvent: `refund-${refundAfter}`,
+        txnType: 'Credit',
+        amount: refundDelta,
+        paymentMethod: data.refund_method || existing.refund_method || 'Cash',
+        description: `Expense refund received — ${updated.expense_number}`,
+        txnDate: data.refund_date || existing.refund_date || new Date(),
+      }).catch(() => {});
+    }
+  }
+
+  return updated;
 };
 
 const deleteExpense = async (id) => {

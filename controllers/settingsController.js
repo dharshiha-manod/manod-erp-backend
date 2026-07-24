@@ -147,6 +147,7 @@ exports.updateBusinessLocation = async (req, res) => {
   }
 };
 
+// NEW
 exports.deactivateBusinessLocation = async (req, res) => {
   try {
     const businessId = DEFAULT_BUSINESS_ID;
@@ -171,6 +172,43 @@ exports.deactivateBusinessLocation = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to deactivate business location',
+      error: error.message
+    });
+  }
+};
+
+exports.deleteBusinessLocation = async (req, res) => {
+  try {
+    const businessId = DEFAULT_BUSINESS_ID;
+    const { id } = req.params;
+    const location = await settingsService.deleteBusinessLocation(businessId, id);
+
+    if (!location) {
+      return res.status(404).json({
+        success: false,
+        message: 'Business location not found',
+        code: 'LOCATION_NOT_FOUND'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Business location deleted successfully',
+      data: location
+    });
+  } catch (error) {
+    console.error('❌ Error deleting business location:', error.message);
+    // Foreign key violation (location used in products/purchases/etc)
+    if (error.message && error.message.includes('foreign key')) {
+      return res.status(409).json({
+        success: false,
+        message: 'This location is used in other records and cannot be deleted. Deactivate it instead.',
+        code: 'FK_CONSTRAINT'
+      });
+    }
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete business location',
       error: error.message
     });
   }

@@ -21,6 +21,8 @@ const ensureProductSchema = async () => {
   if (productSchemaReady) return;
   try {
     await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS default_supplier_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL;`);
+    await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS hsn_code VARCHAR(20);`);
+    await pool.query(`ALTER TABLE product_categories ADD COLUMN IF NOT EXISTS default_hsn_code VARCHAR(20);`);
     productSchemaReady = true;
   } catch (err) {
     console.error('products schema migration warning:', err.message);
@@ -392,6 +394,7 @@ const deleteVariation = async (id) => {
 // ─────────────────────────────────────────────────────────────
 
 const fetchAllCategories = async (filters = {}) => {
+  await ensureProductSchema();
   const { search = '', limit = 25, offset = 0 } = filters;
 
   let where = 'WHERE 1=1';
@@ -413,7 +416,7 @@ const fetchAllCategories = async (filters = {}) => {
   dataParams.push(offset); const offsetIdx = dataParams.length;
 
   const result = await pool.query(
-    `SELECT c.id, c.name, c.parent_id, c.description, c.created_at, c.updated_at,
+    `SELECT c.id, c.name, c.parent_id, c.description, c.default_hsn_code, c.created_at, c.updated_at,
             p.name AS parent_name
      FROM product_categories c
      LEFT JOIN product_categories p ON p.id = c.parent_id
@@ -426,8 +429,9 @@ const fetchAllCategories = async (filters = {}) => {
 };
 
 const fetchCategoryById = async (id) => {
+  await ensureProductSchema();
   const result = await pool.query(
-    `SELECT c.id, c.name, c.parent_id, c.description, c.created_at, c.updated_at,
+    `SELECT c.id, c.name, c.parent_id, c.description, c.default_hsn_code, c.created_at, c.updated_at,
             p.name AS parent_name
      FROM product_categories c
      LEFT JOIN product_categories p ON p.id = c.parent_id
@@ -437,35 +441,43 @@ const fetchCategoryById = async (id) => {
   return result.rows[0] || null;
 };
 
-const createCategory = async ({ name, parent_id, description }) => {
+const createCategory = async ({ name, parent_id, description, default_hsn_code }) => {
   if (!name?.trim()) throw new Error('Category name is required');
+  await ensureProductSchema();
 
   const result = await pool.query(
-    `INSERT INTO product_categories (name, parent_id, description)
-     VALUES ($1, $2, $3)
-     RETURNING id, name, parent_id, description, created_at, updated_at`,
-    [name.trim(), parent_id || null, description?.trim() || null]
+    `INSERT INTO product_categories (name, parent_id, description, default_hsn_code)
+     VALUES ($1, $2, $3, $4)
+     RETURNING id, name, parent_id, description, default_hsn_code, created_at, updated_at`,
+    [name.trim(), parent_id || null, description?.trim() || null, default_hsn_code?.trim() || null]
   );
   return result.rows[0];
 };
 
-const updateCategory = async (id, { name, parent_id, description }) => {
+const updateCategory = async (id, { name, parent_id, description, default_hsn_code }) => {
+  await ensureProductSchema();
   const existing = await fetchCategoryById(id);
   if (!existing) throw new Error('Category not found');
 
   const result = await pool.query(
     `UPDATE product_categories
-     SET name        = COALESCE($1, name),
-         parent_id   = $2,
-         description = COALESCE($3, description),
-         updated_at  = CURRENT_TIMESTAMP
-     WHERE id = $4
-     RETURNING id, name, parent_id, description, updated_at`,
-    [name?.trim() || null, parent_id !== undefined ? (parent_id || null) : existing.parent_id, description?.trim() || null, id]
+     SET name             = COALESCE($1, name),
+         parent_id        = $2,
+         description      = COALESCE($3, description),
+         default_hsn_code = $4,
+         updated_at       = CURRENT_TIMESTAMP
+     WHERE id = $5
+     RETURNING id, name, parent_id, description, default_hsn_code, updated_at`,
+    [
+      name?.trim() || null,
+      parent_id !== undefined ? (parent_id || null) : existing.parent_id,
+      description?.trim() || null,
+      default_hsn_code !== undefined ? (default_hsn_code?.trim() || null) : existing.default_hsn_code,
+      id
+    ]
   );
   return result.rows[0];
 };
-
 const deleteCategory = async (id) => {
   const result = await pool.query(
     'DELETE FROM product_categories WHERE id = $1 RETURNING id, name',
@@ -536,7 +548,9 @@ const result = await pool.query(
        p.margin,
        p.selling_price_exc_tax   AS exc_tax_sell,
      p.image_url, p.status, p.current_stock, p.warranty,
+p.image_url, p.status, p.current_stock, p.warranty,
   p.default_supplier_id, sup.contact_name AS default_supplier_name,
+       p.hsn_code,
        p.created_at, p.updated_at
      FROM products p
      LEFT JOIN product_units      pu  ON pu.id = p.unit_id
@@ -570,8 +584,9 @@ const fetchProductById = async (id) => {
        p.purchase_price_inc_tax  AS inc_tax,
        p.margin,
        p.selling_price_exc_tax   AS exc_tax_sell,
-       p.image_url, p.status, p.current_stock, p.warranty,
+    p.image_url, p.status, p.current_stock, p.warranty,
        p.default_supplier_id, sup.name AS default_supplier_name,
+       p.hsn_code,
        p.created_at, p.updated_at
      FROM products p
      LEFT JOIN product_units      pu  ON pu.id = p.unit_id
@@ -669,8 +684,8 @@ const {
     item_type, warranty,
     exc_tax, inc_tax, margin, exc_tax_sell,
     opening_stock,
-    default_supplier_id, default_supplier,
-    image, image_url, status
+   default_supplier_id, default_supplier,
+    image, image_url, status, hsn_code
   } = productData;
 
   if (sku && await skuExists(sku)) throw new Error('SKU already exists');
@@ -681,6 +696,7 @@ const {
   const resolvedCategoryId = category_id || await resolveCategoryId(category);
   const resolvedSubCatId   = sub_category_id || await resolveCategoryId(sub_category);
   const resolvedSupplierId = default_supplier_id || await resolveSupplierId(default_supplier);
+const resolvedLocation = business_location || 'Manodtechnologies (BL0001)';
 const result = await pool.query(
     `INSERT INTO products (
        name, sku, barcode_type,
@@ -690,10 +706,10 @@ const result = await pool.query(
        description, weight, prep_time,
       tax, selling_price_tax_type, product_type, item_type, warranty,
        purchase_price_exc_tax, purchase_price_inc_tax, margin, selling_price_exc_tax,
-       current_stock, image_url, status, default_supplier_id
+       current_stock, image_url, status, default_supplier_id, hsn_code
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-       $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27
+       $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28
      )
      RETURNING id`,
     [
@@ -705,7 +721,7 @@ const result = await pool.query(
       resolvedCategoryId,
       resolvedSubCatId,
       variation_template?.trim() || null,
-      business_location || 'Manodtechnologies (BL0001)',
+      resolvedLocation,
       parseFloat(alert_qty) || 0,
       manage_stock !== false,
       description?.trim() || null,
@@ -723,9 +739,23 @@ const result = await pool.query(
       parseFloat(opening_stock) || 0,
       image_url || image || null,
 status || 'Active',
-      resolvedSupplierId
+      resolvedSupplierId,
+      hsn_code?.trim() || null
     ]
   );
+
+  // Seed the new product's opening stock into the per-location table too,
+  // so it isn't invisible to stockLocationService until the first sale/transfer.
+  try {
+    await pool.query(
+      `INSERT INTO product_stock_by_location (product_id, location, quantity)
+       VALUES ($1, $2, $3) ON CONFLICT (product_id, location) DO NOTHING`,
+      [result.rows[0].id, resolvedLocation, parseFloat(opening_stock) || 0]
+    );
+  } catch (seedErr) {
+    console.error('[createProduct] stock-by-location seed warning:', seedErr.message);
+  }
+
   return fetchProductById(result.rows[0].id);
 };
 const updateProduct = async (id, productData) => {
@@ -745,8 +775,8 @@ const {
     item_type, warranty,
     exc_tax, inc_tax, margin, exc_tax_sell,
     opening_stock,
-    default_supplier_id, default_supplier,
-    image, image_url, status
+   default_supplier_id, default_supplier,
+    image, image_url, status, hsn_code
   } = productData;
 
   if (sku && await skuExists(sku, id)) throw new Error('SKU already in use');
@@ -783,10 +813,11 @@ const result = await pool.query(
        selling_price_exc_tax   = COALESCE($23, selling_price_exc_tax),
        current_stock           = COALESCE($24, current_stock),
        image_url               = COALESCE($25, image_url),
-       status                  = COALESCE($26, status),
+    status                  = COALESCE($26, status),
        default_supplier_id     = COALESCE($27, default_supplier_id),
+       hsn_code                = COALESCE($28, hsn_code),
        updated_at              = CURRENT_TIMESTAMP
-     WHERE id = $28
+     WHERE id = $29
      RETURNING id`,
     [
       name?.trim()                  || null,
@@ -814,8 +845,9 @@ const result = await pool.query(
       (exc_tax_sell !== undefined && exc_tax_sell !== null && exc_tax_sell !== "" && !isNaN(parseFloat(exc_tax_sell))) ? parseFloat(exc_tax_sell) : null,
     opening_stock !== undefined && opening_stock !== null && opening_stock !== '' && !isNaN(opening_stock) ? parseInt(opening_stock) : null,
      image_url || image || null,
-   status                        || null,
+ status                        || null,
       resolvedSupplierId            ?? null,
+      hsn_code?.trim()               || null,
       id
     ]
   );

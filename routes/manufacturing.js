@@ -59,6 +59,14 @@ router.delete("/production/:id", authenticateToken, (req, res) => send(res, svc.
 router.post("/work-orders/:id/start",  authenticateToken, (req, res) => send(res, svc.startProductionRun(req.params.id)));
 router.post("/work-orders/:id/finish", authenticateToken, (req, res) => send(res, svc.finishProductionRun(req.params.id)));
 
+// Purchases module integration: check this WO's BOM against real stock and
+// auto-raise Purchase Order(s) (via purchaseService.createPurchase) for any
+// shortfall, grouped by each component's default supplier.
+router.post("/work-orders/:id/create-po", authenticateToken, (req, res) => {
+  const userId = req.user?.id || req.user?.userId || null;
+  send(res, svc.createPurchaseOrderFromShortfall(req.params.id, userId));
+});
+
 // ══════════════════════════════════════════════════════════════════
 // RESOURCES
 // ══════════════════════════════════════════════════════════════════
@@ -129,5 +137,8 @@ router.delete("/schedule/:id", authenticateToken, (req, res) => send(res, svc.de
 // ══════════════════════════════════════════════════════════════════
 router.get("/reports/summary", authenticateToken, (req, res) =>
   send(res, svc.fetchReportsSummary(req.query.from, req.query.to)));
+router.get("/reports/cost-variance", authenticateToken, (req, res) =>
+  send(res, svc.fetchCostVariance(req.query.from, req.query.to))
+);
 
 module.exports = router;

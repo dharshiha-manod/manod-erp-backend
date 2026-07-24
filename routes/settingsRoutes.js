@@ -46,7 +46,9 @@ router.post('/business/logo', uploadLogo.single('logo'), settingsController.uplo
 router.get('/locations', settingsController.getBusinessLocations);
 router.post('/locations', settingsController.createBusinessLocation);
 router.put('/locations/:id', settingsController.updateBusinessLocation);
+// NEW
 router.patch('/locations/:id/deactivate', settingsController.deactivateBusinessLocation);
+router.delete('/locations/:id', settingsController.deleteBusinessLocation);
 
 // ── TAX RATES ──────────────────────────────────────────────────
 router.get('/tax-rates', settingsController.getTaxRates);

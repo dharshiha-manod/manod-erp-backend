@@ -7,8 +7,8 @@
  * We ALTER TABLE to add extra columns on first use (idempotent).
  * ====================================================
  */
-
 const pool = require('../config/database');
+const bankIntegrationService = require('./bankIntegrationService');
 
 // ── ENSURE EXTRA COLUMNS EXIST (run once) ────────────────────────────────────
 let schemaReady = false;
@@ -186,10 +186,10 @@ for (const item of items) {
          item.product_sku || item.sku || null, qty, price, +tot.toFixed(2)]
       );
 
-      // Goods going back to supplier — stock leaves the warehouse
-      const pid = parseInt(item.product_id, 10);
+  // Goods going back to supplier — stock leaves the warehouse
+      const pid = item.product_id; // UUID string — do NOT parseInt this
       const qtyInt = Math.round(qty); // current_stock is INTEGER
-      if (pid && !isNaN(pid) && qtyInt > 0) {
+      if (pid && qtyInt > 0) {
         await client.query(
           `UPDATE products SET current_stock = GREATEST(0, COALESCE(current_stock, 0) - $1), updated_at = NOW() WHERE id = $2`,
           [qtyInt, pid]
@@ -199,6 +199,24 @@ for (const item of items) {
 
     await client.query('COMMIT');
     console.log(`✅ Purchase Return created: ${returnNumber}`);
+
+    // Auto-mirror the refund into Cash & Bank — money coming back in from
+    // the supplier is a real cash inflow (Credit), same pattern as how
+    // expenseService.js mirrors payments going out (Debit).
+    if (amtPaid > 0) {
+      bankIntegrationService.safeRecord({
+        sourceModule: 'PurchaseReturn',
+        sourceId: pr.id,
+        sourceEvent: 'refund',
+        txnType: 'Credit',
+        amount: amtPaid,
+        paymentMethod: body.payment_method || 'Bank Transfer',
+        description: `Purchase return refund — ${returnNumber}`,
+        txnDate: pr.return_date || new Date(),
+        userId,
+      }).catch(() => {});
+    }
+
     return fetchReturnById(pr.id);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -215,8 +233,9 @@ const updateReturn = async (id, body) => {
   try {
     await client.query('BEGIN');
 
-    const ex = await client.query(`SELECT id FROM purchase_returns WHERE id = $1`, [id]);
+const ex = await client.query(`SELECT id, amount_paid, return_date FROM purchase_returns WHERE id = $1`, [id]);
     if (ex.rows.length === 0) throw new Error('Purchase return not found');
+    const existingReturn = ex.rows[0];
 
     const items     = Array.isArray(body.items) ? body.items : null;
     const subtotal  = parseFloat(body.subtotal)     || 0;
@@ -245,10 +264,10 @@ if (items) {
     `SELECT product_id, quantity FROM purchase_return_items WHERE purchase_return_id = $1`,
     [id]
   );
-  for (const oi of oldItems.rows) {
-    const pid = parseInt(oi.product_id, 10);
+for (const oi of oldItems.rows) {
+    const pid = oi.product_id; // UUID string — do NOT parseInt this
     const qty = Math.round(parseFloat(oi.quantity) || 0);
-    if (pid && !isNaN(pid) && qty > 0) {
+    if (pid && qty > 0) {
       await client.query(
         `UPDATE products SET current_stock = COALESCE(current_stock,0) + $1, updated_at = NOW() WHERE id = $2`,
         [qty, pid]
@@ -270,10 +289,10 @@ if (items) {
        item.product_sku||item.sku||null, qty, price, +tot.toFixed(2)]
     );
 
- // Apply stock impact of the NEW items
-    const pid = parseInt(item.product_id, 10);
+// Apply stock impact of the NEW items
+    const pid = item.product_id; // UUID string — do NOT parseInt this
     const qtyInt = Math.round(qty); // current_stock is INTEGER
-    if (pid && !isNaN(pid) && qtyInt > 0) {
+    if (pid && qtyInt > 0) {
       await client.query(
         `UPDATE products SET current_stock = GREATEST(0, COALESCE(current_stock,0) - $1), updated_at = NOW() WHERE id = $2`,
         [qtyInt, pid]
@@ -304,9 +323,9 @@ const deleteReturn = async (id) => {
       [id]
     );
     for (const item of items.rows) {
-      const pid = parseInt(item.product_id, 10);
+      const pid = item.product_id; // UUID string — do NOT parseInt this
       const qty = Math.round(parseFloat(item.quantity) || 0); // current_stock is INTEGER — must pass a whole number
-      if (pid && !isNaN(pid) && qty > 0) {
+      if (pid && qty > 0) { 
         await client.query(
           `UPDATE products SET current_stock = COALESCE(current_stock, 0) + $1, updated_at = NOW() WHERE id = $2`,
           [qty, pid]

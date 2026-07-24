@@ -6,6 +6,8 @@
  * ====================================================
  */
 const pool = require('../config/database');
+const bankIntegrationService = require('./bankIntegrationService');
+const stockLocationService = require('./stockLocationService');
 
 // ── SCHEMA MIGRATION (idempotent) ────────────────────────────────────────────
 // purchase_items didn't have a product_id column, so purchases could never
@@ -25,7 +27,12 @@ const ensureSchema = async () => {
 // ── STOCK IMPACT ──────────────────────────────────────────────────────────────
 // 'apply'   → purchase received, stock goes UP
 // 'reverse' → purchase un-received / deleted, stock goes back DOWN
+
+
 const applyPurchaseStockImpact = async (purchaseId, direction, client = pool) => {
+  const purchaseRes = await client.query(`SELECT location FROM purchases WHERE id = $1`, [purchaseId]);
+  const location = purchaseRes.rows[0]?.location || 'Manodtechnologies (BL0001)';
+
   const items = await client.query(
     `SELECT product_id, quantity FROM purchase_items WHERE purchase_id = $1 AND product_id IS NOT NULL`,
     [purchaseId]
@@ -34,10 +41,9 @@ const applyPurchaseStockImpact = async (purchaseId, direction, client = pool) =>
     const delta = direction === 'apply'
       ? Math.abs(parseFloat(item.quantity))
       : -Math.abs(parseFloat(item.quantity));
-    await client.query(
-      `UPDATE products SET current_stock = GREATEST(0, COALESCE(current_stock, 0) + $1), updated_at = NOW() WHERE id = $2`,
-      [delta, item.product_id]
-    );
+    // allowNegative: true — a 'reverse' can legitimately pull stock below what
+    // was received if some of it was already sold/consumed elsewhere since.
+    await stockLocationService.adjustStockAtLocation(client, item.product_id, location, delta, { allowNegative: true });
   }
 };
 
@@ -322,8 +328,8 @@ const createPurchase = async (body, userId) => {
     );
 
     const purchase = purchaseResult.rows[0];
-
-    // Insert line items
+// Insert line items
+    const capitalItemsToRegister = [];
     for (const item of items) {
       const qty      = parseFloat(item.quantity)     || 1;
       const cost     = parseFloat(item.unit_cost)    || 0;
@@ -348,6 +354,17 @@ const createPurchase = async (body, userId) => {
           +selling.toFixed(4),
         ]
       );
+
+      // Flag capital items (machinery/equipment) for auto Fixed Asset creation
+      if (item.is_capital_item) {
+        capitalItemsToRegister.push({
+          name: item.product_name || item.name || 'Unnamed Asset',
+          sku: item.product_sku || item.sku || null,
+          cost: +lineTotal.toFixed(2),
+          category: item.asset_category || 'Plant & Machinery',
+          useful_life_yrs: parseFloat(item.useful_life_yrs) || 5,
+        });
+      }
     }
 
    // Backfill each product's default_supplier_id if it doesn't have one yet —
@@ -385,9 +402,75 @@ const createPurchase = async (body, userId) => {
         ]
       );
     }
-
-    await client.query('COMMIT');
+await client.query('COMMIT');
     console.log(`✅ Purchase created: ${purchase.reference_no} (id: ${purchase.id})`);
+
+    // ── Auto-register capital items as Fixed Assets (best-effort, post-commit) ──
+    if (capitalItemsToRegister.length > 0) {
+      try {
+        const accountingService = require('./accountingService');
+        for (const [idx, ci] of capitalItemsToRegister.entries()) {
+          await accountingService.createFixedAsset({
+            asset_code: `FA-PUR${purchase.id}-${idx + 1}`,
+            name: ci.name,
+            category: ci.category,
+            purchase_date: purchase.purchase_date,
+            cost: ci.cost,
+            method: 'SLM',
+            useful_life_yrs: ci.useful_life_yrs,
+            salvage_value: 0,
+            payment_method: body.payment_method || 'Bank Transfer',
+          });
+        }
+        console.log(`✅ Auto-created ${capitalItemsToRegister.length} fixed asset(s) from purchase ${purchase.reference_no}`);
+      } catch (assetErr) {
+        console.error('⚠️ Fixed asset auto-creation failed (purchase still saved):', assetErr.message);
+      }
+    }
+
+    // ── Phase 1 GST split (additive, best-effort, post-commit) ──
+    try {
+      const taxCalcService = require('./taxCalcService');
+      const settings = await taxCalcService.getSettings();
+      let supplierState = null;
+      if (body.supplier_id) {
+        const sup = await pool.query(`SELECT state FROM contacts WHERE id = $1`, [body.supplier_id]);
+        supplierState = sup.rows[0]?.state || null;
+      }
+      const overallRate = fin.subtotal > 0 ? (Number(fin.tax_amount) / Number(fin.subtotal)) * 100 : 0;
+      const { rows: insertedItems } = await pool.query(
+        `SELECT id, line_total FROM purchase_items WHERE purchase_id = $1`,
+        [purchase.id]
+      );
+      for (const row of insertedItems) {
+        const split = taxCalcService.calculateGST(Number(row.line_total) || 0, overallRate, supplierState, settings.business_state);
+        await pool.query(
+          `UPDATE purchase_items SET cgst_rate=$1, sgst_rate=$2, igst_rate=$3,
+           cgst_amt=$4, sgst_amt=$5, igst_amt=$6 WHERE id=$7`,
+          [split.isInterState ? 0 : overallRate / 2, split.isInterState ? 0 : overallRate / 2, split.isInterState ? overallRate : 0,
+           split.cgst, split.sgst, split.igst, row.id]
+        );
+      }
+    } catch (gstErr) {
+      console.error('[createPurchase] GST split population warning:', gstErr.message);
+    }
+
+    // Auto-mirror this vendor payment into Cash & Bank — outside the
+    // purchase transaction, best-effort, never affects the purchase itself.
+    if (fin.amount_paid > 0) {
+      bankIntegrationService.safeRecord({
+        sourceModule: 'Purchase',
+        sourceId: purchase.id,
+        sourceEvent: 'payment',
+        txnType: 'Debit',
+        amount: fin.amount_paid,
+        paymentMethod: body.payment_method || 'Cash',
+        description: `Payment to supplier — ${purchase.reference_no}`,
+        txnDate: body.payment_date || new Date(),
+        userId,
+      }).catch(() => {});
+    }
+
     return purchase;
   } catch (err) {
     await client.query('ROLLBACK');
@@ -627,9 +710,23 @@ const addPayment = async (purchaseId, body, userId) => {
       ]
     );
 
-    await recalcPaymentStatus(purchaseId, client);
+   await recalcPaymentStatus(purchaseId, client);
     await client.query('COMMIT');
     console.log(`✅ Payment added to purchase ${purchaseId}: ₹${amount}`);
+
+    // Auto-mirror this vendor payment into Cash & Bank.
+    bankIntegrationService.safeRecord({
+      sourceModule: 'Purchase',
+      sourceId: result.rows[0].id,
+      sourceEvent: `payment-${result.rows[0].id}`,
+      txnType: 'Debit',
+      amount,
+      paymentMethod: body.payment_method || 'Cash',
+      description: `Payment to supplier — Purchase #${purchaseId}`,
+      txnDate: body.paid_on || new Date(),
+      userId,
+    }).catch(() => {});
+
     return result.rows[0];
   } catch (err) {
     await client.query('ROLLBACK');
