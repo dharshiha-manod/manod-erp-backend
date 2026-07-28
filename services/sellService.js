@@ -287,7 +287,7 @@ let sellSchemaReady = false;
 
     const {
       invoiceNo, invoiceDate, dueDate, docType = "Sales Invoice",
-      docStatus = "Draft", customer, customerId = null, customerType, warehouse,
+    docStatus = "Draft", customer, customerId = null, customerType, warehouse, warehouseId,
       salesperson, paymentMethod, paymentTerms, paymentStatus = "Unpaid",
       paidAmount = 0,
       // Amount the user chose to apply from the customer's existing
@@ -437,21 +437,23 @@ let sellSchemaReady = false;
         continue;
       }
 
-   const qty = it.qty || 1;
-      const stockHere = await stockLocationService.stockAtLocation(db, pid, location || warehouse);
+ const qty = it.qty || 1;
+     const resolvedWarehouseId = warehouseId || await stockLocationService.getDefaultLocationId(db);
+      const stockHere = await stockLocationService.stockAtLocation(db, pid, resolvedWarehouseId);
       if (qty > stockHere) {
         const extra = await _tryAutoWorkOrder(pid, prows[0].name, stockHere, qty);
-        throw new Error(`Insufficient stock for "${prows[0].name}" at "${location || warehouse}": have ${stockHere}, cannot sell ${qty}.${extra}`);
+        throw new Error(`Insufficient stock for "${prows[0].name}" at "${warehouse}": have ${stockHere}, cannot sell ${qty}.${extra}`);
       }
       resolved.push({ pid, qty });
     }
     for (const { pid, qty } of resolved) {
-      await stockLocationService.adjustStockAtLocation(db, pid, location || warehouse, -qty);
+      const resolvedWarehouseId = warehouseId || await stockLocationService.getDefaultLocationId(db);
+      await stockLocationService.adjustStockAtLocation(db, pid, resolvedWarehouseId, -qty);
       notificationEngine.checkAndAlertLowStock(pid).catch(err =>
         console.error(`[createInvoice] low stock check failed for pid=${pid}:`, err.message)
       );
     }
-  }
+  } 
     // Bump the saved Invoice Settings counter forward by 1 so the NEXT
     // invoice generated from Settings gets a fresh number instead of
     // repeating this same one. Best-effort — if it fails, invoice creation
@@ -1136,7 +1138,7 @@ let sellSchemaReady = false;
   async function createDraft(data) {
     const {
       invoiceNo, invoiceDate, customer, customerType = "Walk-In",
-      warehouse = "Manod HQ", salesperson, notes, grandTotal = 0, items = [],
+     warehouse, warehouseId, salesperson, notes, grandTotal = 0, items = [],
     } = data;
 
     const { rows } = await q(

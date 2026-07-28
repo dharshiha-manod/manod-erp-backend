@@ -21,7 +21,7 @@
  */
 const pool = require('../config/database');
 const stockLocationService = require('./stockLocationService');
-
+const notificationEngine = require('./notificationEngine');
 const DEFAULT_BUSINESS_ID = 1; // single-business setup for now
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
@@ -55,6 +55,15 @@ const applyTransferStockImpact = async (transferId, direction, client) => {
   if (!transfer) return;
   const { location_from, location_to } = transfer;
 
+  // location_from/location_to are stored as names; resolve to ids for stockLocationService.
+  const idLookup = await client.query(
+    `SELECT id, location_name FROM business_locations WHERE location_name IN ($1, $2)`,
+    [location_from, location_to]
+  );
+  const fromLocationId = idLookup.rows.find(r => r.location_name === location_from)?.id;
+  const toLocationId   = idLookup.rows.find(r => r.location_name === location_to)?.id;
+  if (!fromLocationId || !toLocationId) return;
+
   const items = await client.query(
     `SELECT product_id, quantity FROM stock_transfer_items WHERE stock_transfer_id = $1`,
     [transferId]
@@ -64,12 +73,18 @@ const applyTransferStockImpact = async (transferId, direction, client) => {
     const qty = Math.round(parseFloat(item.quantity) || 0);
     if (!pid || isNaN(pid) || qty <= 0) continue;
 
-    if (direction === 'apply') {
-      await stockLocationService.adjustStockAtLocation(client, pid, location_from, -qty);
-      await stockLocationService.adjustStockAtLocation(client, pid, location_to, qty);
+   if (direction === 'apply') {
+      await stockLocationService.adjustStockAtLocation(client, pid, fromLocationId, -qty);
+      await stockLocationService.adjustStockAtLocation(client, pid, toLocationId, qty);
+
+      // Source location just lost stock — check if it crossed the alert
+      // threshold. Non-blocking, same pattern as sellService.js.
+      notificationEngine.checkAndAlertLowStock(pid).catch(err =>
+        console.error('[StockTransfer] low stock alert check failed:', err.message)
+      );
     } else {
-      await stockLocationService.adjustStockAtLocation(client, pid, location_from, qty, { allowNegative: true });
-      await stockLocationService.adjustStockAtLocation(client, pid, location_to, -qty, { allowNegative: true });
+      await stockLocationService.adjustStockAtLocation(client, pid, fromLocationId, qty, { allowNegative: true });
+      await stockLocationService.adjustStockAtLocation(client, pid, toLocationId, -qty, { allowNegative: true });
     }
   }
 };
@@ -198,9 +213,34 @@ const createStockTransfer = async (body, userId) => {
     if (!body.location_from || !body.location_to) {
       throw new Error('Both source and destination locations are required');
     }
-    if (body.location_from === body.location_to) {
+ if (body.location_from === body.location_to) {
       throw new Error('Source and destination locations must be different');
     }
+
+    // Reject any location string that isn't a real registered business location —
+    // prevents a typo/free-text value from silently creating phantom rows
+    // in product_stock_by_location.
+    const locCheck = await client.query(
+      `SELECT location_name FROM business_locations WHERE location_name IN ($1, $2)`,
+      [body.location_from, body.location_to]
+    );
+    const foundNames = locCheck.rows.map(r => r.location_name);
+    if (!foundNames.includes(body.location_from)) {
+      throw new Error(`Location "${body.location_from}" does not exist in Business Locations`);
+    }
+if (!foundNames.includes(body.location_to)) {
+      throw new Error(`Location "${body.location_to}" does not exist in Business Locations`);
+    }
+
+    // stockLocationService keys everything by numeric location_id, but this
+    // table stores location_from/location_to as names — resolve both once here.
+    const idLookup = await client.query(
+      `SELECT id, location_name FROM business_locations WHERE location_name IN ($1, $2)`,
+      [body.location_from, body.location_to]
+    );
+const fromLocationId = idLookup.rows.find(r => r.location_name === body.location_from)?.id;
+    const toLocationId   = idLookup.rows.find(r => r.location_name === body.location_to)?.id;
+    console.log('DEBUG transfer locations:', { location_from: body.location_from, location_to: body.location_to, fromLocationId, toLocationId, idLookupRows: idLookup.rows });
 
     const transferNumber = body.transfer_number?.trim()
       ? body.transfer_number.trim()
@@ -244,7 +284,7 @@ const createStockTransfer = async (body, userId) => {
       );
       const prod = prodRes.rows[0];
       if (!prod) throw new Error(`Product not found (id: ${productId})`);
-      const stockAtSource = await stockLocationService.stockAtLocation(client, productId, body.location_from);
+  const stockAtSource = await stockLocationService.stockAtLocation(client, productId, fromLocationId);
       if (qty > stockAtSource) {
         throw new Error(`Insufficient stock for "${prod.name}" at "${body.location_from}": have ${stockAtSource}, cannot transfer ${qty}`);
       }
@@ -344,10 +384,15 @@ const updateStockTransfer = async (id, body, userId) => {
         const prod = prodRes.rows[0];
         if (!prod) throw new Error(`Product not found (id: ${productId})`);
         const sourceLocation = body.location_from || prev.location_from;
-        const stockAtSource = await stockLocationService.stockAtLocation(client, productId, sourceLocation);
+        const sourceLocIdRes = await client.query(
+          `SELECT id FROM business_locations WHERE location_name = $1`,
+          [sourceLocation]
+        );
+        const sourceLocationId = sourceLocIdRes.rows[0]?.id;
+        const stockAtSource = await stockLocationService.stockAtLocation(client, productId, sourceLocationId);
         if (qty > stockAtSource) {
           throw new Error(`Insufficient stock for "${prod.name}" at "${sourceLocation}": have ${stockAtSource}, cannot transfer ${qty}`);
-        }
+        } 
 
         await client.query(
           `INSERT INTO stock_transfer_items (

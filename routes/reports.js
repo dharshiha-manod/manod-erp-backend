@@ -32,6 +32,12 @@ router.get('/net-profit', authenticateToken, ctrl.netProfitSummary);
 router.get('/stock', authenticateToken, ctrl.stockReport);
 
 // ═══════════════════════════════════════════════════════════════
+// LOCATION-WISE STOCK REPORT  → /api/reports/location-wise-stock
+// Query params: location_id, product_id, page, limit
+// ═══════════════════════════════════════════════════════════════
+router.get('/location-wise-stock', authenticateToken, ctrl.locationWiseStockReport);
+
+// ═══════════════════════════════════════════════════════════════
 // STOCK ADJUSTMENT REPORT  → /api/reports/stock-adjustment
 // ═══════════════════════════════════════════════════════════════
 router.get('/stock-adjustment', authenticateToken, ctrl.stockAdjustmentReport);

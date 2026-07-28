@@ -9,6 +9,7 @@
 'use strict';
 
 const pool = require('../config/database');
+const notificationEngine = require('./notificationEngine');
 
 // ── Reference number ──────────────────────────────────────────────────────────
 const generateReferenceNo = async (client = pool) => {
@@ -45,6 +46,15 @@ const applyStockImpact = async (adjustmentId, direction, client) => {
        WHERE  id = $2`,
       [delta, item.product_id]
     );
+
+    // Stock only went DOWN when direction === 'apply' — that's the only
+    // case that can newly cross the low-stock threshold, so only check then.
+    // Non-blocking, same pattern as sellService.js.
+    if (direction === 'apply') {
+      notificationEngine.checkAndAlertLowStock(item.product_id).catch(err =>
+        console.error('[StockAdjustment] low stock alert check failed:', err.message)
+      );
+    }
   }
 };
 

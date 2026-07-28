@@ -11,6 +11,7 @@
 
 const pool = require('../config/database');
 const contactService = require('./contactService');
+const stockLocationService = require('./stockLocationService');
 
 // ── SCHEMA MIGRATION (idempotent) ────────────────────────────────────────────
 // products didn't have a default_supplier_id column — needed to remember
@@ -678,7 +679,7 @@ const {
     category, category_id,
     sub_category, sub_category_id,
     variation_template,
-    business_location, alert_qty, manage_stock,
+    business_location, business_location_id, alert_qty, manage_stock,
     description, weight, prep_time,
     tax, selling_price_tax_type, product_type,
     item_type, warranty,
@@ -695,8 +696,8 @@ const {
   const resolvedBrandId    = brand_id    || await resolveBrandId(brand);
   const resolvedCategoryId = category_id || await resolveCategoryId(category);
   const resolvedSubCatId   = sub_category_id || await resolveCategoryId(sub_category);
-  const resolvedSupplierId = default_supplier_id || await resolveSupplierId(default_supplier);
-const resolvedLocation = business_location || 'Manodtechnologies (BL0001)';
+ const resolvedSupplierId = default_supplier_id || await resolveSupplierId(default_supplier);
+const resolvedLocationId = business_location_id || await stockLocationService.getDefaultLocationId(pool);
 const result = await pool.query(
     `INSERT INTO products (
        name, sku, barcode_type,
@@ -721,7 +722,7 @@ const result = await pool.query(
       resolvedCategoryId,
       resolvedSubCatId,
       variation_template?.trim() || null,
-      resolvedLocation,
+     resolvedLocationId,
       parseFloat(alert_qty) || 0,
       manage_stock !== false,
       description?.trim() || null,
@@ -744,18 +745,17 @@ status || 'Active',
     ]
   );
 
-  // Seed the new product's opening stock into the per-location table too,
+ // Seed the new product's opening stock into the per-location table too,
   // so it isn't invisible to stockLocationService until the first sale/transfer.
   try {
     await pool.query(
-      `INSERT INTO product_stock_by_location (product_id, location, quantity)
-       VALUES ($1, $2, $3) ON CONFLICT (product_id, location) DO NOTHING`,
-      [result.rows[0].id, resolvedLocation, parseFloat(opening_stock) || 0]
+      `INSERT INTO product_stock_by_location (product_id, location_id, quantity)
+       VALUES ($1, $2, $3) ON CONFLICT (product_id, location_id) DO NOTHING`,
+      [result.rows[0].id, resolvedLocationId, parseFloat(opening_stock) || 0]
     );
   } catch (seedErr) {
     console.error('[createProduct] stock-by-location seed warning:', seedErr.message);
   }
-
   return fetchProductById(result.rows[0].id);
 };
 const updateProduct = async (id, productData) => {

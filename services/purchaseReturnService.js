@@ -9,6 +9,20 @@
  */
 const pool = require('../config/database');
 const bankIntegrationService = require('./bankIntegrationService');
+const notificationEngine = require('./notificationEngine');
+const { adjustStockAtLocation } = require('./stockLocationService');
+
+// Resolve a free-text location name (as stored on purchase_returns.location)
+// to a business_locations.id, so stock can be deducted from the correct
+// location row in product_stock_by_location — not just the global total.
+const resolveLocationId = async (client, locationName) => {
+  if (!locationName) return null;
+  const { rows } = await client.query(
+    `SELECT id FROM business_locations WHERE location_name ILIKE $1 LIMIT 1`,
+    [locationName]
+  );
+  return rows[0]?.id || null;
+};
 
 // ── ENSURE EXTRA COLUMNS EXIST (run once) ────────────────────────────────────
 let schemaReady = false;
@@ -185,14 +199,18 @@ for (const item of items) {
         [pr.id, item.product_id || null, item.product_name || item.name || 'Unnamed',
          item.product_sku || item.sku || null, qty, price, +tot.toFixed(2)]
       );
-
-  // Goods going back to supplier — stock leaves the warehouse
+// Goods going back to supplier — stock leaves the warehouse
       const pid = item.product_id; // UUID string — do NOT parseInt this
-      const qtyInt = Math.round(qty); // current_stock is INTEGER
+      const qtyInt = Math.round(qty); // stock is tracked as integer units
       if (pid && qtyInt > 0) {
-        await client.query(
-          `UPDATE products SET current_stock = GREATEST(0, COALESCE(current_stock, 0) - $1), updated_at = NOW() WHERE id = $2`,
-          [qtyInt, pid]
+        const locationId = await resolveLocationId(client, body.location);
+        // adjustStockAtLocation updates product_stock_by_location for the
+        // matched location AND recomputes products.current_stock as the
+        // correct sum across all locations — so the two numbers never
+        // drift apart, and the Location-wise Stock Report stays accurate.
+    await adjustStockAtLocation(client, pid, locationId, -qtyInt, { allowNegative: false });
+        notificationEngine.checkAndAlertLowStock(pid).catch(err =>
+          console.error('[PurchaseReturn] low stock alert check failed:', err.message)
         );
       }
     }
@@ -268,10 +286,8 @@ for (const oi of oldItems.rows) {
     const pid = oi.product_id; // UUID string — do NOT parseInt this
     const qty = Math.round(parseFloat(oi.quantity) || 0);
     if (pid && qty > 0) {
-      await client.query(
-        `UPDATE products SET current_stock = COALESCE(current_stock,0) + $1, updated_at = NOW() WHERE id = $2`,
-        [qty, pid]
-      );
+      const oldLocationId = await resolveLocationId(client, existingReturn.location);
+      await adjustStockAtLocation(client, pid, oldLocationId, qty, { allowNegative: true });
     }
   }
 
@@ -290,17 +306,17 @@ for (const oi of oldItems.rows) {
     );
 
 // Apply stock impact of the NEW items
-    const pid = item.product_id; // UUID string — do NOT parseInt this
+ const pid = item.product_id; // UUID string — do NOT parseInt this
     const qtyInt = Math.round(qty); // current_stock is INTEGER
     if (pid && qtyInt > 0) {
-      await client.query(
-        `UPDATE products SET current_stock = GREATEST(0, COALESCE(current_stock,0) - $1), updated_at = NOW() WHERE id = $2`,
-        [qtyInt, pid]
+      const newLocationId = await resolveLocationId(client, body.location);
+      await adjustStockAtLocation(client, pid, newLocationId, -qtyInt, { allowNegative: false });
+      notificationEngine.checkAndAlertLowStock(pid).catch(err =>
+        console.error('[PurchaseReturn] low stock alert check failed:', err.message)
       );
     }
   }
 }
-
     await client.query('COMMIT');
     console.log(`✅ Purchase Return updated: id ${id}`);
     return fetchReturnById(id);
@@ -316,7 +332,14 @@ for (const oi of oldItems.rows) {
 const deleteReturn = async (id) => {
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+await client.query('BEGIN');
+
+    const returnRow = await client.query(
+      `SELECT location FROM purchase_returns WHERE id = $1`,
+      [id]
+    );
+    if (returnRow.rows.length === 0) throw new Error('Purchase return not found');
+    const locationId = await resolveLocationId(client, returnRow.rows[0].location);
 
     const items = await client.query(
       `SELECT product_id, quantity FROM purchase_return_items WHERE purchase_return_id = $1`,
@@ -324,12 +347,9 @@ const deleteReturn = async (id) => {
     );
     for (const item of items.rows) {
       const pid = item.product_id; // UUID string — do NOT parseInt this
-      const qty = Math.round(parseFloat(item.quantity) || 0); // current_stock is INTEGER — must pass a whole number
-      if (pid && qty > 0) { 
-        await client.query(
-          `UPDATE products SET current_stock = COALESCE(current_stock, 0) + $1, updated_at = NOW() WHERE id = $2`,
-          [qty, pid]
-        );
+      const qty = Math.round(parseFloat(item.quantity) || 0); // stock is tracked as integer units
+      if (pid && qty > 0) {
+        await adjustStockAtLocation(client, pid, locationId, qty, { allowNegative: true });
       }
     }
 

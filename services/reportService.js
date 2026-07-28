@@ -446,12 +446,12 @@ const getProductSellReport = async (filters = {}) => {
     dataParams
   );
 
-  const summaryRes = await pool.query(
+const summaryRes = await pool.query(
     `SELECT
        COUNT(*) AS total_orders,
        COALESCE(SUM(si.line_total), 0) AS total_revenue,
-       COUNT(*) FILTER (WHERE inv.payment_status != 'Due') AS paid_or_received_count,
-       COUNT(*) FILTER (WHERE inv.payment_status = 'Due')  AS due_count,
+       COALESCE(SUM(si.line_total) FILTER (WHERE inv.payment_status = 'Paid'), 0)   AS paid_amount,
+       COALESCE(SUM(si.line_total) FILTER (WHERE inv.payment_status != 'Paid'), 0)  AS due_amount,
        COALESCE(SUM(si.qty), 0) AS total_units
      FROM sales_invoice_items si
      JOIN sales_invoices inv ON inv.id = si.invoice_id
@@ -461,7 +461,6 @@ const getProductSellReport = async (filters = {}) => {
 
   return { rows, total, summary: summaryRes.rows[0] };
 };
-
 // ═══════════════════════════════════════════════════════════════════════════
 // 6. EXPENSE REPORT → expenses + expense_categories + users
 //    (mirrors expenseService.fetchAllExpenses joins/columns exactly —
@@ -892,17 +891,25 @@ const getProfitLossReport = async (filters = {}) => {
      GROUP BY ym`,
     expParams
   );
-  const { rows: purRows } = await pool.query(
-    `SELECT TO_CHAR(p.purchase_date, 'YYYY-MM') AS ym, COALESCE(SUM(p.grand_total), 0) AS purchases
-     FROM purchases p WHERE ${purWhereClause}
+ // COGS by month = SUM(qty_sold x purchase_price_exc_tax), matching the
+  // same approach used by the Dashboard's Net Profit card and the fixed
+  // Purchase & Sale report — NOT total purchase-transaction value in the
+  // period, which has no relationship to what was actually sold.
+  const { rows: cogsRows } = await pool.query(
+    `SELECT TO_CHAR(inv.invoice_date, 'YYYY-MM') AS ym,
+            COALESCE(SUM(si.qty * COALESCE(pr.purchase_price_exc_tax, 0)), 0) AS cogs
+     FROM sales_invoice_items si
+     JOIN sales_invoices inv ON inv.id = si.invoice_id
+     LEFT JOIN products pr ON pr.name = si.product
+     WHERE ${revWhereClause}
      GROUP BY ym`,
-    purParams
+    revParams
   );
 
-  const map = {};
+const map = {};
   revRows.forEach((r) => { map[r.ym] = map[r.ym] || { ym: r.ym, revenue: 0, expenses: 0, purchases: 0 }; map[r.ym].revenue = Number(r.revenue); });
   expRows.forEach((r) => { map[r.ym] = map[r.ym] || { ym: r.ym, revenue: 0, expenses: 0, purchases: 0 }; map[r.ym].expenses = Number(r.expenses); });
-  purRows.forEach((r) => { map[r.ym] = map[r.ym] || { ym: r.ym, revenue: 0, expenses: 0, purchases: 0 }; map[r.ym].purchases = Number(r.purchases); });
+  cogsRows.forEach((r) => { map[r.ym] = map[r.ym] || { ym: r.ym, revenue: 0, expenses: 0, purchases: 0 }; map[r.ym].purchases = Number(r.cogs); });
 
   const allMonths = Object.values(map).sort((a, b) => b.ym.localeCompare(a.ym));
 
@@ -1509,8 +1516,7 @@ const getPurchaseSaleReport = async (filters = {}) => {
   }
   pushDateRange(sellParams, sellWhere, 'inv.invoice_date', date_from, date_to);
   const sellWhereClause = sellWhere.join(' AND ');
-
-  const { rows: purRows } = await pool.query(
+const { rows: purRows } = await pool.query(
     `SELECT pi.product_name AS product, MAX(pi.product_sku) AS sku,
             COALESCE(SUM(pi.line_total), 0) AS purchased,
             COALESCE(SUM(pi.quantity), 0) AS qty_purchased
@@ -1529,18 +1535,26 @@ const getPurchaseSaleReport = async (filters = {}) => {
      GROUP BY si.product`,
     sellParams
   );
+  // Cost basis per unit for each sold product — used to compute real COGS
+  // instead of comparing against unrelated purchase-transaction totals
+  // that merely happen to fall inside the same date range.
+  const { rows: costRows } = await pool.query(
+    `SELECT name AS product, COALESCE(purchase_price_exc_tax, 0) AS unit_cost FROM products`
+  );
 
   const map = {};
   purRows.forEach((r) => {
-    map[r.product] = map[r.product] || { product: r.product, sku: r.sku, purchased: 0, sold: 0, qtySold: 0 };
+    map[r.product] = map[r.product] || { product: r.product, sku: r.sku, purchased: 0, sold: 0, qtySold: 0, unitCost: 0 };
     map[r.product].purchased = Number(r.purchased);
   });
   sellRows.forEach((r) => {
-    map[r.product] = map[r.product] || { product: r.product, sku: null, purchased: 0, sold: 0, qtySold: 0 };
+    map[r.product] = map[r.product] || { product: r.product, sku: null, purchased: 0, sold: 0, qtySold: 0, unitCost: 0 };
     map[r.product].sold = Number(r.sold);
     map[r.product].qtySold = Number(r.qty_sold);
   });
-
+  costRows.forEach((r) => {
+    if (map[r.product]) map[r.product].unitCost = Number(r.unit_cost);
+  });
   let allProducts = Object.values(map);
 
   // Category filter applied here since neither purchase_items nor
@@ -1563,12 +1577,14 @@ const getPurchaseSaleReport = async (filters = {}) => {
   const pageRows = allProducts.slice(offset, offset + parseInt(limit, 10));
 
   const rowsOut = pageRows.map((r) => {
-    const gain = r.sold - r.purchased;
-    const gainPct = r.purchased > 0 ? Math.round((gain / r.purchased) * 1000) / 10 : (r.sold > 0 ? 100 : 0);
+    const cogs = r.qtySold * r.unitCost;
+    const gain = r.sold - cogs;
+    const gainPct = cogs > 0 ? Math.round((gain / cogs) * 1000) / 10 : (r.sold > 0 ? 100 : 0);
     return {
       product: r.product,
       purchased: r.purchased,
       sold: r.sold,
+      cogs,
       gain,
       gain_pct: gainPct,
       qty_sold: r.qtySold,
@@ -1577,8 +1593,9 @@ const getPurchaseSaleReport = async (filters = {}) => {
 
   const totalPurchased = allProducts.reduce((s, r) => s + r.purchased, 0);
   const totalSold = allProducts.reduce((s, r) => s + r.sold, 0);
-  const totalGain = totalSold - totalPurchased;
-  const avgMargin = totalPurchased > 0 ? Math.round((totalGain / totalPurchased) * 1000) / 10 : 0;
+  const totalCogs = allProducts.reduce((s, r) => s + (r.qtySold * r.unitCost), 0);
+  const totalGain = totalSold - totalCogs;
+  const avgMargin = totalCogs > 0 ? Math.round((totalGain / totalCogs) * 1000) / 10 : 0;
 
   const summary = {
     total_purchased: totalPurchased,
@@ -1754,6 +1771,70 @@ const getSalesByCategoryReport = async (filters = {}) => {
 
   return { data };
 };
+// ═══════════════════════════════════════════════════════════════════════════
+// LOCATION-WISE STOCK REPORT → product_stock_by_location joined to
+//    products + business_locations. Shows quantity per product PER LOCATION,
+//    unlike getStockReport above which only shows the company-wide total.
+//    Read-only — never mutates product_stock_by_location or products.
+// ═══════════════════════════════════════════════════════════════════════════
+const getLocationWiseStockReport = async (filters = {}) => {
+  const { location_id = '', product_id = '', page = 1, limit = 25 } = filters;
+
+  const where = ['1=1'];
+  const params = [];
+
+  if (location_id) {
+    params.push(location_id);
+    where.push(`bl.id = $${params.length}`);
+  }
+  if (product_id) {
+    params.push(product_id);
+    where.push(`p.id = $${params.length}`);
+  }
+
+  const whereClause = where.join(' AND ');
+
+  const countRes = await pool.query(
+    `SELECT COUNT(*) FROM product_stock_by_location psl
+     JOIN products p ON p.id = psl.product_id
+     JOIN business_locations bl ON bl.id = psl.location_id
+     WHERE ${whereClause}`,
+    params
+  );
+  const total = parseInt(countRes.rows[0].count, 10);
+
+  const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
+  const dataParams = [...params, parseInt(limit, 10), offset];
+
+  const { rows } = await pool.query(
+    `SELECT
+       p.id AS product_id, p.name AS product, p.sku,
+       bl.id AS location_id, bl.location_name AS business_location,
+       COALESCE(psl.quantity, 0) AS available_quantity
+     FROM product_stock_by_location psl
+     JOIN products p ON p.id = psl.product_id
+     JOIN business_locations bl ON bl.id = psl.location_id
+     WHERE ${whereClause}
+     ORDER BY p.name ASC, bl.location_name ASC
+     LIMIT $${dataParams.length - 1} OFFSET $${dataParams.length}`,
+    dataParams
+  );
+
+  const summaryRes = await pool.query(
+    `SELECT
+       COUNT(DISTINCT psl.product_id) AS product_count,
+       COUNT(DISTINCT psl.location_id) AS location_count,
+       COALESCE(SUM(psl.quantity), 0) AS total_quantity
+     FROM product_stock_by_location psl
+     JOIN products p ON p.id = psl.product_id
+     JOIN business_locations bl ON bl.id = psl.location_id
+     WHERE ${whereClause}`,
+    params
+  );
+
+  return { rows, total, summary: summaryRes.rows[0] };
+};
+
 module.exports = {
   getNetProfitSummary: async (filters = {}) => {
     const { rows, summary } = await getProfitLossReport(filters);
@@ -1762,6 +1843,7 @@ module.exports = {
   getActivityLogReport,
   getSalesByCategoryReport,
   getStockReport,
+  getLocationWiseStockReport,
   getStockAdjustmentReport,
   getItemsReport,
   getProductPurchaseReport,

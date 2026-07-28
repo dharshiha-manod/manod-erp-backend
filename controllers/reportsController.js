@@ -1,4 +1,4 @@
-  /**
+/**
    * ====================================================
    * controllers/reportsController.js
    * Thin HTTP layer over services/reportService.js
@@ -30,6 +30,17 @@ const reportService = require('../services/reportService');
     } catch (err) {
       console.error('❌ [reportsController.stockReport]', err.message);
       res.status(500).json({ success: false, error: 'Failed to load stock report' });
+    }
+  };
+
+  // ── LOCATION-WISE STOCK REPORT ─────────────────────────────────────────────
+  const locationWiseStockReport = async (req, res) => {
+    try {
+      const { rows, total, summary } = await reportService.getLocationWiseStockReport(req.query);
+      res.json({ success: true, data: rows, total, summary });
+    } catch (err) {
+      console.error('❌ [reportsController.locationWiseStockReport]', err.message);
+      res.status(500).json({ success: false, error: 'Failed to load location-wise stock report' });
     }
   };
 
@@ -299,6 +310,7 @@ module.exports = {
     activityLogReport,
     salesByCategoryReport,
     stockReport,
+    locationWiseStockReport,
     stockAdjustmentReport,
     itemsReport,
     productPurchaseReport,

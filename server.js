@@ -43,6 +43,7 @@ const productRoutes         = require('./routes/products');   // ← PRODUCT MOD
 const stockTransferRoutes   = require('./routes/stockTransfers'); // ← STOCK TRANSFER MODULE (NEW)
 const stockAdjustmentRoutes = require('./routes/stockAdjustments'); // ← STOCK ADJUSTMENT
 const manufacturingRoutes   = require('./routes/manufacturing');
+const manufacturingService  = require('./services/manufacturingService');
 const expenseRoutes         = require('./routes/expenses');
 const purchaseRoutes        = require('./routes/purchases');
 const purchaseReturnRoutes  = require('./routes/purchaseReturns');
@@ -146,23 +147,20 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
-  console.log(`
-╔══════════════════════════════════════════════╗
-║   🚀 MANOD ERP BACKEND STARTED               ║
-╠══════════════════════════════════════════════╣
-║   Server: http://localhost:${PORT}            ║
-║   Environment: ${process.env.NODE_ENV || 'development'}              ║
-║   Products Module ✓                         ║
-║   Warranties Module ✓                       ║
-║   Opening Stock Import ✓                    ║
-║   Stock Transfer Module ✓                   ║
-║   Notification Templates Module ✓           ║
-║   Essentials Module ✓                       ║
-║   Sell Module ✓                             ║
-╚══════════════════════════════════════════════╝
-  `);
-});
+  console.log(`Server running on port ${PORT}`);
 
+  // Auto-finish overdue Work Orders once on startup, then every 6 hours.
+  // No new dependency — plain setInterval, same as the rest of this codebase.
+  const AUTO_FINISH_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+  manufacturingService.autoFinishOverdueWorkOrders().catch(err =>
+    console.error('[AutoFinish] startup sweep failed:', err.message)
+  );
+  setInterval(() => {
+    manufacturingService.autoFinishOverdueWorkOrders().catch(err =>
+      console.error('[AutoFinish] scheduled sweep failed:', err.message)
+    );
+  }, AUTO_FINISH_INTERVAL_MS);
+});
 process.on('SIGINT', () => {
   console.log('\n📴 Shutting down...');
   pool.end();

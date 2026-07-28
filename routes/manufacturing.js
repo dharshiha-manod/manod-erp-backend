@@ -57,7 +57,7 @@ router.delete("/production/:id", authenticateToken, (req, res) => send(res, svc.
 // Start/finish a production run tied to a Work Order — flips machine/resource
 // status Idle → Running on start, Running → Idle on finish (your required flow)
 router.post("/work-orders/:id/start",  authenticateToken, (req, res) => send(res, svc.startProductionRun(req.params.id)));
-router.post("/work-orders/:id/finish", authenticateToken, (req, res) => send(res, svc.finishProductionRun(req.params.id)));
+router.post("/work-orders/:id/finish", authenticateToken, (req, res) => send(res, svc.finishProductionRun(req.params.id, req.body)));
 
 // Purchases module integration: check this WO's BOM against real stock and
 // auto-raise Purchase Order(s) (via purchaseService.createPurchase) for any

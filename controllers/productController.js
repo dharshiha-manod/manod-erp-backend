@@ -12,6 +12,7 @@ const {
   fetchAllProducts, fetchProductById, createProduct, updateProduct, deleteProduct, updateProductStatus,
   fetchComponentEligibleProducts, fetchFinishedProducts,
   bulkImportProducts,
+  getStockByLocationForProduct,
 } = require('../services/productService');
 const { logActivity } = require('../services/activityLogService');
 
@@ -342,6 +343,16 @@ const getProductById = async (req, res) => {
   }
 };
 
+const getStockByLocation = async (req, res) => {
+  try {
+    const rows = await getStockByLocationForProduct(req.params.id);
+    res.status(200).json({ success: true, locations: rows });
+  } catch (err) {
+    console.error('❌ Get Stock By Location Error:', err.message);
+    res.status(500).json({ success: false, error: 'Failed to fetch stock by location' });
+  }
+};
+
 const addProduct = async (req, res) => {
   try {
     const product = await createProduct(req.body);
@@ -452,8 +463,9 @@ module.exports = {
   getAllVariations, getVariationById, addVariation, editVariation, removeVariation,
   // Categories
   getAllCategories, getCategoryById, addCategory, editCategory, removeCategory,
-  // Products
+ // Products
   getAllProducts, getProductById, addProduct, editProduct, removeProduct, toggleProductStatus,
+  getStockByLocation,
   requestReorder,
   importProducts,
 };

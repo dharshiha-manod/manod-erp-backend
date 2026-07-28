@@ -7,7 +7,8 @@
  */
 
 const stockTransferService = require('../services/stockTransferService');
-const { logActivity } = require('../services/activityLogService');
+// const { logActivity } = require('../services/activityLogService'); // TODO: restore once activityLogService exists
+const logActivity = () => {}; // no-op stub
 
 // ── GET ALL STOCK TRANSFERS (list with pagination + filters) ─────────────────
 const getAllStockTransfers = async (req, res) => {

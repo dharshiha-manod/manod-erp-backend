@@ -30,20 +30,28 @@ const ensureSchema = async () => {
 
 
 const applyPurchaseStockImpact = async (purchaseId, direction, client = pool) => {
-  const purchaseRes = await client.query(`SELECT location FROM purchases WHERE id = $1`, [purchaseId]);
-  const location = purchaseRes.rows[0]?.location || 'Manodtechnologies (BL0001)';
+const purchaseRes = await client.query(`SELECT location_id FROM purchases WHERE id = $1`, [purchaseId]);
+  const locationId = purchaseRes.rows[0]?.location_id || await stockLocationService.getDefaultLocationId(client);
 
   const items = await client.query(
     `SELECT product_id, quantity FROM purchase_items WHERE purchase_id = $1 AND product_id IS NOT NULL`,
     [purchaseId]
   );
   for (const item of items.rows) {
+    // Skip products that were deleted after this purchase was created —
+    // there's nothing to reverse stock against, and failing here would
+    // block the user from ever deleting the purchase.
+    const productExists = await client.query(`SELECT 1 FROM products WHERE id = $1`, [item.product_id]);
+    if (productExists.rows.length === 0) {
+      console.warn(`[applyPurchaseStockImpact] product ${item.product_id} no longer exists — skipping stock ${direction}`);
+      continue;
+    }
     const delta = direction === 'apply'
       ? Math.abs(parseFloat(item.quantity))
       : -Math.abs(parseFloat(item.quantity));
     // allowNegative: true — a 'reverse' can legitimately pull stock below what
     // was received if some of it was already sold/consumed elsewhere since.
-    await stockLocationService.adjustStockAtLocation(client, item.product_id, location, delta, { allowNegative: true });
+await stockLocationService.adjustStockAtLocation(client, item.product_id, locationId, delta, { allowNegative: true });
   }
 };
 
@@ -290,24 +298,25 @@ const createPurchase = async (body, userId) => {
     const purchaseResult = await client.query(
       `INSERT INTO purchases (
         reference_no, invoice_no, purchase_date,
-        supplier_id, supplier_name, location,
+supplier_id, supplier_name, location, location_id,
         purchase_status, payment_status,
         subtotal, discount_type, discount_amount,
         tax_label, tax_amount, shipping_charges,
         grand_total, amount_paid, payment_due,
         notes, shipping_details, document_path,
         pay_term, added_by
-      ) VALUES (
+   ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
-        $12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
-      ) RETURNING *`,
+        $12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23
+      ) RETURNING *`, 
       [
         referenceNo,
         body.invoice_no        || null,
         body.purchase_date     || new Date(),
         body.supplier_id       || null,
         supplierName,
-        body.location          || 'Manodtechnologies (BL0001)',
+  body.location          || null,
+        body.location_id       || await stockLocationService.getDefaultLocationId(pool),
         purchaseStatus,
         fin.payment_status,
         fin.subtotal,

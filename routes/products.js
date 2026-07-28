@@ -18,7 +18,7 @@ const {
   getAllVariations, getVariationById, addVariation, editVariation, removeVariation,
   getAllCategories, getCategoryById,  addCategory,  editCategory,  removeCategory,
   getAllProducts, getProductById, addProduct, editProduct, removeProduct, toggleProductStatus,
-  requestReorder, importProducts,
+  requestReorder, importProducts, getStockByLocation,
 } = require('../controllers/productController');
 
 const {
@@ -84,5 +84,6 @@ router.patch ('/:id/status',   authenticateToken, requirePermission('Product','E
 router.patch ('/:id/stock',    authenticateToken, requirePermission('Product','Edit product'),   updateStock);
 router.post  ('/:id/request-reorder', authenticateToken, requirePermission('Product','Edit product'), requestReorder);
 router.delete('/:id',          authenticateToken, requirePermission('Product','Delete product'), removeProduct);
+router.get('/:id/stock-by-location', authenticateToken, requirePermission('Product','View product'), getStockByLocation);
 
 module.exports = router;

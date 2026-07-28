@@ -21,6 +21,7 @@
  */
 const pool = require('../config/database');
 const { logActivity } = require('./activityLogService');
+const notificationEngine = require('./notificationEngine');
 // Used to auto-raise Purchase Orders when a Work Order's BOM components
 // are short on stock (see createPurchaseOrderFromShortfall below).
 const purchaseService = require('./purchaseService');
@@ -316,6 +317,7 @@ const deleteBOM = async (id) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await client.query('UPDATE mfg_plans SET bom_id=NULL WHERE bom_id=$1', [id]);
     await client.query('DELETE FROM mfg_bom_items WHERE bom_id=$1', [id]);
     const r = await client.query('DELETE FROM mfg_bom WHERE id=$1 RETURNING id, product_name', [id]);
     if (!r.rows[0]) throw new Error('BOM not found');
@@ -666,24 +668,123 @@ const startProductionRun = async (woId) => {
 };
 
 // Finish a production run — flips machines/resources back to "idle"
-const finishProductionRun = async (woId) => {
+// payload may carry an operator-confirmed actual quantity/scrap from the
+// "Confirm Production Completion" modal; falls back to the WO's planned
+// quantity if not supplied, so any older caller still behaves as before.
+const finishProductionRun = async (woId, payload = {}) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const woRes = await client.query('SELECT * FROM mfg_work_orders WHERE id=$1 FOR UPDATE', [woId]);
+    const wo = woRes.rows[0];
+    if (!wo) throw new Error('Work order not found');
+    if (!wo.product_id) throw new Error('This work order has no linked product — cannot record production.');
+
+    const confirmedQuantity = payload.quantity !== undefined && payload.quantity !== null && payload.quantity !== ''
+      ? parseFloat(payload.quantity)
+      : parseFloat(wo.quantity);
+    const quantity = confirmedQuantity || 0;
+    if (quantity <= 0) throw new Error('Produced quantity must be greater than 0.');
+
+    const scrapQty = payload.scrap_qty !== undefined && payload.scrap_qty !== null && payload.scrap_qty !== ''
+      ? Math.max(0, parseFloat(payload.scrap_qty) || 0)
+      : 0;
+    const totalAttempted = quantity + scrapQty; 
+
+    const prodRes = await client.query(
+      'SELECT id, name, current_stock, purchase_price_exc_tax FROM products WHERE id=$1 FOR UPDATE',
+      [wo.product_id]
+    );
+    const finishedProduct = prodRes.rows[0];
+    if (!finishedProduct) throw new Error('Linked product not found.');
+
+   let totalCost = 0;
+    let componentsUsed = [];
+    let recipeLabel = null;
+    const location = wo.location || null;
+
+    if (wo.bom_id) {
+      // Component consumption is scaled to good + scrap (totalAttempted),
+      // matching the same convention used in createProduction/updateProduction.
+      const applied = await _applyBomConsumption(client, wo.bom_id, totalAttempted, location);
+      totalCost = applied.totalCost;
+      componentsUsed = applied.componentsUsed;
+      const bomRow = await client.query('SELECT product_code FROM mfg_bom WHERE id=$1', [wo.bom_id]);
+      recipeLabel = bomRow.rows[0]?.product_code || `BOM-${wo.bom_id}`;
+    }
+    const oldStock = parseFloat(finishedProduct.current_stock || 0);
+    const newFinishedStock = oldStock + quantity;
+    const unitCost = quantity > 0 ? totalCost / quantity : 0;
+    const oldCost = parseFloat(finishedProduct.purchase_price_exc_tax) || 0;
+    const newAvgCost = unitCost > 0
+      ? (newFinishedStock > 0 ? (oldStock * oldCost + quantity * unitCost) / newFinishedStock : unitCost)
+      : oldCost;
+
+    await stockLocationService.adjustStockAtLocation(client, wo.product_id, location, quantity);
+    await client.query(
+      'UPDATE products SET purchase_price_exc_tax=$1, updated_at=NOW() WHERE id=$2',
+      [newAvgCost, wo.product_id]
+    );
+
+ const refNo = await nextRef(client, 'mfg_production', 'PRD');
+    const insertRes = await client.query(
+      `INSERT INTO mfg_production
+       (ref_no, location, product, product_id, quantity, scrap_qty, scrap_reason, total_cost, date, recipe_used, bom_id, notes, wo_id, run_status, finished_at, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CURRENT_DATE,$9,$10,$11,$12,'completed',NOW(),NOW()) RETURNING *`,
+      [refNo, location, finishedProduct.name, wo.product_id, quantity, scrapQty, scrapQty > 0 ? (payload.scrap_reason || null) : null, totalCost, recipeLabel, wo.bom_id || null, payload.notes || `Confirmed on finishing ${wo.wo_number}`, woId]
+    );
+
     const machineIds  = await _getWoMachineIds(client, woId);
     const resourceIds = await _getWoResourceIds(client, woId);
-
     await _setMachinesStatus(client, machineIds, 'idle');
     await _setResourcesStatus(client, resourceIds, 'idle');
 
-    await client.query('COMMIT');
-    return { success: true };
+    await client.query(
+      `UPDATE mfg_work_orders SET status='completed', progress=100, updated_at=NOW() WHERE id=$1`,
+      [woId]
+    );
+
+await client.query('COMMIT');
+    logActivity({ module: 'Manufacturing', action: `Finished ${wo.wo_number}`, detail: `${finishedProduct.name} × ${quantity}` });
+
+    // Component stock just went down — check each deducted component,
+    // non-blocking, same pattern as sellService.js.
+    for (const c of componentsUsed) {
+      notificationEngine.checkAndAlertLowStock(c.product_id).catch(err =>
+        console.error('[Manufacturing] low stock alert check failed:', err.message)
+      );
+    }
+
+    return { message: 'Production finished — stock updated.', production: insertRes.rows[0], components_used: componentsUsed };
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
   } finally {
     client.release();
   }
+};
+// ═══════════════════════════════════════════════════════════════════
+// AUTO-FINISH — sweeps in_progress Work Orders whose end_date has passed
+// and finishes them automatically, at the planned quantity with 0 scrap.
+// Manual "Finish Production" still works normally at any time before this
+// runs — whichever happens first wins, since finishProductionRun flips
+// status to 'completed' and this only ever targets status='in_progress'.
+// ═══════════════════════════════════════════════════════════════════
+const autoFinishOverdueWorkOrders = async () => {
+  const { rows } = await pool.query(
+    `SELECT id, wo_number FROM mfg_work_orders
+     WHERE status = 'in_progress' AND end_date IS NOT NULL AND end_date < CURRENT_DATE`
+  );
+  for (const wo of rows) {
+    try {
+      await finishProductionRun(wo.id, { notes: `Auto-finished — due date passed (${wo.wo_number})` });
+      console.log(`[AutoFinish] ${wo.wo_number} auto-completed (end_date passed).`);
+    } catch (err) {
+      // One bad WO (e.g. insufficient stock) must not block the rest of the sweep
+      console.error(`[AutoFinish] Failed to auto-finish ${wo.wo_number}:`, err.message);
+    }
+  }
+  return { checked: rows.length };
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -866,6 +967,13 @@ const createProduction = async (data) => {
     }
 await client.query('COMMIT');
     logActivity({ module: 'Manufacturing', action: `Recorded Production ${insertRes.rows[0].ref_no}`, detail: `${finishedProduct.name} × ${quantity}` });
+
+    for (const c of componentsUsed) {
+      notificationEngine.checkAndAlertLowStock(c.product_id).catch(err =>
+        console.error('[Manufacturing] low stock alert check failed:', err.message)
+      );
+    }
+
     return { ...insertRes.rows[0], components_used: componentsUsed };
   } catch (err) {
     await client.query('ROLLBACK');
@@ -1495,6 +1603,7 @@ const deleteSchedule = async (id) => {
 
 // ─────────────────────────────────────────────────────────────
 module.exports = {
+  autoFinishOverdueWorkOrders,
   // Plans
   fetchPlans, createPlan, updatePlan, deletePlan,
   // BOM
