@@ -41,13 +41,14 @@ const getReturnById = async (req, res) => {
 const createReturn = async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
     if (!req.body.supplier_id && !req.body.supplier_name) {
       return res.status(400).json({ success: false, error: 'Supplier is required' });
     }
     if (!Array.isArray(req.body.items) || req.body.items.length === 0) {
       return res.status(400).json({ success: false, error: 'At least one product item is required' });
     }
-   const ret = await service.createReturn(req.body, userId);
+   const ret = await service.createReturn(req.body, userId, userName);
     logActivity({ userId, module: 'Purchase Returns', action: `Created Return ${ret.reference_no || ret.return_no || ret.id}`, detail: `Supplier: ${req.body.supplier_name || req.body.supplier_id || ''}`, req });
     res.status(201).json({ success: true, message: 'Purchase return created', purchaseReturn: ret });
   } catch (err) {
@@ -73,7 +74,9 @@ const ret = await service.updateReturn(req.params.id, req.body);
 // DELETE /api/purchase-returns/:id
 const deleteReturn = async (req, res) => {
   try {
-    const result = await service.deleteReturn(req.params.id);
+    const userId = req.user?.id || req.user?.userId || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+    const result = await service.deleteReturn(req.params.id, userId, userName);
     res.status(200).json({ success: true, message: 'Purchase return deleted', deleted: result });
   } catch (err) {
     console.error('❌ Delete Purchase Return Error:', err.message);

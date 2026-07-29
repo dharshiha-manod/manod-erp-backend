@@ -32,6 +32,7 @@ const getAdjustmentById = async (req, res) => {
 const createAdjustment = async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
     if (!req.body.location)
       return res.status(400).json({ success: false, error: 'Business location is required' });
     if (!req.body.adjustment_type)
@@ -39,7 +40,7 @@ const createAdjustment = async (req, res) => {
     if (!Array.isArray(req.body.items) || req.body.items.length === 0)
       return res.status(400).json({ success: false, error: 'At least one product item is required' });
 
-   const adj = await svc.createAdjustment(req.body, userId);
+   const adj = await svc.createAdjustment(req.body, userId, userName);
     logActivity({ userId, module: 'Stock', action: `Created Adjustment ${adj.reference_no || adj.id}`, detail: `Type: ${req.body.adjustment_type}`, req });
     res.status(201).json({ success: true, message: 'Stock Adjustment created successfully', stockAdjustment: adj });
   } catch (err) {
@@ -51,7 +52,8 @@ const createAdjustment = async (req, res) => {
 const updateAdjustment = async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId || null;
-    const adj    = await svc.updateAdjustment(req.params.id, req.body, userId);
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+    const adj    = await svc.updateAdjustment(req.params.id, req.body, userId, userName);
     res.json({ success: true, message: 'Stock Adjustment updated successfully', stockAdjustment: adj });
   } catch (err) {
     console.error('updateAdjustment:', err.message);
@@ -61,7 +63,9 @@ const updateAdjustment = async (req, res) => {
 
 const deleteAdjustment = async (req, res) => {
   try {
-    const result = await svc.deleteAdjustment(req.params.id);
+    const userId = req.user?.id || req.user?.userId || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+    const result = await svc.deleteAdjustment(req.params.id, userId, userName);
     res.json({ success: true, message: 'Stock Adjustment deleted successfully', deleted: result });
   } catch (err) {
     console.error('deleteAdjustment:', err.message);
@@ -72,7 +76,8 @@ const deleteAdjustment = async (req, res) => {
 const approveAdjustment = async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId || null;
-const adj    = await svc.approveAdjustment(req.params.id, userId);
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+const adj    = await svc.approveAdjustment(req.params.id, userId, userName);
     logActivity({ userId, module: 'Stock', action: `Approved Adjustment ${adj.reference_no || req.params.id}`, req });
     res.json({ success: true, message: 'Stock Adjustment approved and stock updated', stockAdjustment: adj });
   } catch (err) {

@@ -15,6 +15,7 @@ const {
   getStockByLocationForProduct,
 } = require('../services/productService');
 const { logActivity } = require('../services/activityLogService');
+const getUserName = (req) => req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
 
 // ─────────────────────────────────────────────────────────────
 // BRANDS
@@ -53,7 +54,9 @@ const getBrandById = async (req, res) => {
 
 const addBrand = async (req, res) => {
   try {
-    const brand = await createBrand(req.body);
+    const userId = req.user?.id || null;
+    const userName = getUserName(req);
+    const brand = await createBrand(req.body, userId, userName);
     console.log('✅ Brand created:', brand.name);
     res.status(201).json({ success: true, message: 'Brand created successfully', brand });
   } catch (err) {
@@ -65,7 +68,9 @@ const addBrand = async (req, res) => {
 
 const editBrand = async (req, res) => {
   try {
-    const brand = await updateBrand(req.params.id, req.body);
+    const userId = req.user?.id || null;
+    const userName = getUserName(req);
+    const brand = await updateBrand(req.params.id, req.body, userId, userName);
     console.log('✅ Brand updated:', brand.name);
     res.status(200).json({ success: true, message: 'Brand updated successfully', brand });
   } catch (err) {
@@ -77,7 +82,9 @@ const editBrand = async (req, res) => {
 
 const removeBrand = async (req, res) => {
   try {
-    const brand = await deleteBrand(req.params.id);
+    const userId = req.user?.id || null;
+    const userName = getUserName(req);
+    const brand = await deleteBrand(req.params.id, userId, userName);
     console.log('✅ Brand deleted:', brand.name);
     res.status(200).json({ success: true, message: 'Brand deleted successfully', brand });
   } catch (err) {
@@ -124,7 +131,9 @@ const getUnitById = async (req, res) => {
 
 const addUnit = async (req, res) => {
   try {
-    const unit = await createUnit(req.body);
+    const userId = req.user?.id || null;
+    const userName = getUserName(req);
+    const unit = await createUnit(req.body, userId, userName);
     console.log('✅ Unit created:', unit.name);
     res.status(201).json({ success: true, message: 'Unit created successfully', unit });
   } catch (err) {
@@ -136,7 +145,9 @@ const addUnit = async (req, res) => {
 
 const editUnit = async (req, res) => {
   try {
-    const unit = await updateUnit(req.params.id, req.body);
+    const userId = req.user?.id || null;
+    const userName = getUserName(req);
+    const unit = await updateUnit(req.params.id, req.body, userId, userName);
     console.log('✅ Unit updated:', unit.name);
     res.status(200).json({ success: true, message: 'Unit updated successfully', unit });
   } catch (err) {
@@ -148,7 +159,9 @@ const editUnit = async (req, res) => {
 
 const removeUnit = async (req, res) => {
   try {
-    const unit = await deleteUnit(req.params.id);
+    const userId = req.user?.id || null;
+    const userName = getUserName(req);
+    const unit = await deleteUnit(req.params.id, userId, userName);
     console.log('✅ Unit deleted:', unit.name);
     res.status(200).json({ success: true, message: 'Unit deleted successfully', unit });
   } catch (err) {
@@ -195,7 +208,9 @@ const getVariationById = async (req, res) => {
 
 const addVariation = async (req, res) => {
   try {
-    const variation = await createVariation(req.body);
+    const userId = req.user?.id || null;
+    const userName = getUserName(req);
+    const variation = await createVariation(req.body, userId, userName);
     console.log('✅ Variation created:', variation.name);
     res.status(201).json({ success: true, message: 'Variation created successfully', variation });
   } catch (err) {
@@ -207,7 +222,9 @@ const addVariation = async (req, res) => {
 
 const editVariation = async (req, res) => {
   try {
-    const variation = await updateVariation(req.params.id, req.body);
+    const userId = req.user?.id || null;
+    const userName = getUserName(req);
+    const variation = await updateVariation(req.params.id, req.body, userId, userName);
     console.log('✅ Variation updated:', variation.name);
     res.status(200).json({ success: true, message: 'Variation updated successfully', variation });
   } catch (err) {
@@ -216,10 +233,11 @@ const editVariation = async (req, res) => {
     res.status(status).json({ success: false, error: err.message });
   }
 };
-
 const removeVariation = async (req, res) => {
   try {
-    const variation = await deleteVariation(req.params.id);
+    const userId = req.user?.id || null;
+    const userName = getUserName(req);
+    const variation = await deleteVariation(req.params.id, userId, userName);
     console.log('✅ Variation deleted:', variation.name);
     res.status(200).json({ success: true, message: 'Variation deleted successfully', variation });
   } catch (err) {
@@ -266,7 +284,9 @@ const getCategoryById = async (req, res) => {
 
 const addCategory = async (req, res) => {
   try {
-    const category = await createCategory(req.body);
+    const userId = req.user?.id || null;
+    const userName = getUserName(req);
+    const category = await createCategory(req.body, userId, userName);
     console.log('✅ Category created:', category.name);
     res.status(201).json({ success: true, message: 'Category created successfully', category });
   } catch (err) {
@@ -278,7 +298,9 @@ const addCategory = async (req, res) => {
 
 const editCategory = async (req, res) => {
   try {
-    const category = await updateCategory(req.params.id, req.body);
+    const userId = req.user?.id || null;
+    const userName = getUserName(req);
+    const category = await updateCategory(req.params.id, req.body, userId, userName);
     console.log('✅ Category updated:', category.name);
     res.status(200).json({ success: true, message: 'Category updated successfully', category });
   } catch (err) {
@@ -287,10 +309,11 @@ const editCategory = async (req, res) => {
     res.status(status).json({ success: false, error: err.message });
   }
 };
-
 const removeCategory = async (req, res) => {
   try {
-    const category = await deleteCategory(req.params.id);
+    const userId = req.user?.id || null;
+    const userName = getUserName(req);
+    const category = await deleteCategory(req.params.id, userId, userName);
     console.log('✅ Category deleted:', category.name);
     res.status(200).json({ success: true, message: 'Category deleted successfully', category });
   } catch (err) {
@@ -352,12 +375,13 @@ const getStockByLocation = async (req, res) => {
     res.status(500).json({ success: false, error: 'Failed to fetch stock by location' });
   }
 };
-
 const addProduct = async (req, res) => {
   try {
-    const product = await createProduct(req.body);
+    const userId = req.user?.id || null;
+    const userName = getUserName(req);
+    const product = await createProduct(req.body, userId, userName);
     console.log('✅ Product created:', product.name);
-    logActivity({ userId: req.user?.id || null, module: 'Products', action: `Created Product ${product.name}`, detail: `SKU: ${product.sku || product.sub_sku || ''}`, req });
+    logActivity({ userId, module: 'Products', action: `Created Product ${product.name}`, detail: `SKU: ${product.sku || product.sub_sku || ''}`, req });
     res.status(201).json({ success: true, message: 'Product created successfully', product });
   } catch (err) {
     console.error('❌ Create Product Error:', err.message);
@@ -365,12 +389,13 @@ const addProduct = async (req, res) => {
     res.status(status).json({ success: false, error: err.message });
   }
 };
-
 const editProduct = async (req, res) => {
   try {
-  const product = await updateProduct(req.params.id, req.body);
+    const userId = req.user?.id || null;
+    const userName = getUserName(req);
+  const product = await updateProduct(req.params.id, req.body, userId, userName);
     console.log('✅ Product updated:', product.name);
-    logActivity({ userId: req.user?.id || null, module: 'Products', action: `Updated Product ${product.name}`, req });
+    logActivity({ userId, module: 'Products', action: `Updated Product ${product.name}`, req });
     res.status(200).json({ success: true, message: 'Product updated successfully', product });
   } catch (err) {
     console.error('❌ Update Product Error:', err.message);
@@ -381,9 +406,11 @@ const editProduct = async (req, res) => {
 
 const removeProduct = async (req, res) => {
   try {
-const product = await deleteProduct(req.params.id);
+    const userId = req.user?.id || null;
+    const userName = getUserName(req);
+const product = await deleteProduct(req.params.id, userId, userName);
     console.log('✅ Product deleted:', product.name);
-    logActivity({ userId: req.user?.id || null, module: 'Products', action: `Deleted Product ${product.name}`, req });
+    logActivity({ userId, module: 'Products', action: `Deleted Product ${product.name}`, req });
     res.status(200).json({ success: true, message: 'Product deleted successfully', product });
   } catch (err) {
     console.error('❌ Delete Product Error:', err.message);
@@ -444,7 +471,8 @@ const importProducts = async (req, res) => {
       return res.status(400).json({ success: false, error: 'No rows to import' });
     }
     const userId = req.user?.id || req.user?.userId || null;
-    const result = await bulkImportProducts(rows, userId);
+    const userName = getUserName(req);
+    const result = await bulkImportProducts(rows, userId, userName);
     console.log(`✅ Product import: ${result.created} created, ${result.failed} failed`);
     logActivity({ userId, module: 'Products', action: `Imported ${result.created} product(s)`, req });
     res.status(200).json({ success: true, ...result });

@@ -80,6 +80,7 @@ app.use('/api/register', registerRoutes);
 app.use('/api/selling-price-groups', require('./routes/sellingPriceGroupRoutes'));// ← SELL MODULE (NEW) — sales-invoice, pos-sales, quotations, sales-returns, shipments, discounts, import/sales
 app.use('/api/product-selling-prices', require('./routes/productSellingPriceRoutes'));
 app.use('/api/settings', settingsRoutes);
+app.use('/api/audit-logs', require('./routes/auditLogs'));
 app.use('/api/reports', reportsRoutes); // ← REPORTS MODULE (NEW)
 app.use('/api/accounting', accountingRoutes); // ← ACCOUNTING MODULE (NEW)  
 app.use('/api/product-selling-prices', require('./routes/productSellingPrices'));

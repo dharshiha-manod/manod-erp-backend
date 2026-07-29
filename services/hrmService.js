@@ -8,6 +8,7 @@
 const pool = require('../config/database');
 const { types } = require('pg');
 const bankIntegrationService = require('./bankIntegrationService');
+const { logAudit } = require('./auditLogService');
 
 // Prevent node-postgres from converting DATE columns into JS Date objects.
 // JS Date objects are timezone-sensitive and can silently shift the
@@ -44,7 +45,7 @@ async function fetchDepartments() {
   return rows;
 }
 
-async function createDepartment({ name, description }) {
+async function createDepartment({ name, description }, userId, userName) {
   if (!name) throw new Error('Department name is required');
   const code = 'DEPT-' + name.slice(0, 4).toUpperCase().replace(/\s/g, '');
   const { rows } = await pool.query(
@@ -52,21 +53,33 @@ async function createDepartment({ name, description }) {
      VALUES ($1, $2, $3) RETURNING *`,
     [code, name, description || null]
   );
-  return rows[0];
+  const dept = rows[0];
+  logAudit({ userId, userName, module: 'HRM Departments', action: 'CREATE', recordId: dept.id, recordLabel: dept.name, oldData: null, newData: dept }).catch(() => {});
+  return dept;
 }
 
-async function updateDepartment(id, { name, description, dept_code }) {
+async function updateDepartment(id, { name, description, dept_code }, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_departments WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Department not found');
+  const oldData = existing.rows[0];
+
   const { rows } = await pool.query(
     `UPDATE hrm_departments SET name=$1, description=$2, dept_code=COALESCE($3, dept_code), updated_at=NOW()
      WHERE id=$4 RETURNING *`,
     [name, description, dept_code || null, id]
   );
   if (!rows.length) throw new Error('Department not found');
-  return rows[0];
+  const dept = rows[0];
+  logAudit({ userId, userName, module: 'HRM Departments', action: 'UPDATE', recordId: id, recordLabel: dept.name, oldData, newData: dept }).catch(() => {});
+  return dept;
 }
 
-async function deleteDepartment(id) {
+async function deleteDepartment(id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_departments WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Department not found');
+  const oldData = existing.rows[0];
   await pool.query(`DELETE FROM hrm_departments WHERE id=$1`, [id]);
+  logAudit({ userId, userName, module: 'HRM Departments', action: 'DELETE', recordId: id, recordLabel: oldData.name, oldData, newData: null }).catch(() => {});
 }
 
 // ── DESIGNATIONS ─────────────────────────────────────────────
@@ -78,28 +91,40 @@ async function fetchDesignations() {
   return rows;
 }
 
-async function createDesignation({ name, description }) {
+async function createDesignation({ name, description }, userId, userName) {
   if (!name) throw new Error('Designation name is required');
   const { rows } = await pool.query(
     `INSERT INTO hrm_designations (name, description)
      VALUES ($1, $2) RETURNING *`,
     [name, description || null]
   );
-  return rows[0];
+  const desig = rows[0];
+  logAudit({ userId, userName, module: 'HRM Designations', action: 'CREATE', recordId: desig.id, recordLabel: desig.name, oldData: null, newData: desig }).catch(() => {});
+  return desig;
 }
 
-async function updateDesignation(id, { name, description }) {
+async function updateDesignation(id, { name, description }, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_designations WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Designation not found');
+  const oldData = existing.rows[0];
+
   const { rows } = await pool.query(
     `UPDATE hrm_designations SET name=$1, description=$2, updated_at=NOW()
      WHERE id=$3 RETURNING *`,
     [name, description, id]
   );
   if (!rows.length) throw new Error('Designation not found');
-  return rows[0];
+  const desig = rows[0];
+  logAudit({ userId, userName, module: 'HRM Designations', action: 'UPDATE', recordId: id, recordLabel: desig.name, oldData, newData: desig }).catch(() => {});
+  return desig;
 }
 
-async function deleteDesignation(id) {
+async function deleteDesignation(id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_designations WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Designation not found');
+  const oldData = existing.rows[0];
   await pool.query(`DELETE FROM hrm_designations WHERE id=$1`, [id]);
+  logAudit({ userId, userName, module: 'HRM Designations', action: 'DELETE', recordId: id, recordLabel: oldData.name, oldData, newData: null }).catch(() => {});
 }
 
 // ── LEAVE TYPES ──────────────────────────────────────────────
@@ -111,28 +136,40 @@ async function fetchLeaveTypes() {
   return rows;
 }
 
-async function createLeaveType({ name, max_count, interval }) {
+async function createLeaveType({ name, max_count, interval }, userId, userName) {
   if (!name) throw new Error('Leave type name is required');
   const { rows } = await pool.query(
     `INSERT INTO hrm_leave_types (name, max_count, interval)
      VALUES ($1, $2, $3) RETURNING *`,
     [name, max_count || 0, interval || 'None']
   );
-  return rows[0];
+  const lt = rows[0];
+  logAudit({ userId, userName, module: 'HRM Leave Types', action: 'CREATE', recordId: lt.id, recordLabel: lt.name, oldData: null, newData: lt }).catch(() => {});
+  return lt;
 }
 
-async function updateLeaveType(id, { name, max_count, interval }) {
+async function updateLeaveType(id, { name, max_count, interval }, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_leave_types WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Leave type not found');
+  const oldData = existing.rows[0];
+
   const { rows } = await pool.query(
     `UPDATE hrm_leave_types SET name=$1, max_count=$2, interval=$3, updated_at=NOW()
      WHERE id=$4 RETURNING *`,
     [name, max_count, interval, id]
   );
   if (!rows.length) throw new Error('Leave type not found');
-  return rows[0];
+  const lt = rows[0];
+  logAudit({ userId, userName, module: 'HRM Leave Types', action: 'UPDATE', recordId: id, recordLabel: lt.name, oldData, newData: lt }).catch(() => {});
+  return lt;
 }
 
-async function deleteLeaveType(id) {
+async function deleteLeaveType(id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_leave_types WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Leave type not found');
+  const oldData = existing.rows[0];
   await pool.query(`DELETE FROM hrm_leave_types WHERE id=$1`, [id]);
+  logAudit({ userId, userName, module: 'HRM Leave Types', action: 'DELETE', recordId: id, recordLabel: oldData.name, oldData, newData: null }).catch(() => {});
 }
 
 // ── LEAVES ───────────────────────────────────────────────────
@@ -154,7 +191,7 @@ async function fetchLeaves({ status = '', employee = '', date_from = '', date_to
   return rows;
 }
 
-async function createLeave({ leave_type_id, leave_type_name, employee_name, start_date, end_date, reason }, createdBy) {
+async function createLeave({ leave_type_id, leave_type_name, employee_name, start_date, end_date, reason }, createdBy, userName) {
   if (!employee_name || !start_date || !end_date)
     throw new Error('Employee, start date and end date are required');
 
@@ -165,22 +202,34 @@ async function createLeave({ leave_type_id, leave_type_name, employee_name, star
      VALUES ($1,$2,$3,$4,$5,$6,$7,'Pending',$8) RETURNING *`,
     [ref, leave_type_id || null, leave_type_name || '', employee_name, start_date, end_date, reason || '', createdBy || null]
   );
-  return rows[0];
+  const leave = rows[0];
+  logAudit({ userId: createdBy, userName, module: 'HRM Leaves', action: 'CREATE', recordId: leave.id, recordLabel: leave.reference_no, oldData: null, newData: leave }).catch(() => {});
+  return leave;
 }
 
-async function updateLeaveStatus(id, status) {
+async function updateLeaveStatus(id, status, userId, userName) {
   const allowed = ['Pending', 'Approved', 'Rejected'];
   if (!allowed.includes(status)) throw new Error('Invalid status');
+  const existing = await pool.query(`SELECT * FROM hrm_leaves WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Leave not found');
+  const oldData = existing.rows[0];
+
   const { rows } = await pool.query(
     `UPDATE hrm_leaves SET status=$1, updated_at=NOW() WHERE id=$2 RETURNING *`,
     [status, id]
   );
   if (!rows.length) throw new Error('Leave not found');
-  return rows[0];
+  const leave = rows[0];
+  logAudit({ userId, userName, module: 'HRM Leaves', action: 'UPDATE', recordId: id, recordLabel: leave.reference_no, oldData, newData: leave }).catch(() => {});
+  return leave;
 }
 
-async function updateLeave(id, data) {
+async function updateLeave(id, data, userId, userName) {
   const { leave_type_name, employee_name, start_date, end_date, reason, status } = data;
+  const existing = await pool.query(`SELECT * FROM hrm_leaves WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Leave not found');
+  const oldData = existing.rows[0];
+
   const { rows } = await pool.query(
     `UPDATE hrm_leaves
      SET leave_type_name=$1, employee_name=$2, start_date=$3, end_date=$4, reason=$5, status=$6, updated_at=NOW()
@@ -188,11 +237,17 @@ async function updateLeave(id, data) {
     [leave_type_name, employee_name, start_date, end_date, reason, status, id]
   );
   if (!rows.length) throw new Error('Leave not found');
-  return rows[0];
+  const leave = rows[0];
+  logAudit({ userId, userName, module: 'HRM Leaves', action: 'UPDATE', recordId: id, recordLabel: leave.reference_no, oldData, newData: leave }).catch(() => {});
+  return leave;
 }
 
-async function deleteLeave(id) {
+async function deleteLeave(id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_leaves WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Leave not found');
+  const oldData = existing.rows[0];
   await pool.query(`DELETE FROM hrm_leaves WHERE id=$1`, [id]);
+  logAudit({ userId, userName, module: 'HRM Leaves', action: 'DELETE', recordId: id, recordLabel: oldData.reference_no, oldData, newData: null }).catch(() => {});
 }
 
 // ── SHIFTS ───────────────────────────────────────────────────
@@ -204,29 +259,41 @@ async function fetchShifts() {
   return rows;
 }
 
-async function createShift({ name, shift_type, start_time, end_time, holiday_day }) {
+async function createShift({ name, shift_type, start_time, end_time, holiday_day }, userId, userName) {
   if (!name || !start_time || !end_time) throw new Error('Name, start time and end time are required');
   const { rows } = await pool.query(
     `INSERT INTO hrm_shifts (name, shift_type, start_time, end_time, holiday_day)
      VALUES ($1,$2,$3,$4,$5) RETURNING *`,
     [name, shift_type || 'Fixed shift', start_time, end_time, holiday_day || null]
   );
-  return rows[0];
+  const shift = rows[0];
+  logAudit({ userId, userName, module: 'HRM Shifts', action: 'CREATE', recordId: shift.id, recordLabel: shift.name, oldData: null, newData: shift }).catch(() => {});
+  return shift;
 }
 
-async function updateShift(id, data) {
+async function updateShift(id, data, userId, userName) {
   const { name, shift_type, start_time, end_time, holiday_day } = data;
+  const existing = await pool.query(`SELECT * FROM hrm_shifts WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Shift not found');
+  const oldData = existing.rows[0];
+
   const { rows } = await pool.query(
     `UPDATE hrm_shifts SET name=$1, shift_type=$2, start_time=$3, end_time=$4, holiday_day=$5, updated_at=NOW()
      WHERE id=$6 RETURNING *`,
     [name, shift_type, start_time, end_time, holiday_day, id]
   );
   if (!rows.length) throw new Error('Shift not found');
-  return rows[0];
+  const shift = rows[0];
+  logAudit({ userId, userName, module: 'HRM Shifts', action: 'UPDATE', recordId: id, recordLabel: shift.name, oldData, newData: shift }).catch(() => {});
+  return shift;
 }
 
-async function deleteShift(id) {
+async function deleteShift(id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_shifts WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Shift not found');
+  const oldData = existing.rows[0];
   await pool.query(`DELETE FROM hrm_shifts WHERE id=$1`, [id]);
+  logAudit({ userId, userName, module: 'HRM Shifts', action: 'DELETE', recordId: id, recordLabel: oldData.name, oldData, newData: null }).catch(() => {});
 }
 
 // ── ATTENDANCE ───────────────────────────────────────────────
@@ -287,7 +354,7 @@ async function fetchAttendance({ date_from, date_to, employee, status, date_filt
   return rows;
 }
 
-async function clockIn({ employee_name, employee_id, department, note }, createdBy) {
+async function clockIn({ employee_name, employee_id, department, note }, createdBy, userName) {
   const today = new Date().toISOString().split('T')[0];
   const now   = new Date().toTimeString().slice(0, 5);
 
@@ -302,16 +369,24 @@ async function clockIn({ employee_name, employee_id, department, note }, created
      RETURNING *`,
     [employee_name || 'Admin', employee_id || null, today, now, status, department || 'Admin', note || '']
   );
-  return rows[0];
+  const rec = rows[0];
+  logAudit({ userId: createdBy, userName, module: 'HRM Attendance', action: 'CREATE', recordId: rec.id, recordLabel: rec.employee_name, oldData: null, newData: rec }).catch(() => {});
+  return rec;
 }
-async function clockOut(id) {
+async function clockOut(id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_attendance WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Attendance record not found');
+  const oldData = existing.rows[0];
+
   const now = new Date().toTimeString().slice(0, 5);
   const { rows } = await pool.query(
     `UPDATE hrm_attendance SET clock_out=$1, updated_at=NOW() WHERE id=$2 RETURNING *`,
     [now, id]
   );
   if (!rows.length) throw new Error('Attendance record not found');
-  return rows[0];
+  const rec = rows[0];
+  logAudit({ userId, userName, module: 'HRM Attendance', action: 'UPDATE', recordId: id, recordLabel: rec.employee_name, oldData, newData: rec }).catch(() => {});
+  return rec;
 }
 
 async function fetchAttendanceStats() {
@@ -329,7 +404,7 @@ async function fetchAttendanceStats() {
   return rows[0];
 }
 
-async function createAttendanceRecord({ employee_name, employee_id, attendance_date, clock_in, clock_out, status, department, note, shift_name }) {
+async function createAttendanceRecord({ employee_name, employee_id, attendance_date, clock_in, clock_out, status, department, note, shift_name }, userId, userName) {
   if (!employee_name || !attendance_date || !status) throw new Error('Employee, date and status are required');
   const { rows } = await pool.query(
     `INSERT INTO hrm_attendance (employee_name, employee_id, attendance_date, clock_in, clock_out, status, department, note, shift_name)
@@ -339,21 +414,33 @@ async function createAttendanceRecord({ employee_name, employee_id, attendance_d
      RETURNING *`,
     [employee_name, employee_id || null, attendance_date, clock_in || null, clock_out || null, status, department || null, note || '', shift_name || null]
   );
-  return rows[0];
+  const rec = rows[0];
+  logAudit({ userId, userName, module: 'HRM Attendance', action: 'CREATE', recordId: rec.id, recordLabel: rec.employee_name, oldData: null, newData: rec }).catch(() => {});
+  return rec;
 }
-async function updateAttendanceRecord(id, data) {
+async function updateAttendanceRecord(id, data, userId, userName) {
   const { employee_name, attendance_date, clock_in, clock_out, status, department, shift_name } = data;
+  const existing = await pool.query(`SELECT * FROM hrm_attendance WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Attendance record not found');
+  const oldData = existing.rows[0];
+
   const { rows } = await pool.query(
     `UPDATE hrm_attendance SET employee_name=$1, attendance_date=$2, clock_in=$3, clock_out=$4, status=$5, department=$6, shift_name=$7, updated_at=NOW()
      WHERE id=$8 RETURNING *`,
     [employee_name, attendance_date, clock_in || null, clock_out || null, status, department || null, shift_name || null, id]
   );
   if (!rows.length) throw new Error('Attendance record not found');
-  return rows[0];
+  const rec = rows[0];
+  logAudit({ userId, userName, module: 'HRM Attendance', action: 'UPDATE', recordId: id, recordLabel: rec.employee_name, oldData, newData: rec }).catch(() => {});
+  return rec;
 }
 
-async function deleteAttendanceRecord(id) {
+async function deleteAttendanceRecord(id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_attendance WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Attendance record not found');
+  const oldData = existing.rows[0];
   await pool.query(`DELETE FROM hrm_attendance WHERE id=$1`, [id]);
+  logAudit({ userId, userName, module: 'HRM Attendance', action: 'DELETE', recordId: id, recordLabel: oldData.employee_name, oldData, newData: null }).catch(() => {});
 }
 
 // ── PAYROLL ──────────────────────────────────────────────────
@@ -374,7 +461,7 @@ async function fetchPayrolls({ status = '', employee = '', month_year = '' } = {
   return rows;
 }
 
-async function createPayroll({ employee_name, employee_id, department, designation, month_year, net_salary }, createdBy) {
+async function createPayroll({ employee_name, employee_id, department, designation, month_year, net_salary }, createdBy, userName) {
   if (!employee_name || !month_year) throw new Error('Employee and month/year are required');
   const ref = await nextPayrollRef();
   const { rows } = await pool.query(
@@ -383,7 +470,9 @@ async function createPayroll({ employee_name, employee_id, department, designati
      VALUES ($1,$2,$3,$4,$5,$6,$7,'Pending',$8) RETURNING *`,
     [ref, employee_name, employee_id || null, department || '—', designation || '—', month_year, net_salary || 0, createdBy || null]
   );
-  return rows[0];
+  const payroll = rows[0];
+  logAudit({ userId: createdBy, userName, module: 'HRM Payroll', action: 'CREATE', recordId: payroll.id, recordLabel: payroll.reference_no, oldData: null, newData: payroll }).catch(() => {});
+  return payroll;
 }
 
 // ── PAYROLL PROCESSING ENGINE ────────────────────────────────
@@ -475,7 +564,7 @@ async function computeEmployeePayroll(employeeId) {
   };
 }
 
-async function runPayrollForEmployee(employeeId, monthYear, createdBy) {
+async function runPayrollForEmployee(employeeId, monthYear, createdBy, userName) {
   const calc = await computeEmployeePayroll(employeeId);
   const ref = await nextPayrollRef();
 
@@ -503,7 +592,9 @@ async function runPayrollForEmployee(employeeId, monthYear, createdBy) {
       );
     }
     await client.query('COMMIT');
-    return payrollRes.rows[0];
+    const payroll = payrollRes.rows[0];
+    logAudit({ userId: createdBy, userName, module: 'HRM Payroll', action: 'CREATE', recordId: payroll.id, recordLabel: payroll.reference_no, oldData: null, newData: payroll }).catch(() => {});
+    return payroll;
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;
@@ -512,12 +603,12 @@ async function runPayrollForEmployee(employeeId, monthYear, createdBy) {
   }
 }
 
-async function runPayrollBulk(employeeIds, monthYear, createdBy) {
+async function runPayrollBulk(employeeIds, monthYear, createdBy, userName) {
   const results = [];
   const errors = [];
   for (const id of employeeIds) {
     try {
-      const rec = await runPayrollForEmployee(id, monthYear, createdBy);
+      const rec = await runPayrollForEmployee(id, monthYear, createdBy, userName);
       results.push(rec);
     } catch (e) {
       errors.push({ employee_id: id, error: e.message });
@@ -534,12 +625,13 @@ async function fetchPayrollItems(payrollId) {
   );
   return rows;
 }
-
-async function updatePayroll(id, data) {
+async function updatePayroll(id, data, userId, userName) {
   const { employee_name, department, designation, month_year, net_salary, status } = data;
 
-  const before = await pool.query(`SELECT status FROM hrm_payroll WHERE id = $1`, [id]);
-  const prevStatus = before.rows[0]?.status;
+  const before = await pool.query(`SELECT * FROM hrm_payroll WHERE id = $1`, [id]);
+  if (!before.rows.length) throw new Error('Payroll not found');
+  const oldData = before.rows[0];
+  const prevStatus = oldData.status;
 
   const { rows } = await pool.query(
     `UPDATE hrm_payroll
@@ -549,6 +641,8 @@ async function updatePayroll(id, data) {
   );
   if (!rows.length) throw new Error('Payroll not found');
   const payroll = rows[0];
+
+  logAudit({ userId, userName, module: 'HRM Payroll', action: 'UPDATE', recordId: id, recordLabel: payroll.reference_no, oldData, newData: payroll }).catch(() => {});
 
   // Auto-mirror the salary payout into Cash & Bank only on the transition
   // into 'Paid' — re-saving an already-Paid record won't double-post.
@@ -568,8 +662,12 @@ async function updatePayroll(id, data) {
   return payroll;
 }
 
-async function deletePayroll(id) {
+async function deletePayroll(id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_payroll WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Payroll not found');
+  const oldData = existing.rows[0];
   await pool.query(`DELETE FROM hrm_payroll WHERE id=$1`, [id]);
+  logAudit({ userId, userName, module: 'HRM Payroll', action: 'DELETE', recordId: id, recordLabel: oldData.reference_no, oldData, newData: null }).catch(() => {});
 }
 
 // ── PAY COMPONENTS ───────────────────────────────────────────
@@ -580,29 +678,41 @@ async function fetchPayComponents() {
   return rows;
 }
 
-async function createPayComponent({ description, component_type, amount, calc_method, status, applicable_from }) {
+async function createPayComponent({ description, component_type, amount, calc_method, status, applicable_from }, userId, userName) {
   if (!description) throw new Error('Description is required');
   const { rows } = await pool.query(
     `INSERT INTO hrm_pay_components (description, component_type, amount, calc_method, status, applicable_from)
      VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
     [description, component_type || 'Earning', amount || 0, calc_method || 'Fixed', status || 'Active', applicable_from || null]
   );
-  return rows[0];
+  const comp = rows[0];
+  logAudit({ userId, userName, module: 'HRM Pay Components', action: 'CREATE', recordId: comp.id, recordLabel: comp.description, oldData: null, newData: comp }).catch(() => {});
+  return comp;
 }
 
-async function updatePayComponent(id, data) {
+async function updatePayComponent(id, data, userId, userName) {
   const { description, component_type, amount, calc_method, status, applicable_from } = data;
+  const existing = await pool.query(`SELECT * FROM hrm_pay_components WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Pay component not found');
+  const oldData = existing.rows[0];
+
   const { rows } = await pool.query(
     `UPDATE hrm_pay_components SET description=$1, component_type=$2, amount=$3, calc_method=$4, status=$5, applicable_from=$6, updated_at=NOW()
      WHERE id=$7 RETURNING *`,
     [description, component_type, amount, calc_method, status, applicable_from, id]
   );
   if (!rows.length) throw new Error('Pay component not found');
-  return rows[0];
+  const comp = rows[0];
+  logAudit({ userId, userName, module: 'HRM Pay Components', action: 'UPDATE', recordId: id, recordLabel: comp.description, oldData, newData: comp }).catch(() => {});
+  return comp;
 }
 
-async function deletePayComponent(id) {
+async function deletePayComponent(id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_pay_components WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Pay component not found');
+  const oldData = existing.rows[0];
   await pool.query(`DELETE FROM hrm_pay_components WHERE id=$1`, [id]);
+  logAudit({ userId, userName, module: 'HRM Pay Components', action: 'DELETE', recordId: id, recordLabel: oldData.description, oldData, newData: null }).catch(() => {});
 }
 
 // ── PAYROLL GROUPS ───────────────────────────────────────────
@@ -614,29 +724,41 @@ async function fetchPayrollGroups() {
   return rows;
 }
 
-async function createPayrollGroup({ name, pay_schedule, employee_count, description }) {
+async function createPayrollGroup({ name, pay_schedule, employee_count, description }, userId, userName) {
   if (!name) throw new Error('Group name is required');
   const { rows } = await pool.query(
     `INSERT INTO hrm_payroll_groups (name, pay_schedule, employee_count, description)
      VALUES ($1,$2,$3,$4) RETURNING *`,
     [name, pay_schedule || 'Monthly', employee_count || 0, description || '']
   );
-  return rows[0];
+  const group = rows[0];
+  logAudit({ userId, userName, module: 'HRM Payroll Groups', action: 'CREATE', recordId: group.id, recordLabel: group.name, oldData: null, newData: group }).catch(() => {});
+  return group;
 }
 
-async function updatePayrollGroup(id, data) {
+async function updatePayrollGroup(id, data, userId, userName) {
   const { name, pay_schedule, employee_count, description } = data;
+  const existing = await pool.query(`SELECT * FROM hrm_payroll_groups WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Payroll group not found');
+  const oldData = existing.rows[0];
+
   const { rows } = await pool.query(
     `UPDATE hrm_payroll_groups SET name=$1, pay_schedule=$2, employee_count=$3, description=$4, updated_at=NOW()
      WHERE id=$5 RETURNING *`,
     [name, pay_schedule, employee_count, description, id]
   );
   if (!rows.length) throw new Error('Payroll group not found');
-  return rows[0];
+  const group = rows[0];
+  logAudit({ userId, userName, module: 'HRM Payroll Groups', action: 'UPDATE', recordId: id, recordLabel: group.name, oldData, newData: group }).catch(() => {});
+  return group;
 }
 
-async function deletePayrollGroup(id) {
+async function deletePayrollGroup(id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_payroll_groups WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Payroll group not found');
+  const oldData = existing.rows[0];
   await pool.query(`DELETE FROM hrm_payroll_groups WHERE id=$1`, [id]);
+  logAudit({ userId, userName, module: 'HRM Payroll Groups', action: 'DELETE', recordId: id, recordLabel: oldData.name, oldData, newData: null }).catch(() => {});
 }
 
 async function fetchEmployeesWithGroups() {
@@ -709,7 +831,7 @@ async function fetchHolidays() {
   return rows;
 }
 
-async function createHoliday({ name, start_date, end_date, location, note }) {
+async function createHoliday({ name, start_date, end_date, location, note }, userId, userName) {
   if (!name || !start_date || !end_date) throw new Error('Name and dates are required');
   const s = new Date(start_date), e = new Date(end_date);
   const days = Math.max(1, Math.round((e - s) / 86400000) + 1);
@@ -719,11 +841,17 @@ async function createHoliday({ name, start_date, end_date, location, note }) {
      VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
     [name, start_date, end_date, duration, location || 'All Locations', note || '']
   );
-  return rows[0];
+  const holiday = rows[0];
+  logAudit({ userId, userName, module: 'HRM Holidays', action: 'CREATE', recordId: holiday.id, recordLabel: holiday.name, oldData: null, newData: holiday }).catch(() => {});
+  return holiday;
 }
 
-async function updateHoliday(id, data) {
+async function updateHoliday(id, data, userId, userName) {
   const { name, start_date, end_date, location, note } = data;
+  const existing = await pool.query(`SELECT * FROM hrm_holidays WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Holiday not found');
+  const oldData = existing.rows[0];
+
   const s = new Date(start_date), e = new Date(end_date);
   const days = Math.max(1, Math.round((e - s) / 86400000) + 1);
   const { rows } = await pool.query(
@@ -732,11 +860,17 @@ async function updateHoliday(id, data) {
     [name, start_date, end_date, `${days} day${days > 1 ? 's' : ''}`, location, note, id]
   );
   if (!rows.length) throw new Error('Holiday not found');
-  return rows[0];
+  const holiday = rows[0];
+  logAudit({ userId, userName, module: 'HRM Holidays', action: 'UPDATE', recordId: id, recordLabel: holiday.name, oldData, newData: holiday }).catch(() => {});
+  return holiday;
 }
 
-async function deleteHoliday(id) {
+async function deleteHoliday(id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_holidays WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Holiday not found');
+  const oldData = existing.rows[0];
   await pool.query(`DELETE FROM hrm_holidays WHERE id=$1`, [id]);
+  logAudit({ userId, userName, module: 'HRM Holidays', action: 'DELETE', recordId: id, recordLabel: oldData.name, oldData, newData: null }).catch(() => {});
 }
 
 // ── SALES TARGETS ────────────────────────────────────────────
@@ -750,29 +884,41 @@ async function fetchSalesTargets({ month_year = '' } = {}) {
   return rows;
 }
 
-async function createSalesTarget({ employee_name, target_amount, commission_pct, month_year }) {
+async function createSalesTarget({ employee_name, target_amount, commission_pct, month_year }, userId, userName) {
   if (!employee_name || !target_amount) throw new Error('Employee and target amount are required');
   const { rows } = await pool.query(
     `INSERT INTO hrm_sales_targets (employee_name, target_amount, commission_pct, month_year)
      VALUES ($1,$2,$3,$4) RETURNING *`,
     [employee_name, target_amount, commission_pct || 0, month_year || '']
   );
-  return rows[0];
+  const target = rows[0];
+  logAudit({ userId, userName, module: 'HRM Sales Targets', action: 'CREATE', recordId: target.id, recordLabel: target.employee_name, oldData: null, newData: target }).catch(() => {});
+  return target;
 }
 
-async function updateSalesTarget(id, data) {
+async function updateSalesTarget(id, data, userId, userName) {
   const { employee_name, target_amount, commission_pct, month_year, achieved_amount } = data;
+  const existing = await pool.query(`SELECT * FROM hrm_sales_targets WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Sales target not found');
+  const oldData = existing.rows[0];
+
   const { rows } = await pool.query(
     `UPDATE hrm_sales_targets SET employee_name=$1, target_amount=$2, commission_pct=$3, month_year=$4, achieved_amount=$5, updated_at=NOW()
      WHERE id=$6 RETURNING *`,
     [employee_name, target_amount, commission_pct, month_year, achieved_amount || 0, id]
   );
   if (!rows.length) throw new Error('Sales target not found');
-  return rows[0];
+  const target = rows[0];
+  logAudit({ userId, userName, module: 'HRM Sales Targets', action: 'UPDATE', recordId: id, recordLabel: target.employee_name, oldData, newData: target }).catch(() => {});
+  return target;
 }
 
-async function deleteSalesTarget(id) {
+async function deleteSalesTarget(id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_sales_targets WHERE id=$1`, [id]);
+  if (!existing.rows.length) throw new Error('Sales target not found');
+  const oldData = existing.rows[0];
   await pool.query(`DELETE FROM hrm_sales_targets WHERE id=$1`, [id]);
+  logAudit({ userId, userName, module: 'HRM Sales Targets', action: 'DELETE', recordId: id, recordLabel: oldData.employee_name, oldData, newData: null }).catch(() => {});
 }
 
 // ── DASHBOARD STATS ──────────────────────────────────────────
@@ -787,7 +933,7 @@ async function fetchSettings() {
   return rows[0];
 }
 
-async function updateSettings(data) {
+async function updateSettings(data, userId, userName) {
   const {
     work_days_per_week, work_hours_per_day, overtime_rate_multiplier,
     currency, payslip_note, leave_approval, attendance_mode,
@@ -795,6 +941,9 @@ async function updateSettings(data) {
     payroll_cycle, payroll_date, payroll_currency,
     work_start_time, work_end_time, late_grace_minutes,
   } = data;
+
+  const before = await pool.query(`SELECT * FROM hrm_settings WHERE id = 1`);
+  const oldData = before.rows[0] || null;
 
   const { rows } = await pool.query(
     `UPDATE hrm_settings SET
@@ -828,9 +977,10 @@ async function updateSettings(data) {
     ]
   );
   if (!rows.length) throw new Error('Settings not found');
-  return rows[0];
+  const settings = rows[0];
+  logAudit({ userId, userName, module: 'HRM Settings', action: 'UPDATE', recordId: settings.id, recordLabel: 'HRM Settings', oldData, newData: settings }).catch(() => {});
+  return settings;
 }
-
 // ── DASHBOARD STATS ──────────────────────────────────────────
 async function fetchDashboardStats() {
   const today = new Date().toISOString().split('T')[0];

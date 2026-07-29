@@ -12,6 +12,7 @@
 const pool = require('../config/database');
 const contactService = require('./contactService');
 const stockLocationService = require('./stockLocationService');
+const { logAudit } = require('./auditLogService');
 
 // ── SCHEMA MIGRATION (idempotent) ────────────────────────────────────────────
 // products didn't have a default_supplier_id column — needed to remember
@@ -86,7 +87,7 @@ const brandNameExists = async (name, excludeId = null) => {
   return result.rows.length > 0;
 };
 
-const createBrand = async ({ name, description }) => {
+const createBrand = async ({ name, description }, userId, userName) => {
   if (!name || !name.trim()) throw new Error('Brand name is required');
   if (await brandNameExists(name)) throw new Error('Brand name already exists');
 
@@ -96,10 +97,12 @@ const createBrand = async ({ name, description }) => {
      RETURNING id, name, description, created_at, updated_at`,
     [name.trim(), description?.trim() || null]
   );
-  return result.rows[0];
+  const brand = result.rows[0];
+  logAudit({ userId, userName, module: 'Products - Brands', action: 'CREATE', recordId: brand.id, recordLabel: brand.name, oldData: null, newData: brand }).catch(() => {});
+  return brand;
 };
 
-const updateBrand = async (id, { name, description }) => {
+const updateBrand = async (id, { name, description }, userId, userName) => {
   const existing = await fetchBrandById(id);
   if (!existing) throw new Error('Brand not found');
   if (name && await brandNameExists(name, id)) throw new Error('Brand name already in use');
@@ -113,18 +116,23 @@ const updateBrand = async (id, { name, description }) => {
      RETURNING id, name, description, updated_at`,
     [name?.trim() || null, description !== undefined ? (description?.trim() || null) : undefined, id]
   );
-  return result.rows[0];
+  const brand = result.rows[0];
+  logAudit({ userId, userName, module: 'Products - Brands', action: 'UPDATE', recordId: id, recordLabel: brand.name, oldData: existing, newData: brand }).catch(() => {});
+  return brand;
 };
 
-const deleteBrand = async (id) => {
+const deleteBrand = async (id, userId, userName) => {
+  const existing = await fetchBrandById(id);
+  if (!existing) throw new Error('Brand not found');
+
   const result = await pool.query(
     'DELETE FROM product_brands WHERE id = $1 RETURNING id, name',
     [id]
   );
   if (result.rows.length === 0) throw new Error('Brand not found');
+  logAudit({ userId, userName, module: 'Products - Brands', action: 'DELETE', recordId: id, recordLabel: result.rows[0].name, oldData: existing, newData: null }).catch(() => {});
   return result.rows[0];
 };
-
 // ─────────────────────────────────────────────────────────────
 // UNITS
 // ─────────────────────────────────────────────────────────────
@@ -178,8 +186,7 @@ const unitNameExists = async (name, excludeId = null) => {
   const result = await pool.query(q, p);
   return result.rows.length > 0;
 };
-
-const createUnit = async ({ name, short_name, allow_decimal }) => {
+const createUnit = async ({ name, short_name, allow_decimal }, userId, userName) => {
   if (!name?.trim())       throw new Error('Unit name is required');
   if (!short_name?.trim()) throw new Error('Short name is required');
   if (await unitNameExists(name)) throw new Error('Unit name already exists');
@@ -190,10 +197,12 @@ const createUnit = async ({ name, short_name, allow_decimal }) => {
      RETURNING id, name, short_name, allow_decimal, created_at, updated_at`,
     [name.trim(), short_name.trim(), allow_decimal === true || allow_decimal === 'true' || allow_decimal === 'Yes']
   );
-  return result.rows[0];
+  const unit = result.rows[0];
+  logAudit({ userId, userName, module: 'Products - Units', action: 'CREATE', recordId: unit.id, recordLabel: unit.name, oldData: null, newData: unit }).catch(() => {});
+  return unit;
 };
 
-const updateUnit = async (id, { name, short_name, allow_decimal }) => {
+const updateUnit = async (id, { name, short_name, allow_decimal }, userId, userName) => {
   const existing = await fetchUnitById(id);
   if (!existing) throw new Error('Unit not found');
   if (name && await unitNameExists(name, id)) throw new Error('Unit name already in use');
@@ -215,19 +224,25 @@ const updateUnit = async (id, { name, short_name, allow_decimal }) => {
       id
     ]
   );
-  return result.rows[0];
+  const unit = result.rows[0];
+  logAudit({ userId, userName, module: 'Products - Units', action: 'UPDATE', recordId: id, recordLabel: unit.name, oldData: existing, newData: unit }).catch(() => {});
+  return unit;
 };
 
-const deleteUnit = async (id) => {
+const deleteUnit = async (id, userId, userName) => {
   // Check if unit is in use
   const inUse = await pool.query('SELECT id FROM products WHERE unit_id = $1 LIMIT 1', [id]);
   if (inUse.rows.length > 0) throw new Error('Cannot delete: unit is assigned to products');
+
+  const existing = await fetchUnitById(id);
+  if (!existing) throw new Error('Unit not found');
 
   const result = await pool.query(
     'DELETE FROM product_units WHERE id = $1 RETURNING id, name',
     [id]
   );
   if (result.rows.length === 0) throw new Error('Unit not found');
+  logAudit({ userId, userName, module: 'Products - Units', action: 'DELETE', recordId: id, recordLabel: result.rows[0].name, oldData: existing, newData: null }).catch(() => {});
   return result.rows[0];
 };
 
@@ -308,7 +323,7 @@ const variationNameExists = async (name, excludeId = null) => {
   return result.rows.length > 0;
 };
 
-const createVariation = async ({ name, values = [] }) => {
+const createVariation = async ({ name, values = [] }, userId, userName) => {
   if (!name?.trim()) throw new Error('Variation name is required');
   if (await variationNameExists(name)) throw new Error('Variation name already exists');
 
@@ -333,7 +348,9 @@ const createVariation = async ({ name, values = [] }) => {
     }
 
     await client.query('COMMIT');
-    return await fetchVariationById(variation.id);
+    const created = await fetchVariationById(variation.id);
+    logAudit({ userId, userName, module: 'Products - Variations', action: 'CREATE', recordId: variation.id, recordLabel: variation.name, oldData: null, newData: created }).catch(() => {});
+    return created;
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -342,7 +359,7 @@ const createVariation = async ({ name, values = [] }) => {
   }
 };
 
-const updateVariation = async (id, { name, values }) => {
+const updateVariation = async (id, { name, values }, userId, userName) => {
   const existing = await fetchVariationById(id);
   if (!existing) throw new Error('Variation not found');
   if (name && await variationNameExists(name, id)) throw new Error('Variation name already in use');
@@ -371,7 +388,9 @@ const updateVariation = async (id, { name, values }) => {
     }
 
     await client.query('COMMIT');
-    return await fetchVariationById(id);
+    const updated = await fetchVariationById(id);
+    logAudit({ userId, userName, module: 'Products - Variations', action: 'UPDATE', recordId: id, recordLabel: updated.name, oldData: existing, newData: updated }).catch(() => {});
+    return updated;
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -380,13 +399,17 @@ const updateVariation = async (id, { name, values }) => {
   }
 };
 
-const deleteVariation = async (id) => {
+const deleteVariation = async (id, userId, userName) => {
+  const existing = await fetchVariationById(id);
+  if (!existing) throw new Error('Variation not found');
+
   // Cascade will delete values; check if variation exists first
   const result = await pool.query(
     'DELETE FROM product_variations WHERE id = $1 RETURNING id, name',
     [id]
   );
   if (result.rows.length === 0) throw new Error('Variation not found');
+  logAudit({ userId, userName, module: 'Products - Variations', action: 'DELETE', recordId: id, recordLabel: result.rows[0].name, oldData: existing, newData: null }).catch(() => {});
   return result.rows[0];
 };
 
@@ -442,7 +465,7 @@ const fetchCategoryById = async (id) => {
   return result.rows[0] || null;
 };
 
-const createCategory = async ({ name, parent_id, description, default_hsn_code }) => {
+const createCategory = async ({ name, parent_id, description, default_hsn_code }, userId, userName) => {
   if (!name?.trim()) throw new Error('Category name is required');
   await ensureProductSchema();
 
@@ -452,10 +475,12 @@ const createCategory = async ({ name, parent_id, description, default_hsn_code }
      RETURNING id, name, parent_id, description, default_hsn_code, created_at, updated_at`,
     [name.trim(), parent_id || null, description?.trim() || null, default_hsn_code?.trim() || null]
   );
-  return result.rows[0];
+  const category = result.rows[0];
+  logAudit({ userId, userName, module: 'Products - Categories', action: 'CREATE', recordId: category.id, recordLabel: category.name, oldData: null, newData: category }).catch(() => {});
+  return category;
 };
 
-const updateCategory = async (id, { name, parent_id, description, default_hsn_code }) => {
+const updateCategory = async (id, { name, parent_id, description, default_hsn_code }, userId, userName) => {
   await ensureProductSchema();
   const existing = await fetchCategoryById(id);
   if (!existing) throw new Error('Category not found');
@@ -477,17 +502,22 @@ const updateCategory = async (id, { name, parent_id, description, default_hsn_co
       id
     ]
   );
-  return result.rows[0];
+  const category = result.rows[0];
+  logAudit({ userId, userName, module: 'Products - Categories', action: 'UPDATE', recordId: id, recordLabel: category.name, oldData: existing, newData: category }).catch(() => {});
+  return category;
 };
-const deleteCategory = async (id) => {
+const deleteCategory = async (id, userId, userName) => {
+  const existing = await fetchCategoryById(id);
+  if (!existing) throw new Error('Category not found');
+
   const result = await pool.query(
     'DELETE FROM product_categories WHERE id = $1 RETURNING id, name',
     [id]
   );
   if (result.rows.length === 0) throw new Error('Category not found');
+  logAudit({ userId, userName, module: 'Products - Categories', action: 'DELETE', recordId: id, recordLabel: result.rows[0].name, oldData: existing, newData: null }).catch(() => {});
   return result.rows[0];
 };
-
 // ─────────────────────────────────────────────────────────────
 // PRODUCTS
 // ─────────────────────────────────────────────────────────────
@@ -668,7 +698,7 @@ const validateProductData = (data) => {
   return { isValid: errors.length === 0, errors };
 };
 
-const createProduct = async (productData) => {
+const createProduct = async (productData, userId, userName) => {
   await ensureProductSchema();
   const { isValid, errors } = validateProductData(productData);
   if (!isValid) throw new Error(errors.join(', '));
@@ -753,15 +783,28 @@ status || 'Active',
        VALUES ($1, $2, $3) ON CONFLICT (product_id, location_id) DO NOTHING`,
       [result.rows[0].id, resolvedLocationId, parseFloat(opening_stock) || 0]
     );
-  } catch (seedErr) {
+} catch (seedErr) {
     console.error('[createProduct] stock-by-location seed warning:', seedErr.message);
   }
-  return fetchProductById(result.rows[0].id);
+  const created = await fetchProductById(result.rows[0].id);
+
+  logAudit({
+    userId, userName,
+    module: 'Products',
+    action: 'CREATE',
+    recordId: created.id,
+    recordLabel: created.name,
+    oldData: null,
+    newData: created,
+  }).catch(() => {});
+
+  return created;
 };
-const updateProduct = async (id, productData) => {
+const updateProduct = async (id, productData, userId, userName) => {
   await ensureProductSchema();
   const existing = await fetchProductById(id);
   if (!existing) throw new Error('Product not found');
+  const oldData = existing;
 const {
     name, sku, barcode_type,
     unit, unit_id,
@@ -848,19 +891,46 @@ const result = await pool.query(
  status                        || null,
       resolvedSupplierId            ?? null,
       hsn_code?.trim()               || null,
-      id
+id
     ]
   );
 
-  return fetchProductById(result.rows[0].id);
+  const updated = await fetchProductById(result.rows[0].id);
+
+  logAudit({
+    userId, userName,
+    module: 'Products',
+    action: 'UPDATE',
+    recordId: id,
+    recordLabel: updated.name,
+    oldData,
+    newData: updated,
+  }).catch(() => {});
+
+  return updated;
 };
-const deleteProduct = async (id) => {
+const deleteProduct = async (id, userId, userName) => {
   try {
+    const existing = await pool.query('SELECT * FROM products WHERE id = $1', [id]);
+    if (existing.rows.length === 0) throw new Error('Product not found');
+    const oldData = existing.rows[0];
+
     const result = await pool.query(
       'DELETE FROM products WHERE id = $1 RETURNING id, name, sku',
       [id]
     );
     if (result.rows.length === 0) throw new Error('Product not found');
+
+    logAudit({
+      userId, userName,
+      module: 'Products',
+      action: 'DELETE',
+      recordId: id,
+      recordLabel: result.rows[0].name,
+      oldData,
+      newData: null,
+    }).catch(() => {});
+
     return result.rows[0];
   } catch (err) {
     if (err.code === '23503') {
@@ -869,7 +939,6 @@ const deleteProduct = async (id) => {
     throw err;
   }
 };
-
 const updateProductStatus = async (id, status) => {
   if (!['Active', 'Inactive'].includes(status)) throw new Error('Invalid status');
   const result = await pool.query(
@@ -892,7 +961,7 @@ const updateProductStatus = async (id, status) => {
 //      the Purchase List and stock-from-purchases invariant intact.
 // Runs row-by-row (not one big transaction) so a single bad row doesn't
 // block the rest of the file — mirrors bulkImportContacts' error style.
-const bulkImportProducts = async (rows, userId) => {
+const bulkImportProducts = async (rows, userId, userName) => {
   await ensureProductSchema();
   const purchaseService = require('./purchaseService'); // lazy require avoids circular import at module load
 
@@ -977,9 +1046,10 @@ const openingStockQty = parseFloat(r.openingStock ?? r.opening_stock) || 0;
               discount_pct: 0,
               margin_pct: 0,
             }],
-            amount_paid: paidAmount,
+       amount_paid: paidAmount,
           },
-          userId
+          userId,
+          userName
         );
       }
 

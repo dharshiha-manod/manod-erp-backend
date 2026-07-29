@@ -49,7 +49,9 @@ const getInvoiceById = async (req, res) => {
 
 const createInvoice = async (req, res) => {
   try {
-    const data = await sellService.createInvoice(req.body);
+    const userId = req.user?.id || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+    const data = await sellService.createInvoice(req.body, userId, userName);
     logActivity({ userId: req.user?.id || null, module: 'Sales', action: `Created Invoice ${data.invoiceNo || data.id}`, detail: `${data.customer || ''} – ₹${data.grandTotal || 0}`, req });
 
     (async () => {
@@ -89,14 +91,18 @@ const createInvoice = async (req, res) => {
 
 const updateInvoice = async (req, res) => {
   try {
-    const data = await sellService.updateInvoice(req.params.id, req.body);
+    const userId = req.user?.id || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+    const data = await sellService.updateInvoice(req.params.id, req.body, userId, userName);
     ok(res, data);
   } catch (e) { err(res, e, "Failed to update invoice"); }
 };
 
 const deleteInvoice = async (req, res) => {
   try {
-    await sellService.deleteInvoice(req.params.id);
+    const userId = req.user?.id || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+    await sellService.deleteInvoice(req.params.id, userId, userName);
     ok(res, { deleted: true });
   } catch (e) { err(res, e, "Failed to delete invoice"); }
 };
@@ -126,7 +132,9 @@ const getPOSSaleById = async (req, res) => {
 };
 const createPOSSale = async (req, res) => {
   try {
-   const data = await sellService.createPOSSale(req.body);
+    const userId = req.user?.id || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+   const data = await sellService.createPOSSale(req.body, userId, userName);
     logActivity({ userId: req.user?.id || null, module: 'POS', action: `Completed Sale ${data.refNo || data.id}`, detail: `${data.customer || 'Walk-In'} – ₹${data.grandTotal || 0}`, req });
     created(res, data);
   } catch (e) {
@@ -138,14 +146,18 @@ const createPOSSale = async (req, res) => {
 
 const updatePOSSale = async (req, res) => {
   try {
-    const data = await sellService.updatePOSSale(req.params.id, req.body);
+    const userId = req.user?.id || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+    const data = await sellService.updatePOSSale(req.params.id, req.body, userId, userName);
     ok(res, data);
   } catch (e) { err(res, e, "Failed to update POS sale"); }
 };
 
 const deletePOSSale = async (req, res) => {
   try {
-    await sellService.deletePOSSale(req.params.id);
+    const userId = req.user?.id || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+    await sellService.deletePOSSale(req.params.id, userId, userName);
     ok(res, { deleted: true });
   } catch (e) { err(res, e, "Failed to delete POS sale"); }
 };
@@ -223,7 +235,9 @@ const getReturnById = async (req, res) => {
 
 const createReturn = async (req, res) => {
   try {
-   const data = await sellService.createReturn(req.body);
+    const userId = req.user?.id || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+   const data = await sellService.createReturn(req.body, userId, userName);
     logActivity({ userId: req.user?.id || null, module: 'Sales', action: `Created Sales Return ${data.returnNo || data.id}`, detail: `${data.customer || ''} – ₹${data.grandTotal || 0}`, req });
     created(res, data);
   } catch (e) {
@@ -234,14 +248,18 @@ const createReturn = async (req, res) => {
 };
 const updateReturn = async (req, res) => {
   try {
-    const data = await sellService.updateReturn(req.params.id, req.body);
+    const userId = req.user?.id || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+    const data = await sellService.updateReturn(req.params.id, req.body, userId, userName);
     ok(res, data);
   } catch (e) { err(res, e, "Failed to update return"); }
 };
 
 const deleteReturn = async (req, res) => {
   try {
-    await sellService.deleteReturn(req.params.id);
+    const userId = req.user?.id || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+    await sellService.deleteReturn(req.params.id, userId, userName);
     ok(res, { deleted: true });
   } catch (e) { err(res, e, "Failed to delete return"); }
 };

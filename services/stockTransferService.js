@@ -22,6 +22,7 @@
 const pool = require('../config/database');
 const stockLocationService = require('./stockLocationService');
 const notificationEngine = require('./notificationEngine');
+const { logAudit } = require('./auditLogService');
 const DEFAULT_BUSINESS_ID = 1; // single-business setup for now
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
@@ -202,7 +203,7 @@ const fetchStockTransferById = async (id) => {
 };
 
 // ── CREATE STOCK TRANSFER ─────────────────────────────────────────────────────
-const createStockTransfer = async (body, userId) => {
+const createStockTransfer = async (body, userId, userName) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -307,9 +308,21 @@ const fromLocationId = idLookup.rows.find(r => r.location_name === body.location
       await applyTransferStockImpact(transfer.id, 'apply', client);
     }
 
-    await client.query('COMMIT');
+  await client.query('COMMIT');
     console.log(`✅ Stock Transfer created: ${transfer.transfer_number} (id: ${transfer.id})`);
-    return fetchStockTransferById(transfer.id);
+    const created = await fetchStockTransferById(transfer.id);
+
+    logAudit({
+      userId, userName,
+      module: 'Stock Transfers',
+      action: 'CREATE',
+      recordId: transfer.id,
+      recordLabel: transfer.transfer_number,
+      oldData: null,
+      newData: created,
+    }).catch(() => {});
+
+    return created;
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -319,7 +332,7 @@ const fromLocationId = idLookup.rows.find(r => r.location_name === body.location
 };
 
 // ── UPDATE STOCK TRANSFER ─────────────────────────────────────────────────────
-const updateStockTransfer = async (id, body, userId) => {
+const updateStockTransfer = async (id, body, userId, userName) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -327,6 +340,7 @@ const updateStockTransfer = async (id, body, userId) => {
     const existing = await client.query(`SELECT * FROM stock_transfers WHERE id = $1`, [id]);
     if (existing.rows.length === 0) throw new Error('Stock Transfer not found');
     const prev = existing.rows[0];
+    const oldData = prev;
 
     if (body.location_from && body.location_to && body.location_from === body.location_to) {
       throw new Error('Source and destination locations must be different');
@@ -418,7 +432,19 @@ const updateStockTransfer = async (id, body, userId) => {
 
     await client.query('COMMIT');
     console.log(`✅ Stock Transfer updated: id ${id}`);
-    return fetchStockTransferById(id);
+    const updated = await fetchStockTransferById(id);
+
+    logAudit({
+      userId, userName,
+      module: 'Stock Transfers',
+      action: 'UPDATE',
+      recordId: id,
+      recordLabel: updated?.transfer_number || String(id),
+      oldData,
+      newData: updated,
+    }).catch(() => {});
+
+    return updated;
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -428,13 +454,14 @@ const updateStockTransfer = async (id, body, userId) => {
 };
 
 // ── DELETE STOCK TRANSFER ─────────────────────────────────────────────────────
-const deleteStockTransfer = async (id) => {
+const deleteStockTransfer = async (id, userId, userName) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
     const existing = await client.query(`SELECT * FROM stock_transfers WHERE id = $1`, [id]);
     if (existing.rows.length === 0) throw new Error('Stock Transfer not found');
+    const oldData = existing.rows[0];
 
     // If this transfer already moved stock, put it back before deleting.
     if (existing.rows[0].status === 'Completed') {
@@ -448,8 +475,19 @@ const deleteStockTransfer = async (id) => {
       [id]
     );
 
-    await client.query('COMMIT');
+  await client.query('COMMIT');
     console.log(`🗑️  Stock Transfer deleted: ${result.rows[0].transfer_number}`);
+
+    logAudit({
+      userId, userName,
+      module: 'Stock Transfers',
+      action: 'DELETE',
+      recordId: id,
+      recordLabel: result.rows[0].transfer_number,
+      oldData,
+      newData: null,
+    }).catch(() => {});
+
     return result.rows[0];
   } catch (err) {
     await client.query('ROLLBACK');

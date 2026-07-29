@@ -6,12 +6,12 @@
  * Pattern: mirrors stockAdjustmentController.js exactly
  * ====================================================
  */
-
 'use strict';
 const transporter = require("../services/emailService");
 
 
 const pool = require('../config/database');
+const { logAudit } = require('../services/auditLogService');
 
 // ─────────────────────────────────────────────────────────────
 // UTILITY
@@ -121,7 +121,20 @@ const createLead = async (req, res) => {
       }
     }
 
-    await client.query('COMMIT');
+await client.query('COMMIT');
+
+    const userId = req.user?.id || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+    logAudit({
+      userId, userName,
+      module: 'CRM',
+      action: 'CREATE',
+      recordId: lead.id,
+      recordLabel: lead.name,
+      oldData: null,
+      newData: lead,
+    }).catch(() => {});
+
     res.status(201).json({ success: true, message: 'Lead created', lead });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -145,7 +158,10 @@ const updateLead = async (req, res) => {
       customFields, contactPersons,
     } = req.body;
 
-    await client.query('BEGIN');
+  await client.query('BEGIN');
+
+    const { rows: existingRows } = await client.query('SELECT * FROM crm_leads WHERE id = $1', [req.params.id]);
+    const oldData = existingRows[0] || null;
 
     const { rows } = await client.query(
       `UPDATE crm_leads SET
@@ -192,7 +208,20 @@ const updateLead = async (req, res) => {
       }
     }
 
-    await client.query('COMMIT');
+await client.query('COMMIT');
+
+    const userId = req.user?.id || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+    logAudit({
+      userId, userName,
+      module: 'CRM',
+      action: 'UPDATE',
+      recordId: lead.id,
+      recordLabel: lead.name,
+      oldData,
+      newData: lead,
+    }).catch(() => {});
+
     res.json({ success: true, message: 'Lead updated', lead });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -205,8 +234,25 @@ const updateLead = async (req, res) => {
 
 const deleteLead = async (req, res) => {
   try {
+    const { rows: existingRows } = await pool.query('SELECT * FROM crm_leads WHERE id = $1', [req.params.id]);
+    if (!existingRows.length) return fail(res, 404, 'Lead not found');
+    const oldData = existingRows[0];
+
     const { rowCount } = await pool.query('DELETE FROM crm_leads WHERE id = $1', [req.params.id]);
     if (!rowCount) return fail(res, 404, 'Lead not found');
+
+    const userId = req.user?.id || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+    logAudit({
+      userId, userName,
+      module: 'CRM',
+      action: 'DELETE',
+      recordId: req.params.id,
+      recordLabel: oldData.name,
+      oldData,
+      newData: null,
+    }).catch(() => {});
+
     res.json({ success: true, message: 'Lead deleted' });
   } catch (err) {
     fail(res, 500, 'Failed to delete lead');

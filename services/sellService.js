@@ -9,6 +9,7 @@ const stockLocationService = require("./stockLocationService");
 const contactService = require("./contactService");
   const notificationEngine = require("./notificationEngine");
   const bankIntegrationService = require("./bankIntegrationService");
+  const { logAudit } = require("./auditLogService");
   // Manufacturing module integration: when a sale can't be fulfilled from
   // stock, auto-raise a make-to-order Work Order for the shortfall instead
   // of only failing the sale (see _tryAutoWorkOrder below).
@@ -282,7 +283,7 @@ let sellSchemaReady = false;
   }
 
 // ── NEW CODE ──
-  async function createInvoice(data) {
+async function createInvoice(data, userId, userName) {
     await ensureSellSchema();
 
     const {
@@ -484,10 +485,19 @@ let sellSchemaReady = false;
       }).catch(() => {});
     }
 
+  logAudit({
+      userId, userName,
+      module: 'SalesInvoice',
+      action: 'CREATE',
+      recordId: invoice.id,
+      recordLabel: invoice.invoice_no,
+      newData: invoice,
+    }).catch(() => {});
+
     return getInvoiceById(invoice.id);
   } 
 
-  async function updateInvoice(id, data) {
+  async function updateInvoice(id, data, userId, userName) {
     const fields = [];
     const params = [];
 
@@ -510,11 +520,20 @@ let sellSchemaReady = false;
 
     if (fields.length === 0) return getInvoiceById(id);
 
-   params.push(id);
+  params.push(id);
     await q(
       `UPDATE sales_invoices SET ${fields.join(",")} WHERE id = $${params.length}`,
       params
     );
+
+    logAudit({
+      userId, userName,
+      module: 'SalesInvoice',
+      action: 'UPDATE',
+      recordId: id,
+      recordLabel: String(id),
+      newData: data,
+    }).catch(() => {}); 
 
     // Auto-mirror an edited/added payment amount into Cash & Bank.
     // sourceEvent includes the new paid_amount so edits create a fresh,
@@ -535,7 +554,7 @@ let sellSchemaReady = false;
     return getInvoiceById(id);
   }
 
- async function deleteInvoice(id) {
+async function deleteInvoice(id, userId, userName) {
   // Reverse stock before deleting, if this invoice had deducted stock
   const { rows } = await q(
     `SELECT si.affects_stock,
@@ -559,7 +578,17 @@ let sellSchemaReady = false;
     }
   }
 
-  await q("DELETE FROM sales_invoices WHERE id = $1", [id]);
+await q("DELETE FROM sales_invoices WHERE id = $1", [id]);
+
+  logAudit({
+    userId, userName,
+    module: 'SalesInvoice',
+    action: 'DELETE',
+    recordId: id,
+    recordLabel: String(id),
+    oldData: invoice,
+  }).catch(() => {});
+
   return { deleted: true };
 }
 
@@ -618,7 +647,7 @@ let sellSchemaReady = false;
     return mapPOSSale(rows[0]);
   }
 
- async function createPOSSale(data) {
+async function createPOSSale(data, userId, userName) {
     await ensureSellSchema();
 
     const {
@@ -689,10 +718,19 @@ let sellSchemaReady = false;
     }
   }
 
+logAudit({
+    userId, userName,
+    module: 'POSSale',
+    action: 'CREATE',
+    recordId: sale.id,
+    recordLabel: sale.ref_no,
+    newData: sale,
+  }).catch(() => {});
+
   return getPOSSaleById(sale.id);
   }
 
-  async function updatePOSSale(id, data) {
+  async function updatePOSSale(id, data, userId, userName) {
     const fields = [];
     const params = [];
 
@@ -709,13 +747,22 @@ let sellSchemaReady = false;
     }
 
     if (fields.length === 0) return getPOSSaleById(id);
-
-    params.push(id);
+params.push(id);
     await q(`UPDATE pos_sales SET ${fields.join(",")} WHERE id = $${params.length}`, params);
+
+    logAudit({
+      userId, userName,
+      module: 'POSSale',
+      action: 'UPDATE',
+      recordId: id,
+      recordLabel: String(id),
+      newData: data,
+    }).catch(() => {});
+
     return getPOSSaleById(id);
   }
 
-  async function deletePOSSale(id) {
+  async function deletePOSSale(id, userId, userName) {
   // Reverse stock before deleting, since a POS sale normally deducts stock
   const { rows } = await q(
     `SELECT ps.affects_stock,
@@ -738,8 +785,17 @@ let sellSchemaReady = false;
       }
     }
   }
+await q("DELETE FROM pos_sales WHERE id = $1", [id]);
 
-  await q("DELETE FROM pos_sales WHERE id = $1", [id]);
+  logAudit({
+    userId, userName,
+    module: 'POSSale',
+    action: 'DELETE',
+    recordId: id,
+    recordLabel: String(id),
+    oldData: sale,
+  }).catch(() => {});
+
   return { deleted: true };
 }
   // ═══════════════════════════════════════════════════════════════
@@ -912,9 +968,9 @@ let sellSchemaReady = false;
     return mapReturn({ ...rows[0], items: rows[0].items.map(mapReturnItem) });
   }
 
-  async function createReturn(data) {
+async function createReturn(data, userId, userName) {
     const {
-      returnNo, returnDate, customer, invoiceRef, warehouse,
+      returnNo, returnDate, customer, invoiceRef, warehouse,  
       reason, docStatus = "Draft", taxAmt = 0, grandTotal = 0,
       affectsStock = false, notes, items = [],
       refundStatus = "Pending", refundMethod, refundAmount = 0,
@@ -992,9 +1048,18 @@ let sellSchemaReady = false;
     }
   }
 
+logAudit({
+      userId, userName,
+      module: 'SalesReturn',
+      action: 'CREATE',
+      recordId: ret.id,
+      recordLabel: ret.return_no,
+      newData: ret,
+    }).catch(() => {});
+
     return getReturnById(ret.id);
   }
-  async function updateReturn(id, data) {
+  async function updateReturn(id, data, userId, userName) {
     const existing = await getReturnById(id);
     const wasCompleted = existing?.affectsStock;
     const willBeCompleted = data.docStatus === "Completed";
@@ -1048,11 +1113,32 @@ let sellSchemaReady = false;
       }
     }
 
+logAudit({
+      userId, userName,
+      module: 'SalesReturn',
+      action: 'UPDATE',
+      recordId: id,
+      recordLabel: existing?.returnNo || String(id),
+      oldData: existing,
+      newData: data,
+    }).catch(() => {});
+
     return getReturnById(id);
   }
 
-  async function deleteReturn(id) {
+  async function deleteReturn(id, userId, userName) {
+    const existing = await getReturnById(id);
     await q("DELETE FROM sales_returns WHERE id = $1", [id]);
+
+    logAudit({
+      userId, userName,
+      module: 'SalesReturn',
+      action: 'DELETE',
+      recordId: id,
+      recordLabel: existing?.returnNo || String(id),
+      oldData: existing,
+    }).catch(() => {});
+
     return { deleted: true };
   }
   // ═══════════════════════════════════════════════════════════════

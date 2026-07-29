@@ -10,6 +10,7 @@
 
 const pool = require('../config/database');
 const notificationEngine = require('./notificationEngine');
+const { logAudit } = require('./auditLogService');
 
 // ── Reference number ──────────────────────────────────────────────────────────
 const generateReferenceNo = async (client = pool) => {
@@ -135,7 +136,7 @@ const fetchAdjustmentById = async (id) => {
 };
 
 // ── CREATE ────────────────────────────────────────────────────────────────────
-const createAdjustment = async (body, userId) => {
+const createAdjustment = async (body, userId, userName) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -212,9 +213,20 @@ const createAdjustment = async (body, userId) => {
     if (adj.status === 'Completed') {
       await applyStockImpact(adj.id, 'apply', client);
     }
+await client.query('COMMIT');
+    const created = await fetchAdjustmentById(adj.id);
 
-    await client.query('COMMIT');
-    return fetchAdjustmentById(adj.id);
+    logAudit({
+      userId, userName,
+      module: 'Stock Adjustments',
+      action: 'CREATE',
+      recordId: adj.id,
+      recordLabel: adj.reference_no,
+      oldData: null,
+      newData: created,
+    }).catch(() => {});
+
+    return created;
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -224,7 +236,7 @@ const createAdjustment = async (body, userId) => {
 };
 
 // ── UPDATE ────────────────────────────────────────────────────────────────────
-const updateAdjustment = async (id, body, userId) => {
+const updateAdjustment = async (id, body, userId, userName) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -232,6 +244,7 @@ const updateAdjustment = async (id, body, userId) => {
     const existing = await client.query(`SELECT * FROM stock_adjustments WHERE id=$1`, [id]);
     if (existing.rows.length === 0) throw new Error('Stock Adjustment not found');
     const prev = existing.rows[0];
+    const oldData = prev;
 
     if (prev.status === 'Completed' && body.status && body.status !== 'Completed') {
       await applyStockImpact(id, 'reverse', client);
@@ -301,9 +314,20 @@ const updateAdjustment = async (id, body, userId) => {
     if (prev.status !== 'Completed' && newStatus === 'Completed') {
       await applyStockImpact(id, 'apply', client);
     }
+await client.query('COMMIT');
+    const updated = await fetchAdjustmentById(id);
 
-    await client.query('COMMIT');
-    return fetchAdjustmentById(id);
+    logAudit({
+      userId, userName,
+      module: 'Stock Adjustments',
+      action: 'UPDATE',
+      recordId: id,
+      recordLabel: updated?.reference_no || String(id),
+      oldData,
+      newData: updated,
+    }).catch(() => {});
+
+    return updated;
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -313,16 +337,28 @@ const updateAdjustment = async (id, body, userId) => {
 };
 
 // ── DELETE ────────────────────────────────────────────────────────────────────
-const deleteAdjustment = async (id) => {
+const deleteAdjustment = async (id, userId, userName) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const ex = await client.query(`SELECT * FROM stock_adjustments WHERE id=$1`, [id]);
     if (ex.rows.length === 0) throw new Error('Stock Adjustment not found');
+    const oldData = ex.rows[0];
     if (ex.rows[0].status === 'Completed') await applyStockImpact(id, 'reverse', client);
     await client.query(`DELETE FROM stock_adjustment_items WHERE stock_adjustment_id=$1`, [id]);
     const r = await client.query(`DELETE FROM stock_adjustments WHERE id=$1 RETURNING id,reference_no`, [id]);
     await client.query('COMMIT');
+
+    logAudit({
+      userId, userName,
+      module: 'Stock Adjustments',
+      action: 'DELETE',
+      recordId: id,
+      recordLabel: r.rows[0].reference_no,
+      oldData,
+      newData: null,
+    }).catch(() => {});
+
     return r.rows[0];
   } catch (err) {
     await client.query('ROLLBACK');
@@ -333,17 +369,30 @@ const deleteAdjustment = async (id) => {
 };
 
 // ── APPROVE ───────────────────────────────────────────────────────────────────
-const approveAdjustment = async (id, userId) => {
+const approveAdjustment = async (id, userId, userName) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const ex = await client.query(`SELECT * FROM stock_adjustments WHERE id=$1`, [id]);
     if (ex.rows.length === 0) throw new Error('Stock Adjustment not found');
     if (ex.rows[0].status === 'Completed') throw new Error('Already completed');
+    const oldData = ex.rows[0];
     await client.query(`UPDATE stock_adjustments SET status='Completed',updated_at=NOW() WHERE id=$1`, [id]);
     await applyStockImpact(id, 'apply', client);
     await client.query('COMMIT');
-    return fetchAdjustmentById(id);
+    const updated = await fetchAdjustmentById(id);
+
+    logAudit({
+      userId, userName,
+      module: 'Stock Adjustments',
+      action: 'UPDATE',
+      recordId: id,
+      recordLabel: updated?.reference_no || String(id),
+      oldData,
+      newData: updated,
+    }).catch(() => {});
+
+    return updated;
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -351,7 +400,6 @@ const approveAdjustment = async (id, userId) => {
     client.release();
   }
 };
-
 // ── STATS ─────────────────────────────────────────────────────────────────────
 const getAdjustmentStats = async () => {
   const r = await pool.query(`

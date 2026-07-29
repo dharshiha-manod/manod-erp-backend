@@ -8,6 +8,7 @@
 const pool = require('../config/database');
 const bankIntegrationService = require('./bankIntegrationService');
 const stockLocationService = require('./stockLocationService');
+const { logAudit } = require('./auditLogService');
 
 // ── SCHEMA MIGRATION (idempotent) ────────────────────────────────────────────
 // purchase_items didn't have a product_id column, so purchases could never
@@ -259,7 +260,7 @@ const fetchPurchaseById = async (id) => {
 };
 
 // ── CREATE PURCHASE ──────────────────────────────────────────────────────────
-const createPurchase = async (body, userId) => {
+const createPurchase = async (body, userId, userName) => {
   await ensureSchema();
   const client = await pool.connect();
   try {
@@ -414,6 +415,16 @@ supplier_id, supplier_name, location, location_id,
 await client.query('COMMIT');
     console.log(`✅ Purchase created: ${purchase.reference_no} (id: ${purchase.id})`);
 
+    logAudit({
+      userId, userName,
+      module: 'Purchases',
+      action: 'CREATE',
+      recordId: purchase.id,
+      recordLabel: purchase.reference_no,
+      oldData: null,
+      newData: purchase,
+    }).catch(() => {});
+
     // ── Auto-register capital items as Fixed Assets (best-effort, post-commit) ──
     if (capitalItemsToRegister.length > 0) {
       try {
@@ -490,7 +501,7 @@ await client.query('COMMIT');
 };
 
 // ── UPDATE PURCHASE ──────────────────────────────────────────────────────────
-const updatePurchase = async (id, body, userId) => {
+const updatePurchase = async (id, body, userId, userName) => {
   await ensureSchema();
   const client = await pool.connect();
   try {
@@ -499,6 +510,7 @@ const updatePurchase = async (id, body, userId) => {
     const existing = await client.query(`SELECT * FROM purchases WHERE id = $1`, [id]);
     if (existing.rows.length === 0) throw new Error('Purchase not found');
     const prevStatus = existing.rows[0].purchase_status;
+    const oldData = existing.rows[0];
 
     // If it was already Received, reverse stock now — items may be replaced
     // and/or status may change below, so we reconcile from a clean slate.
@@ -653,9 +665,21 @@ setField('pay_term',         body.pay_term);
       await applyPurchaseStockImpact(id, 'apply', client);
     }
 
-    await client.query('COMMIT');
+   await client.query('COMMIT');
     console.log(`✅ Purchase updated: id ${id}`);
-    return fetchPurchaseById(id);
+    const updated = await fetchPurchaseById(id);
+
+    logAudit({
+      userId, userName,
+      module: 'Purchases',
+      action: 'UPDATE',
+      recordId: id,
+      recordLabel: updated?.reference_no || String(id),
+      oldData,
+      newData: updated,
+    }).catch(() => {});
+
+    return updated;
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -665,13 +689,14 @@ setField('pay_term',         body.pay_term);
 };
 
 // ── DELETE PURCHASE ──────────────────────────────────────────────────────────
-const deletePurchase = async (id) => {
+const deletePurchase = async (id, userId, userName) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    const existing = await client.query(`SELECT purchase_status FROM purchases WHERE id = $1`, [id]);
+    const existing = await client.query(`SELECT * FROM purchases WHERE id = $1`, [id]);
     if (existing.rows.length === 0) throw new Error('Purchase not found');
+    const oldData = existing.rows[0];
 
     // Reverse stock before the items get cascade-deleted with the purchase
     if (existing.rows[0].purchase_status === 'Received') {
@@ -683,8 +708,19 @@ const deletePurchase = async (id) => {
       [id]
     );
 
-    await client.query('COMMIT');
+   await client.query('COMMIT');
     console.log(`🗑️  Purchase deleted: ${result.rows[0].reference_no}`);
+
+    logAudit({
+      userId, userName,
+      module: 'Purchases',
+      action: 'DELETE',
+      recordId: id,
+      recordLabel: result.rows[0].reference_no,
+      oldData,
+      newData: null,
+    }).catch(() => {});
+
     return result.rows[0];
   } catch (err) {
     await client.query('ROLLBACK');

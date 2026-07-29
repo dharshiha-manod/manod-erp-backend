@@ -57,6 +57,7 @@ const getStockTransferById = async (req, res) => {
 const createStockTransfer = async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
 
     if (!req.body.location_from || !req.body.location_to) {
       return res.status(400).json({ success: false, error: 'Both source and destination locations are required' });
@@ -68,7 +69,7 @@ const createStockTransfer = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Each item must reference a valid product' });
     }
 
-const stockTransfer = await stockTransferService.createStockTransfer(req.body, userId);
+const stockTransfer = await stockTransferService.createStockTransfer(req.body, userId, userName);
     console.log(`✅ Stock Transfer created: ${stockTransfer.reference_no}`);
     logActivity({ userId, module: 'Stock Transfers', action: `Created Transfer ${stockTransfer.reference_no}`, detail: `${req.body.location_from} → ${req.body.location_to}`, req });
     res.status(201).json({
@@ -87,7 +88,8 @@ const stockTransfer = await stockTransferService.createStockTransfer(req.body, u
 const updateStockTransfer = async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId || null;
-   const stockTransfer = await stockTransferService.updateStockTransfer(req.params.id, req.body, userId);
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+   const stockTransfer = await stockTransferService.updateStockTransfer(req.params.id, req.body, userId, userName);
     console.log(`✅ Stock Transfer updated: id ${req.params.id}`);
     logActivity({ userId, module: 'Stock Transfers', action: `Updated Transfer ${stockTransfer.reference_no || req.params.id}`, req });
     res.status(200).json({
@@ -105,7 +107,9 @@ const updateStockTransfer = async (req, res) => {
 // ── DELETE STOCK TRANSFER ─────────────────────────────────────────────────────
 const deleteStockTransfer = async (req, res) => {
   try {
-    const result = await stockTransferService.deleteStockTransfer(req.params.id);
+    const userId = req.user?.id || req.user?.userId || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+    const result = await stockTransferService.deleteStockTransfer(req.params.id, userId, userName);
     res.status(200).json({
       success: true,
       message: 'Stock Transfer deleted successfully',

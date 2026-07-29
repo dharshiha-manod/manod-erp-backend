@@ -56,6 +56,7 @@ const getPurchaseById = async (req, res) => {
 const createPurchase = async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
 
     if (!req.body.purchase_status) {
       return res.status(400).json({ success: false, error: 'Purchase status is required' });
@@ -64,7 +65,7 @@ const createPurchase = async (req, res) => {
       return res.status(400).json({ success: false, error: 'At least one product item is required' });
     }
 
-  const purchase = await purchaseService.createPurchase(req.body, userId);
+  const purchase = await purchaseService.createPurchase(req.body, userId, userName);
     console.log(`✅ Purchase created: ${purchase.reference_no}`);
     logActivity({ userId, module: 'Purchases', action: `Created Purchase ${purchase.reference_no}`, detail: `Status: ${purchase.purchase_status}`, req });
     res.status(201).json({
@@ -83,7 +84,8 @@ const createPurchase = async (req, res) => {
 const updatePurchase = async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId || null;
-   const purchase = await purchaseService.updatePurchase(req.params.id, req.body, userId);
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+   const purchase = await purchaseService.updatePurchase(req.params.id, req.body, userId, userName);
     console.log(`✅ Purchase updated: id ${req.params.id}`);
     logActivity({ userId, module: 'Purchases', action: `Updated Purchase ${purchase.reference_no || req.params.id}`, req });
     res.status(200).json({
@@ -101,7 +103,9 @@ const updatePurchase = async (req, res) => {
 // ── DELETE PURCHASE ──────────────────────────────────────────────────────────
 const deletePurchase = async (req, res) => {
   try {
-    const result = await purchaseService.deletePurchase(req.params.id);
+    const userId = req.user?.id || req.user?.userId || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+    const result = await purchaseService.deletePurchase(req.params.id, userId, userName);
     res.status(200).json({
       success: true,
       message: 'Purchase deleted successfully',

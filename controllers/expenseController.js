@@ -41,10 +41,11 @@ const getExpenseById = async (req, res) => {
 const createExpense = async (req, res) => {
   try {
     const userId = req.user?.userId || req.user?.id || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
     if (!req.body.amount && !req.body.total_amount) {
       return res.status(400).json({ success: false, error: 'Total amount is required' });
     }
-  const expense = await svc.createExpense(req.body, userId);
+  const expense = await svc.createExpense(req.body, userId, userName);
     logActivity({ userId, module: 'Expenses', action: `Added Expense ${expense.reference_no || expense.id}`, detail: `Amount: ${expense.amount || expense.total_amount || ''}`, req });
     res.status(201).json({ success: true, message: 'Expense saved successfully', expense });
   } catch (err) {
@@ -67,7 +68,9 @@ const updateExpense = async (req, res) => {
 
 const deleteExpense = async (req, res) => {
   try {
-    const result = await svc.deleteExpense(req.params.id);
+    const userId = req.user?.userId || req.user?.id || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+    const result = await svc.deleteExpense(req.params.id, userId, userName);
     res.json({ success: true, message: 'Expense deleted successfully', deleted: result });
   } catch (err) {
     console.error('deleteExpense:', err.message);

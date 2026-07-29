@@ -5,6 +5,7 @@
 
 const pool = require('../config/database');
 const bankIntegrationService = require('./bankIntegrationService');
+const { logAudit } = require('./auditLogService');
 
 // ── Reference number ─────────────────────────────────────────────────────
 const generateReferenceNo = async (client = pool) => {
@@ -70,7 +71,7 @@ const fetchExpenseById = async (id) => {
   return result.rows[0] || null;
 };
 
-const createExpense = async (data, userId) => {
+const createExpense = async (data, userId, userName) => {
   const {
     location, category_id, sub_category_id, expense_number,
     expense_date, expense_for, tax_amount = 0,
@@ -132,6 +133,16 @@ if (!amount && !total_amount) throw new Error('Total amount is required');
   );
 const expense = result.rows[0];
 
+  logAudit({
+    userId, userName,
+    module: 'Expenses',
+    action: 'CREATE',
+    recordId: expense.id,
+    recordLabel: expense.expense_number,
+    oldData: null,
+    newData: expense,
+  }).catch(() => {});
+
   // Auto-mirror this expense payment into Cash & Bank.
   const paidNow = parseFloat(amount_paid) || 0;
   if (paidNow > 0) {
@@ -168,9 +179,10 @@ const expense = result.rows[0];
   return expense;
 };
 
-const updateExpense = async (id, data, userId) => { 
+const updateExpense = async (id, data, userId, userName) => { 
   const existing = await fetchExpenseById(id);
   if (!existing) throw new Error('Expense not found');
+  const oldData = existing;
 
   const fields = [
     'location','category_id','sub_category_id','expense_date','expense_for',
@@ -218,7 +230,17 @@ const updateExpense = async (id, data, userId) => {
     `UPDATE expenses SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
     params
   );
-  const updated = result.rows[0];
+ const updated = result.rows[0];
+
+  logAudit({
+    userId, userName,
+    module: 'Expenses',
+    action: 'UPDATE',
+    recordId: id,
+    recordLabel: updated.expense_number,
+    oldData,
+    newData: updated,
+  }).catch(() => {});
 
 // Auto-mirror an increased payment amount into Cash & Bank. Only fires
   // when amount_paid went up from what it was before this edit.
@@ -265,9 +287,23 @@ const updateExpense = async (id, data, userId) => {
   return updated;
 };
 
-const deleteExpense = async (id) => {
+const deleteExpense = async (id, userId, userName) => {
+  const existing = await pool.query(`SELECT * FROM expenses WHERE id = $1`, [id]);
+  if (existing.rows.length === 0) throw new Error('Expense not found');
+  const oldData = existing.rows[0];
+
   const result = await pool.query(`DELETE FROM expenses WHERE id = $1 RETURNING id`, [id]);
-  if (result.rows.length === 0) throw new Error('Expense not found');
+
+  logAudit({
+    userId, userName,
+    module: 'Expenses',
+    action: 'DELETE',
+    recordId: id,
+    recordLabel: oldData.expense_number,
+    oldData,
+    newData: null,
+  }).catch(() => {});
+
   return result.rows[0];
 };
 

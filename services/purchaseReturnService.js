@@ -11,6 +11,7 @@ const pool = require('../config/database');
 const bankIntegrationService = require('./bankIntegrationService');
 const notificationEngine = require('./notificationEngine');
 const { adjustStockAtLocation } = require('./stockLocationService');
+const { logAudit } = require('./auditLogService');
 
 // Resolve a free-text location name (as stored on purchase_returns.location)
 // to a business_locations.id, so stock can be deducted from the correct
@@ -140,7 +141,7 @@ const fetchReturnById = async (id) => {
 };
 
 // ── CREATE ────────────────────────────────────────────────────────────────────
-const createReturn = async (body, userId) => {
+const createReturn = async (body, userId, userName) => {
   await ensureSchema();
   const client = await pool.connect();
   try {
@@ -214,11 +215,20 @@ for (const item of items) {
         );
       }
     }
-
-    await client.query('COMMIT');
+await client.query('COMMIT');
     console.log(`✅ Purchase Return created: ${returnNumber}`);
 
-    // Auto-mirror the refund into Cash & Bank — money coming back in from
+logAudit({
+      businessId: null,
+      userId,
+      userName: userName || null,
+      module: 'PurchaseReturn',
+      action: 'CREATE',
+      recordId: pr.id,
+      recordLabel: returnNumber,
+      newData: pr,
+    }).catch(() => {});
+    // Auto-mirror the refund into Cash & Bank— money coming back in from
     // the supplier is a real cash inflow (Credit), same pattern as how
     // expenseService.js mirrors payments going out (Debit).
     if (amtPaid > 0) {
@@ -245,7 +255,7 @@ for (const item of items) {
 };
 
 // ── UPDATE ────────────────────────────────────────────────────────────────────
-const updateReturn = async (id, body) => {
+const updateReturn = async (id, body, userId, userName) => {
   await ensureSchema();
   const client = await pool.connect();
   try {
@@ -317,8 +327,19 @@ for (const oi of oldItems.rows) {
     }
   }
 }
-    await client.query('COMMIT');
+ await client.query('COMMIT');
     console.log(`✅ Purchase Return updated: id ${id}`);
+
+logAudit({
+      userId,
+      userName,
+      module: 'PurchaseReturn',
+      action: 'UPDATE',
+      recordId: id,
+      recordLabel: existingReturn.return_number || String(id),
+      oldData: existingReturn,
+      newData: body,
+    }).catch(() => {});
     return fetchReturnById(id);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -329,7 +350,7 @@ for (const oi of oldItems.rows) {
 };
 
 // ── DELETE ────────────────────────────────────────────────────────────────────
-const deleteReturn = async (id) => {
+const deleteReturn = async (id, userId, userName) => {
   const client = await pool.connect();
   try {
 await client.query('BEGIN');
@@ -359,8 +380,19 @@ await client.query('BEGIN');
     );
     if (result.rows.length === 0) throw new Error('Purchase return not found');
 
-    await client.query('COMMIT');
+  await client.query('COMMIT');
     console.log(`🗑️  Purchase Return deleted: ${result.rows[0].return_number}`);
+
+    logAudit({
+      userId,
+      userName,
+      module: 'PurchaseReturn',
+      action: 'DELETE',
+      recordId: id,
+      recordLabel: result.rows[0].return_number,
+      oldData: result.rows[0],
+    }).catch(() => {});
+
     return result.rows[0];
   } catch (err) {
     await client.query('ROLLBACK');
