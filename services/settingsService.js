@@ -23,6 +23,94 @@ const getBusinessSettings = async (businessId) => {
   return result.rows[0] || null;
 };
 
+// ── GENERAL SETTINGS ───────────────────────────────────────────
+// NEW
+const getGeneralSettings = async (businessId) => {
+  const result = await pool.query(
+    `SELECT * FROM general_settings WHERE business_id = $1::integer`,
+    [businessId]
+  );
+  return result.rows[0] || null;
+};
+
+const updateGeneralSettings = async (businessId, data) => {
+  const {
+    company_name, industry_type, currency, financial_year, timezone, date_format,
+    default_unit, default_tax, default_category,
+    auto_sku_generation, barcode_enabled, batch_tracking_enabled, serial_tracking_enabled,
+    product_images_enabled, manufacturing_date_enabled, expiry_date_enabled, product_variants_enabled,
+    industry_fields,
+    allow_negative_stock, low_stock_alert_enabled, multi_warehouse_enabled,
+    stock_reservation_enabled, stock_transfer_enabled, default_warehouse,
+    bom_required, production_planning_enabled, work_orders_enabled,
+    quality_check_enabled, scrap_management_enabled, machine_tracking_enabled, auto_production_number,
+  } = data;
+
+const result = await pool.query(
+    `INSERT INTO general_settings (
+       business_id, company_name, industry_type, currency, financial_year, timezone, date_format,
+       default_unit, default_tax, default_category,
+       auto_sku_generation, barcode_enabled, batch_tracking_enabled, serial_tracking_enabled,
+       product_images_enabled, manufacturing_date_enabled, expiry_date_enabled, product_variants_enabled,
+       industry_fields,
+       allow_negative_stock, low_stock_alert_enabled, multi_warehouse_enabled,
+       stock_reservation_enabled, stock_transfer_enabled, default_warehouse,
+       bom_required, production_planning_enabled, work_orders_enabled,
+       quality_check_enabled, scrap_management_enabled, machine_tracking_enabled, auto_production_number,
+       created_at, updated_at
+     ) VALUES (
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,
+       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+     )
+     ON CONFLICT (business_id) DO UPDATE SET
+       company_name = EXCLUDED.company_name,
+       industry_type = EXCLUDED.industry_type,
+       currency = EXCLUDED.currency,
+       financial_year = EXCLUDED.financial_year,
+       timezone = EXCLUDED.timezone,
+       date_format = EXCLUDED.date_format,
+       default_unit = EXCLUDED.default_unit,
+       default_tax = EXCLUDED.default_tax,
+       default_category = EXCLUDED.default_category,
+       auto_sku_generation = EXCLUDED.auto_sku_generation,
+       barcode_enabled = EXCLUDED.barcode_enabled,
+       batch_tracking_enabled = EXCLUDED.batch_tracking_enabled,
+       serial_tracking_enabled = EXCLUDED.serial_tracking_enabled,
+       product_images_enabled = EXCLUDED.product_images_enabled,
+       manufacturing_date_enabled = EXCLUDED.manufacturing_date_enabled,
+       expiry_date_enabled = EXCLUDED.expiry_date_enabled,
+       product_variants_enabled = EXCLUDED.product_variants_enabled,
+       industry_fields = EXCLUDED.industry_fields,
+       allow_negative_stock = EXCLUDED.allow_negative_stock,
+       low_stock_alert_enabled = EXCLUDED.low_stock_alert_enabled,
+       multi_warehouse_enabled = EXCLUDED.multi_warehouse_enabled,
+       stock_reservation_enabled = EXCLUDED.stock_reservation_enabled,
+       stock_transfer_enabled = EXCLUDED.stock_transfer_enabled,
+       default_warehouse = EXCLUDED.default_warehouse,
+       bom_required = EXCLUDED.bom_required,
+       production_planning_enabled = EXCLUDED.production_planning_enabled,
+       work_orders_enabled = EXCLUDED.work_orders_enabled,
+       quality_check_enabled = EXCLUDED.quality_check_enabled,
+       scrap_management_enabled = EXCLUDED.scrap_management_enabled,
+       machine_tracking_enabled = EXCLUDED.machine_tracking_enabled,
+       auto_production_number = EXCLUDED.auto_production_number,
+       updated_at = CURRENT_TIMESTAMP
+     RETURNING *`,
+    [
+      businessId, company_name, industry_type, currency, financial_year, timezone, date_format,
+      default_unit, default_tax, default_category,
+      auto_sku_generation, barcode_enabled, batch_tracking_enabled, serial_tracking_enabled,
+      product_images_enabled, manufacturing_date_enabled, expiry_date_enabled, product_variants_enabled,
+      JSON.stringify(industry_fields || {}),
+      allow_negative_stock, low_stock_alert_enabled, multi_warehouse_enabled,
+      stock_reservation_enabled, stock_transfer_enabled, default_warehouse,
+      bom_required, production_planning_enabled, work_orders_enabled,
+      quality_check_enabled, scrap_management_enabled, machine_tracking_enabled, auto_production_number,
+    ]
+  );
+return result.rows[0];
+};
+
 // ── BUSINESS LOCATIONS ────────────────────────────────────────
 const getBusinessLocations = async (businessId) => {
   const result = await pool.query(
@@ -543,13 +631,10 @@ const importSettings = async (businessIdInt, businessIdUuid, data) => {
 };
 
 module.exports = {
-  // Business Settings
+  getGeneralSettings,
+  updateGeneralSettings,
   getBusinessSettings,
   updateBusinessSettings,
-
-  // Barcode Settings
-  getBarcodeSettings,
-  updateBarcodeSettings,
   
 // NEW
   // Business Locations

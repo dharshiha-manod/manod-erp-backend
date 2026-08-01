@@ -8,13 +8,20 @@ const bcrypt = require('bcryptjs');
 const pool = require('../config/database');
 const { logActivity } = require('../services/activityLogService');
 
+// Module-level so every function below can see it
+const SELECT_FIELDS = `
+  id, email, full_name, phone, role, status, department, created_at, updated_at,
+  designation, basic_salary, salary_period, dob, gender, marital_status,
+  permanent_address, current_address,
+  account_holder, account_number, bank_name, bank_code, branch,
+  sales_commission_pct, max_discount_pct
+`;
+
 // ── GET ALL USERS ──
 const getAllUsers = async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, email, full_name, phone, role, status, department, created_at, updated_at 
-       FROM users 
-       ORDER BY created_at DESC`
+      `SELECT ${SELECT_FIELDS} FROM users ORDER BY created_at DESC`
     );
     res.status(200).json({ success: true, total: result.rows.length, users: result.rows });
   } catch (err) {
@@ -28,8 +35,7 @@ const getUserById = async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query(
-      `SELECT id, email, full_name, phone, role, status, department, created_at, updated_at 
-       FROM users WHERE id = $1`,
+      `SELECT ${SELECT_FIELDS} FROM users WHERE id = $1`,
       [id]
     );
     if (result.rows.length === 0) {
@@ -45,7 +51,14 @@ const getUserById = async (req, res) => {
 // ── CREATE USER ──
 const createUser = async (req, res) => {
   try {
-    const { email, password, full_name, phone, role, department } = req.body;
+    const {
+      email, password, full_name, phone, role, department,
+      designation, basic_salary, salary_period,
+      dob, gender, marital_status,
+      permanent_address, current_address,
+      account_holder, account_number, bank_name, bank_code, branch,
+      sales_commission_pct, max_discount_pct,
+    } = req.body;
 
     if (!email || !password) {
       return res.status(400).json({ success: false, error: 'Email and password are required' });
@@ -67,12 +80,28 @@ const createUser = async (req, res) => {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-   const result = await pool.query(
-  `INSERT INTO users (email, password_hash, full_name, phone, role, department, status)
-   VALUES ($1, $2, $3, $4, $5, $6, 'active')
-   RETURNING id, email, full_name, phone, role, department, status, created_at`,
-  [email, hashedPassword, full_name || null, phone || null, (role || 'employee').trim(), department || null]
-);
+
+    const result = await pool.query(
+      `INSERT INTO users (
+         email, password_hash, full_name, phone, role, department, status,
+         designation, basic_salary, salary_period,
+         dob, gender, marital_status,
+         permanent_address, current_address,
+         account_holder, account_number, bank_name, bank_code, branch,
+         sales_commission_pct, max_discount_pct
+       )
+       VALUES ($1,$2,$3,$4,$5,$6,'active',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+       RETURNING ${SELECT_FIELDS}`,
+      [
+        email, hashedPassword, full_name || null, phone || null, (role || 'employee').trim(), department || null,
+        designation || null, basic_salary || null, salary_period || 'Per Month',
+        dob || null, gender || null, marital_status || null,
+        permanent_address || null, current_address || null,
+        account_holder || null, account_number || null, bank_name || null, bank_code || null, branch || null,
+        sales_commission_pct || null, max_discount_pct || null,
+      ]
+    );
+
     console.log('✅ User created:', result.rows[0].email);
     logActivity({ userId: req.user?.id || null, module: 'Users', action: `Created User ${result.rows[0].email}`, detail: `Role: ${result.rows[0].role}`, req });
     res.status(201).json({ success: true, message: 'User created successfully', user: result.rows[0] });
@@ -86,7 +115,14 @@ const createUser = async (req, res) => {
 const updateUser = async (req, res) => {
   try {
     const { id } = req.params;
-    const { full_name, email, phone, role, status, department } = req.body;
+    const {
+      full_name, email, phone, role, status, department,
+      designation, basic_salary, salary_period,
+      dob, gender, marital_status,
+      permanent_address, current_address,
+      account_holder, account_number, bank_name, bank_code, branch,
+      sales_commission_pct, max_discount_pct,
+    } = req.body;
 
     const existing = await pool.query('SELECT id FROM users WHERE id = $1', [id]);
     if (existing.rows.length === 0) {
@@ -111,18 +147,42 @@ const updateUser = async (req, res) => {
     }
 
     const result = await pool.query(
-      `UPDATE users 
+      `UPDATE users
        SET full_name = COALESCE($1, full_name),
            email = COALESCE($2, email),
            phone = COALESCE($3, phone),
            role = COALESCE($4, role),
            status = COALESCE($5, status),
-           department = COALESCE($6, department)
-       WHERE id = $7
-       RETURNING id, email, full_name, phone, role, status, department`,
-      [full_name, email, phone, role, status, department, id]
+           department = COALESCE($6, department),
+           designation = COALESCE($7, designation),
+           basic_salary = COALESCE($8, basic_salary),
+           salary_period = COALESCE($9, salary_period),
+           dob = COALESCE($10, dob),
+           gender = COALESCE($11, gender),
+           marital_status = COALESCE($12, marital_status),
+           permanent_address = COALESCE($13, permanent_address),
+           current_address = COALESCE($14, current_address),
+           account_holder = COALESCE($15, account_holder),
+           account_number = COALESCE($16, account_number),
+           bank_name = COALESCE($17, bank_name),
+           bank_code = COALESCE($18, bank_code),
+           branch = COALESCE($19, branch),
+           sales_commission_pct = COALESCE($20, sales_commission_pct),
+           max_discount_pct = COALESCE($21, max_discount_pct)
+       WHERE id = $22
+       RETURNING ${SELECT_FIELDS}`,
+      [
+        full_name, email, phone, role, status, department,
+        designation, basic_salary, salary_period,
+        dob, gender, marital_status,
+        permanent_address, current_address,
+        account_holder, account_number, bank_name, bank_code, branch,
+        sales_commission_pct, max_discount_pct,
+        id,
+      ]
     );
-console.log('✅ User updated:', result.rows[0].email);
+
+    console.log('✅ User updated:', result.rows[0].email);
     logActivity({ userId: req.user?.id || null, module: 'Users', action: `Updated User ${result.rows[0].email}`, detail: `Role: ${result.rows[0].role}, Status: ${result.rows[0].status}`, req });
     res.status(200).json({ success: true, message: 'User updated successfully', user: result.rows[0] });
   } catch (err) {
@@ -140,7 +200,6 @@ const deleteUser = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Cannot delete your own account' });
     }
 
-    // Try hard delete first (works cleanly for users with zero related records)
     try {
       const result = await pool.query(
         'DELETE FROM users WHERE id = $1 RETURNING id, email, full_name',
@@ -153,7 +212,6 @@ const deleteUser = async (req, res) => {
       logActivity({ userId: req.user?.id || null, module: 'Users', action: `Deleted User ${result.rows[0].email}`, req });
       return res.status(200).json({ success: true, message: 'User deleted successfully', user: result.rows[0] });
     } catch (fkErr) {
-      // 23503 = foreign_key_violation — user has messages/sales/expenses/logs referencing them
       if (fkErr.code !== '23503') throw fkErr;
 
       const result = await pool.query(
@@ -184,8 +242,7 @@ const getProfile = async (req, res) => {
   try {
     const userId = req.user.id;
     const result = await pool.query(
-      `SELECT id, email, full_name, phone, role, status, department, created_at, updated_at 
-       FROM users WHERE id = $1`,
+      `SELECT ${SELECT_FIELDS} FROM users WHERE id = $1`,
       [userId]
     );
     if (result.rows.length === 0) {

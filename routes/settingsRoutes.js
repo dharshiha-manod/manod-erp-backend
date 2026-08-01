@@ -37,6 +37,11 @@ const uploadLogo = multer({
 // ── MIDDLEWARE ─────────────────────────────────────────────────
 router.use(authenticate);
 
+// ── GENERAL SETTINGS ────────────────────────────────────────────
+// NEW
+router.get('/general', settingsController.getGeneralSettings);
+router.put('/general', settingsController.updateGeneralSettings);
+
 // ── BUSINESS SETTINGS ──────────────────────────────────────────
 router.get('/business', settingsController.getBusinessSettings);
 router.put('/business', settingsController.updateBusinessSettings);

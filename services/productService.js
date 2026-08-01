@@ -25,6 +25,10 @@ const ensureProductSchema = async () => {
     await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS default_supplier_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL;`);
     await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS hsn_code VARCHAR(20);`);
     await pool.query(`ALTER TABLE product_categories ADD COLUMN IF NOT EXISTS default_hsn_code VARCHAR(20);`);
+    await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS barcode_value VARCHAR(100);`);
+    await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS batch_number VARCHAR(100);`);
+    await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS serial_number VARCHAR(100);`);
+    await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS custom_fields JSONB DEFAULT '{}'::jsonb;`);
     productSchemaReady = true;
   } catch (err) {
     console.error('products schema migration warning:', err.message);
@@ -578,10 +582,10 @@ const result = await pool.query(
        p.purchase_price_inc_tax  AS inc_tax,
        p.margin,
        p.selling_price_exc_tax   AS exc_tax_sell,
-     p.image_url, p.status, p.current_stock, p.warranty,
-p.image_url, p.status, p.current_stock, p.warranty,
+ p.image_url, p.status, p.current_stock, p.warranty,
   p.default_supplier_id, sup.contact_name AS default_supplier_name,
        p.hsn_code,
+       p.barcode_value, p.batch_number, p.serial_number, p.custom_fields,
        p.created_at, p.updated_at
      FROM products p
      LEFT JOIN product_units      pu  ON pu.id = p.unit_id
@@ -615,9 +619,10 @@ const fetchProductById = async (id) => {
        p.purchase_price_inc_tax  AS inc_tax,
        p.margin,
        p.selling_price_exc_tax   AS exc_tax_sell,
-    p.image_url, p.status, p.current_stock, p.warranty,
+   p.image_url, p.status, p.current_stock, p.warranty,
        p.default_supplier_id, sup.name AS default_supplier_name,
        p.hsn_code,
+       p.barcode_value, p.batch_number, p.serial_number, p.custom_fields,
        p.created_at, p.updated_at
      FROM products p
      LEFT JOIN product_units      pu  ON pu.id = p.unit_id
@@ -630,7 +635,6 @@ const fetchProductById = async (id) => {
   );
   return result.rows[0] || null;
 };
-
 const skuExists = async (sku, excludeId = null) => {
   if (!sku || !sku.trim()) return false;
   let q = 'SELECT id FROM products WHERE LOWER(sku) = LOWER($1)';
@@ -716,7 +720,8 @@ const {
     exc_tax, inc_tax, margin, exc_tax_sell,
     opening_stock,
    default_supplier_id, default_supplier,
-    image, image_url, status, hsn_code
+    image, image_url, status, hsn_code,
+    barcode_value, batch_number, serial_number, custom_fields
   } = productData;
 
   if (sku && await skuExists(sku)) throw new Error('SKU already exists');
@@ -737,10 +742,11 @@ const result = await pool.query(
        description, weight, prep_time,
       tax, selling_price_tax_type, product_type, item_type, warranty,
        purchase_price_exc_tax, purchase_price_inc_tax, margin, selling_price_exc_tax,
-       current_stock, image_url, status, default_supplier_id, hsn_code
+       current_stock, image_url, status, default_supplier_id, hsn_code,
+       barcode_value, batch_number, serial_number, custom_fields
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-       $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28
+       $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32
      )
      RETURNING id`,
     [
@@ -771,7 +777,11 @@ const result = await pool.query(
       image_url || image || null,
 status || 'Active',
       resolvedSupplierId,
-      hsn_code?.trim() || null
+      hsn_code?.trim() || null,
+      barcode_value?.trim() || null,
+      batch_number?.trim() || null,
+      serial_number?.trim() || null,
+      custom_fields ? JSON.stringify(custom_fields) : '{}'
     ]
   );
 
@@ -819,7 +829,8 @@ const {
     exc_tax, inc_tax, margin, exc_tax_sell,
     opening_stock,
    default_supplier_id, default_supplier,
-    image, image_url, status, hsn_code
+    image, image_url, status, hsn_code,
+    barcode_value, batch_number, serial_number, custom_fields
   } = productData;
 
   if (sku && await skuExists(sku, id)) throw new Error('SKU already in use');
@@ -859,8 +870,12 @@ const result = await pool.query(
     status                  = COALESCE($26, status),
        default_supplier_id     = COALESCE($27, default_supplier_id),
        hsn_code                = COALESCE($28, hsn_code),
+       barcode_value           = COALESCE($29, barcode_value),
+       batch_number            = COALESCE($30, batch_number),
+       serial_number           = COALESCE($31, serial_number),
+       custom_fields           = COALESCE($32, custom_fields),
        updated_at              = CURRENT_TIMESTAMP
-     WHERE id = $29
+     WHERE id = $33
      RETURNING id`,
     [
       name?.trim()                  || null,
@@ -891,6 +906,10 @@ const result = await pool.query(
  status                        || null,
       resolvedSupplierId            ?? null,
       hsn_code?.trim()               || null,
+      barcode_value !== undefined ? (barcode_value?.trim() || null) : null,
+      batch_number !== undefined ? (batch_number?.trim() || null) : null,
+      serial_number !== undefined ? (serial_number?.trim() || null) : null,
+      custom_fields !== undefined ? JSON.stringify(custom_fields || {}) : null,
 id
     ]
   );

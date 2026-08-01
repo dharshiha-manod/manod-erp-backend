@@ -22,9 +22,11 @@ router.get('/',    authenticateToken, requireAnyPermission(VIEW_PURCHASES),   ct
 
 // GET  /api/purchase-returns/:id
 router.get('/:id', authenticateToken, requireAnyPermission(VIEW_PURCHASES),   ctrl.getReturnById);
-
 // POST /api/purchase-returns
 router.post('/',   authenticateToken, requireAnyPermission(ADD_PURCHASES),    ctrl.createReturn);
+
+// POST /api/purchase-returns/bulk-delete   (must come BEFORE /:id routes)
+router.post('/bulk-delete', authenticateToken, requireAnyPermission(DELETE_PURCHASES), ctrl.bulkDeleteReturns);
 
 // PUT  /api/purchase-returns/:id
 router.put('/:id', authenticateToken, requireAnyPermission(EDIT_PURCHASES),   ctrl.updateReturn);

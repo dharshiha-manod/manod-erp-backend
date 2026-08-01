@@ -17,7 +17,10 @@ const pool = new Pool({
   password: process.env.DB_PASSWORD,
   ssl: {
     rejectUnauthorized: false  // Required for Supabase
-  }
+  },
+  statement_timeout: 15000,        // kill any query stuck > 15s
+  query_timeout: 15000,
+  connectionTimeoutMillis: 8000,   // fail fast if pool can't get a connection
 });
 
 // Test connection

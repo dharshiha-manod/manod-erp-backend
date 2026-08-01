@@ -5,7 +5,34 @@
  * ====================================================
  */
 const settingsService = require('../services/settingsService');
-const DEFAULT_BUSINESS_ID = 1; // integer id — business_settings, business_locations, barcode_settings
+const DEFAULT_BUSINESS_ID = 1;
+
+// ── GENERAL SETTINGS ─────────────────────────────────────────
+// NEW
+exports.getGeneralSettings = async (req, res) => {
+  try {
+    const businessId = DEFAULT_BUSINESS_ID;
+    const settings = await settingsService.getGeneralSettings(businessId);
+    if (!settings) {
+      return res.status(200).json({ success: true, data: null, message: 'No general settings configured yet' });
+    }
+    res.status(200).json({ success: true, data: settings });
+  } catch (error) {
+    console.error('❌ Error fetching general settings:', error.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch general settings', error: error.message });
+  }
+};
+
+exports.updateGeneralSettings = async (req, res) => {
+  try {
+    const businessId = DEFAULT_BUSINESS_ID;
+    const settings = await settingsService.updateGeneralSettings(businessId, req.body);
+    res.status(200).json({ success: true, message: 'General settings updated successfully', data: settings });
+  } catch (error) {
+    console.error('❌ Error updating general settings:', error.message);
+    res.status(400).json({ success: false, message: error.message || 'Failed to update general settings', code: 'UPDATE_FAILED' });
+  }
+}; // integer id — business_settings, business_locations, barcode_settings
 const DEFAULT_BUSINESS_UUID = 'e4138fb0-00fa-4ab0-b2dd-4f44470b7e93'; // uuid — tax_rates, invoice_settings, receipt_printers
 // ── BUSINESS SETTINGS ──────────────────────────────────────────
 exports.getBusinessSettings = async (req, res) => {

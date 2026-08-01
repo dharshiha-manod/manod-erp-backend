@@ -39,11 +39,16 @@ const contactService = require("./contactService");
   // there was no reliable way to credit/debit that customer's
   // advance_balance. This adds a real FK-style link.
 let sellSchemaReady = false;
-  const ensureSellSchema = async () => {
+const ensureSellSchema = async () => {
     if (sellSchemaReady) return;
     try {
       await q(`ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS customer_id INTEGER;`);
       await q(`ALTER TABLE pos_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER;`);
+      // Optional ID-based link to HRM (users or hrm_employees) for the
+      // salesperson field. Nullable, additive — the existing `salesperson`
+      // text column is untouched and keeps working for display/exports.
+      await q(`ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS salesperson_employee_id VARCHAR(255);`);
+      await q(`ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS salesperson_source VARCHAR(20);`);
       sellSchemaReady = true;
     } catch (err) {
       console.error("sales_invoices schema migration warning:", err.message);
@@ -65,8 +70,10 @@ let sellSchemaReady = false;
       customer:         row.customer,
       customerId:       row.customer_id,
       customerType:     row.customer_type,
-      warehouse:        row.warehouse,
+ warehouse:        row.warehouse,
       salesperson:      row.salesperson,
+      salespersonEmployeeId: row.salesperson_employee_id,
+      salespersonSource:     row.salesperson_source,
       paymentMethod:    row.payment_method,
       paymentTerms:     row.payment_terms,
       paymentStatus:    row.payment_status,
@@ -286,10 +293,11 @@ let sellSchemaReady = false;
 async function createInvoice(data, userId, userName) {
     await ensureSellSchema();
 
-    const {
+ const {
       invoiceNo, invoiceDate, dueDate, docType = "Sales Invoice",
     docStatus = "Draft", customer, customerId = null, customerType, warehouse, warehouseId,
-      salesperson, paymentMethod, paymentTerms, paymentStatus = "Unpaid",
+      salesperson, salespersonEmployeeId = null, salespersonSource = null,
+      paymentMethod, paymentTerms, paymentStatus = "Unpaid",
       paidAmount = 0,
       // Amount the user chose to apply from the customer's existing
       // advance balance toward THIS invoice (from the Sale form).
@@ -312,43 +320,39 @@ async function createInvoice(data, userId, userName) {
         await contactService.adjustAdvanceBalance(customerId, -advanceApplied);
       }
     }
-    const finalPaidAmount = Number(paidAmount) + advanceApplied;
+ const finalPaidAmount = Number(paidAmount) + advanceApplied;
 
-    const { rows } = await q(
+    const client = await db.connect();
+    let invoice;
+    try {
+    await client.query('BEGIN');
+    const qc = (text, params) => client.query(text, params);
+    const { rows } = await qc(
       `INSERT INTO sales_invoices
         (invoice_no, invoice_date, due_date, doc_type, doc_status,
         customer, customer_id, customer_type, warehouse, salesperson,
+        salesperson_employee_id, salesperson_source,
         payment_method, payment_terms, payment_status, paid_amount,
         subtotal, item_discount_amt, global_discount,
         tax_amt, shipping_amt, grand_total,
         affects_stock, notes)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
       RETURNING *`,
       [invoiceNo, invoiceDate || new Date(), dueDate, docType, docStatus,
       customer, customerId, customerType, warehouse, salesperson,
+      salespersonEmployeeId, salespersonSource,
       paymentMethod, paymentTerms, paymentStatus, finalPaidAmount,
       subtotal, itemDiscountAmt, globalDiscount,
       taxAmt, shippingAmt, grandTotal,
       affectsStock, notes]
     );
-    const invoice = rows[0];
-
-    // ── Overpayment → credit the excess back as advance balance ──
-    // e.g. customer paid ₹5,000 on a ₹4,200 invoice — the ₹800 difference
-    // becomes credit sitting on their account for next time.
-    if (customerId) {
-      const excess = finalPaidAmount - Number(grandTotal);
-      if (excess > 0) {
-        await contactService.adjustAdvanceBalance(customerId, excess);
-      }
-    }
-
+invoice = rows[0];
 
     // Insert line items
     if (items.length > 0) {
       try {
       const cols = "(invoice_id,product_id,product,sku,qty,unit,unit_price,discount,tax,line_total)";
-      await q(
+      await qc(
         `INSERT INTO sales_invoice_items ${cols} VALUES ${items.map((_,i)=>{
           const b=i*10; return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},$${b+8},$${b+9},$${b+10})`;
         }).join(",")}`,
@@ -371,7 +375,7 @@ async function createInvoice(data, userId, userName) {
           const c = await contactService.fetchContactById(customerId);
           buyerState = c?.state || null;
         }
-        const { rows: insertedItems } = await q(
+    const { rows: insertedItems } = await qc(
           `SELECT id, tax, line_total, unit_price, qty, discount FROM sales_invoice_items WHERE invoice_id = $1`,
           [invoice.id]
         );
@@ -379,7 +383,7 @@ async function createInvoice(data, userId, userName) {
           const rate = Number(row.tax) || 0;
           const taxableValue = (Number(row.qty) || 1) * (Number(row.unit_price) || 0) * (1 - (Number(row.discount) || 0) / 100);
           const split = taxCalcService.calculateGST(taxableValue, rate, buyerState, settings.business_state);
-          await q(
+          await qc(
             `UPDATE sales_invoice_items SET cgst_rate=$1, sgst_rate=$2, igst_rate=$3,
              cgst_amt=$4, sgst_amt=$5, igst_amt=$6 WHERE id=$7`,
             [split.isInterState ? 0 : rate / 2, split.isInterState ? 0 : rate / 2, split.isInterState ? rate : 0,
@@ -407,10 +411,10 @@ async function createInvoice(data, userId, userName) {
         pid = (n && !isNaN(n)) ? n : null;
       }
 
-      let prows = [];
+let prows = [];
       if (pid) {
         try {
-          const result = await q(`SELECT id, name, COALESCE(current_stock,0) AS current_stock FROM products WHERE id = $1`, [pid]);
+          const result = await qc(`SELECT id, name, COALESCE(current_stock,0) AS current_stock FROM products WHERE id = $1`, [pid]);
           prows = result.rows;
         } catch (dbErr) {
           console.error(`[createInvoice] stock lookup query failed for pid=${pid}:`, dbErr.message);
@@ -420,9 +424,9 @@ async function createInvoice(data, userId, userName) {
       // Fallback — no usable productId (common for items converted from
       // drafts/quotations, where product_id may not have persisted).
       // Match by exact product name instead so stock still links up.
-      if (prows.length === 0 && it.product) {
+    if (prows.length === 0 && it.product) {
         try {
-          const result = await q(
+          const result = await qc(
             `SELECT id, name, COALESCE(current_stock,0) AS current_stock FROM products WHERE name = $1 LIMIT 1`,
             [it.product]
           );
@@ -437,10 +441,9 @@ async function createInvoice(data, userId, userName) {
         console.warn(`[createInvoice] product not found for stock check (id: ${pid}, name: "${it.product}"), skipping deduction`);
         continue;
       }
-
- const qty = it.qty || 1;
-     const resolvedWarehouseId = warehouseId || await stockLocationService.getDefaultLocationId(db);
-      const stockHere = await stockLocationService.stockAtLocation(db, pid, resolvedWarehouseId);
+const qty = it.qty || 1;
+     const resolvedWarehouseId = warehouseId || await stockLocationService.getDefaultLocationId(client);
+      const stockHere = await stockLocationService.stockAtLocation(client, pid, resolvedWarehouseId);
       if (qty > stockHere) {
         const extra = await _tryAutoWorkOrder(pid, prows[0].name, stockHere, qty);
         throw new Error(`Insufficient stock for "${prows[0].name}" at "${warehouse}": have ${stockHere}, cannot sell ${qty}.${extra}`);
@@ -448,19 +451,40 @@ async function createInvoice(data, userId, userName) {
       resolved.push({ pid, qty });
     }
     for (const { pid, qty } of resolved) {
-      const resolvedWarehouseId = warehouseId || await stockLocationService.getDefaultLocationId(db);
-      await stockLocationService.adjustStockAtLocation(db, pid, resolvedWarehouseId, -qty);
-      notificationEngine.checkAndAlertLowStock(pid).catch(err =>
-        console.error(`[createInvoice] low stock check failed for pid=${pid}:`, err.message)
-      );
+      const resolvedWarehouseId = warehouseId || await stockLocationService.getDefaultLocationId(client);
+      await stockLocationService.adjustStockAtLocation(client, pid, resolvedWarehouseId, -qty);
     }
-  } 
-    // Bump the saved Invoice Settings counter forward by 1 so the NEXT
-    // invoice generated from Settings gets a fresh number instead of
-    // repeating this same one. Best-effort — if it fails, invoice creation
-    // itself must still succeed, so this is wrapped and never throws.
+  }
+
+    await client.query('COMMIT');
+    } catch (txErr) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw txErr;
+    } finally {
+      client.release();
+    }
+
+    if (customerId) {
+      const excess = finalPaidAmount - Number(grandTotal);
+      if (excess > 0) {
+        await contactService.adjustAdvanceBalance(customerId, excess).catch(e =>
+          console.error('[createInvoice] advance balance credit failed:', e.message));
+      }
+    }
+
+    if (affectsStock && items.length > 0) {
+      for (const it of items) {
+        const pid = it.productId || it.id;
+        if (pid) {
+          notificationEngine.checkAndAlertLowStock(pid).catch(err =>
+            console.error(`[createInvoice] low stock check failed for pid=${pid}:`, err.message)
+          );
+        }
+      }
+    }
+
     try {
-      await q(
+      await q(  
         `UPDATE invoice_settings
          SET invoice_start_number = invoice_start_number + 1,
              updated_at = CURRENT_TIMESTAMP

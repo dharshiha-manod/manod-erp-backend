@@ -85,4 +85,21 @@ const deleteReturn = async (req, res) => {
   }
 };
 
-module.exports = { getAllReturns, getReturnById, createReturn, updateReturn, deleteReturn };
+// POST /api/purchase-returns/bulk-delete   body: { ids: [1,2,3] }
+const bulkDeleteReturns = async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ success: false, error: 'No return IDs provided' });
+    }
+    const userId = req.user?.id || req.user?.userId || null;
+    const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
+    const result = await service.bulkDeleteReturns(ids, userId, userName);
+    res.status(200).json({ success: true, message: `Deleted ${result.deleted.length} return(s)`, ...result });
+  } catch (err) {
+    console.error('❌ Bulk Delete Purchase Returns Error:', err.message);
+    res.status(500).json({ success: false, error: err.message || 'Failed to bulk delete purchase returns' });
+  }
+};
+
+module.exports = { getAllReturns, getReturnById, createReturn, updateReturn, deleteReturn, bulkDeleteReturns };

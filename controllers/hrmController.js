@@ -44,11 +44,12 @@ const getLeaves          = async (req, res) => { try { ok(res, { leaves: await s
 const createLeave        = async (req, res) => {
   try {
     const { userId, userName } = getUser(req);
-    ok(res, { leave: await svc.createLeave(req.body, userId, userName) }, 201);
+    const body = { ...req.body, employee_name: req.body.employee_name || userName };
+    ok(res, { leave: await svc.createLeave(body, userId, userName) }, 201);
   } catch(e) { err(res,e,400); }
 };
 const updateLeave        = async (req, res) => { try { const { userId, userName } = getUser(req); ok(res, { leave: await svc.updateLeave(req.params.id, req.body, userId, userName) }); } catch(e) { err(res,e,400); } };
-const updateLeaveStatus  = async (req, res) => { try { const { userId, userName } = getUser(req); ok(res, { leave: await svc.updateLeaveStatus(req.params.id, req.body.status, userId, userName) }); } catch(e) { err(res,e,400); } };
+const updateLeaveStatus  = async (req, res) => { try { const { userId, userName } = getUser(req); ok(res, { leave: await svc.updateLeaveStatus(req.params.id, req.body.status, userId, userName, req.body.remarks) }); } catch(e) { err(res,e,400); } };
 const deleteLeave        = async (req, res) => { try { const { userId, userName } = getUser(req); await svc.deleteLeave(req.params.id, userId, userName); ok(res, { message: 'Deleted' }); } catch(e) { err(res,e); } };
 
 // ── SHIFTS ───────────────────────────────────────────────────
@@ -63,11 +64,12 @@ const getAttendanceStats = async (req, res) => { try { ok(res, { stats: await sv
 const clockIn            = async (req, res) => {
   try {
     const { userId, userName } = getUser(req);
-    ok(res, { record: await svc.clockIn(req.body, userId, userName) }, 201);
+    const body = { ...req.body, employee_name: req.body.employee_name || userName };
+    ok(res, { record: await svc.clockIn(body, userId, userName) }, 201);
   } catch(e) { err(res,e,400); }
-};
+};  
 const clockOut           = async (req, res) => { try { const { userId, userName } = getUser(req); ok(res, { record: await svc.clockOut(req.params.id, userId, userName) }); } catch(e) { err(res,e,400); } };
-const createAttendance = async (req, res) => { try { const { userId, userName } = getUser(req); ok(res, { record: await svc.createAttendanceRecord(req.body, userId, userName) }, 201); } catch(e) { err(res,e,400); } };
+const createAttendance = async (req, res) => { try { const { userId, userName } = getUser(req); const body = { ...req.body, employee_name: req.body.employee_name || userName }; ok(res, { record: await svc.createAttendanceRecord(body, userId, userName) }, 201); } catch(e) { err(res,e,400); } };
 const updateAttendance = async (req, res) => { try { const { userId, userName } = getUser(req); ok(res, { record: await svc.updateAttendanceRecord(req.params.id, req.body, userId, userName) }); } catch(e) { err(res,e,400); } };
 const deleteAttendance = async (req, res) => { try { const { userId, userName } = getUser(req); await svc.deleteAttendanceRecord(req.params.id, userId, userName); ok(res, { message: 'Deleted' }); } catch(e) { err(res,e); } };
 
@@ -83,7 +85,7 @@ const updatePayroll      = async (req, res) => { try { const { userId, userName 
 const deletePayroll      = async (req, res) => { try { const { userId, userName } = getUser(req); await svc.deletePayroll(req.params.id, userId, userName); ok(res, { message: 'Deleted' }); } catch(e) { err(res,e); } };
 
 const getEligibleForRun  = async (req, res) => { try { ok(res, { employees: await svc.fetchEligibleEmployeesForRun(req.query.month_year) }); } catch(e) { err(res,e); } };
-const previewPayroll     = async (req, res) => { try { ok(res, { preview: await svc.computeEmployeePayroll(req.params.employeeId) }); } catch(e) { err(res,e,400); } };
+const previewPayroll     = async (req, res) => { try { ok(res, { preview: await svc.computeEmployeePayroll(req.params.employeeId, req.query.source || 'user', req.query.month || null) }); } catch(e) { err(res,e,400); } };
 const runPayroll         = async (req, res) => {
   try {
     const { userId, userName } = getUser(req);
@@ -109,7 +111,13 @@ const deletePayrollGroup  = async (req, res) => { try { const { userId, userName
 const getGroupComponents  = async (req, res) => { try { ok(res, { components: await svc.fetchGroupComponents(req.params.id) }); } catch(e) { err(res,e); } };
 const updateGroupComponents = async (req, res) => { try { ok(res, { components: await svc.setGroupComponents(req.params.id, req.body.componentIds || []) }); } catch(e) { err(res,e,400); } };
 const getEmployeesWithGroups = async (req, res) => { try { ok(res, { employees: await svc.fetchEmployeesWithGroups() }); } catch(e) { err(res,e); } };
-const assignPayrollGroup    = async (req, res) => { try { ok(res, { employee: await svc.assignPayrollGroup(req.params.id, req.body.payroll_group_id) }); } catch(e) { err(res,e,400); } };
+const assignPayrollGroup    = async (req, res) => { try { ok(res, { employee: await svc.assignPayrollGroup(req.params.id, req.body.payroll_group_id, req.body.source || 'user') }); } catch(e) { err(res,e,400); } };
+// ── EMPLOYEES (non-login) ───────────────────────────────────
+const getEmployees       = async (req, res) => { try { ok(res, { employees: await svc.fetchEmployees() }); } catch(e) { err(res,e); } };
+const createEmployee     = async (req, res) => { try { const { userId, userName } = getUser(req); ok(res, { employee: await svc.createEmployee(req.body, userId, userName) }, 201); } catch(e) { err(res,e,400); } };
+const updateEmployee     = async (req, res) => { try { const { userId, userName } = getUser(req); ok(res, { employee: await svc.updateEmployee(req.params.id, req.body, userId, userName) }); } catch(e) { err(res,e,400); } };
+const deleteEmployee     = async (req, res) => { try { const { userId, userName } = getUser(req); await svc.deleteEmployee(req.params.id, userId, userName); ok(res, { message: 'Deleted' }); } catch(e) { err(res,e); } };
+const enableEmployeeLogin = async (req, res) => { try { const { userId, userName } = getUser(req); ok(res, { user: await svc.enableEmployeeLogin(req.params.id, req.body, userId, userName) }, 201); } catch(e) { err(res,e,400); } };
 // ── HOLIDAYS ─────────────────────────────────────────────────
 const getHolidays        = async (req, res) => { try { ok(res, { holidays: await svc.fetchHolidays() }); } catch(e) { err(res,e); } };
 const createHoliday      = async (req, res) => { try { const { userId, userName } = getUser(req); ok(res, { holiday: await svc.createHoliday(req.body, userId, userName) }, 201); } catch(e) { err(res,e,400); } };
@@ -143,6 +151,7 @@ getPayComponents, createPayComponent, updatePayComponent, deletePayComponent,
  getPayrollGroups, createPayrollGroup, updatePayrollGroup, deletePayrollGroup,
 getGroupComponents, updateGroupComponents,
   getEmployeesWithGroups, assignPayrollGroup,
+  getEmployees, createEmployee, updateEmployee, deleteEmployee, enableEmployeeLogin,
 // NEW
   getHolidays, createHoliday, updateHoliday, deleteHoliday,
   getSalesTargets, createSalesTarget, updateSalesTarget, deleteSalesTarget,

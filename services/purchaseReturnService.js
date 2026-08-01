@@ -402,4 +402,18 @@ await client.query('BEGIN');
   }
 };
 
-module.exports = { fetchAllReturns, fetchReturnById, createReturn, updateReturn, deleteReturn };
+// ── BULK DELETE RETURNS ───────────────────────────────────────────────────
+const bulkDeleteReturns = async (ids, userId, userName) => {
+  const results = { deleted: [], failed: [] };
+  for (const id of ids) {
+    try {
+      const r = await deleteReturn(id, userId, userName);
+      results.deleted.push(r.id || id);
+    } catch (err) {
+      results.failed.push({ id, error: err.message });
+    }
+  }
+  return results;
+};
+
+module.exports = { fetchAllReturns, fetchReturnById, createReturn, updateReturn, deleteReturn, bulkDeleteReturns };

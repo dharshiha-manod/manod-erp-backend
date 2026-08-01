@@ -7,6 +7,17 @@ const getDefaultLocationId = async (client) => {
 };
 
 const adjustStockAtLocation = async (client, productId, locationId, delta, { allowNegative = false } = {}) => {
+  // If the product itself has been deleted, there's nothing to adjust —
+  // inserting/updating product_stock_by_location for a non-existent
+  // product_id would violate the FK constraint and abort the whole
+  // transaction (this is what was breaking Stock Transfer / Purchase
+  // Return deletes). Just skip the stock movement for that line.
+  const productExists = await client.query(`SELECT 1 FROM products WHERE id=$1`, [productId]);
+  if (productExists.rows.length === 0) {
+    console.warn(`[stockLocationService] Skipping stock adjustment — product ${productId} no longer exists`);
+    return null;
+  }
+
   const locId = locationId || await getDefaultLocationId(client);
   const existing = await client.query(
     `SELECT quantity FROM product_stock_by_location WHERE product_id=$1 AND location_id=$2 FOR UPDATE`,

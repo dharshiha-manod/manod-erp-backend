@@ -84,8 +84,15 @@ router.put   ('/payroll-groups/:id',   auth, requireAnyPermission([['Essentials'
 router.delete('/payroll-groups/:id',   auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.deletePayrollGroup);
 router.get   ('/payroll-groups/:id/components', auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.getGroupComponents);
 router.put   ('/payroll-groups/:id/components', auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.updateGroupComponents);
-router.get   ('/employees',            auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.getEmployeesWithGroups);
+router.get   ('/employees',            auth, requireAnyPermission(VIEW_HRM), ctrl.getEmployeesWithGroups);
 router.put   ('/employees/:id/payroll-group', auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.assignPayrollGroup);
+
+// ── HRM EMPLOYEES (non-login staff CRUD) ─────────────────────
+router.get   ('/hrm-employees',        auth, requireAnyPermission(MANAGE_HRM), ctrl.getEmployees);
+router.post  ('/hrm-employees',        auth, requireAnyPermission(MANAGE_HRM), ctrl.createEmployee);
+router.put   ('/hrm-employees/:id',    auth, requireAnyPermission(MANAGE_HRM), ctrl.updateEmployee);
+router.delete('/hrm-employees/:id',    auth, requireAnyPermission(MANAGE_HRM), ctrl.deleteEmployee);
+router.post('/hrm-employees/:id/enable-login', auth, requireAnyPermission(MANAGE_HRM), ctrl.enableEmployeeLogin);
 
 // ── HOLIDAYS ─────────────────────────────────────────────────
 router.get   ('/holidays',             auth, requireAnyPermission(VIEW_HRM),   ctrl.getHolidays);

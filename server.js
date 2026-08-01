@@ -49,6 +49,8 @@ const purchaseRoutes        = require('./routes/purchases');
 const purchaseReturnRoutes  = require('./routes/purchaseReturns');
 const notificationTemplateRoutes = require('./routes/notificationTemplates'); // ← NOTIFICATION TEMPLATES
 const hrmRoutes = require('./routes/hrm');
+const essRoutes = require('./routes/ess');
+const { startSalesTargetsSyncJob } = require('./services/salesTargetsSyncService'); // ← SALES TARGETS BACKGROUND SYNC (NEW)
 const crmRoutes = require('./routes/crm');
 const essentialsRoutes = require('./routes/essentials'); // ← ESSENTIALS MODULE (NEW)
 const sellRoutes = require('./routes/sell');
@@ -73,6 +75,7 @@ app.use('/api/purchases',               purchaseRoutes);
 app.use('/api/purchase-returns',        purchaseReturnRoutes);
 app.use('/api/notification-templates',  notificationTemplateRoutes); // ← NOTIFICATION TEMPLATES
 app.use('/api/hrm', hrmRoutes);
+app.use('/api/ess', essRoutes);
 app.use('/api/crm', crmRoutes);
 app.use('/api/essentials', essentialsRoutes); // ← ESSENTIALS MODULE (NEW)
 app.use('/api', sellRoutes);
@@ -85,6 +88,8 @@ app.use('/api/reports', reportsRoutes); // ← REPORTS MODULE (NEW)
 app.use('/api/accounting', accountingRoutes); // ← ACCOUNTING MODULE (NEW)  
 app.use('/api/product-selling-prices', require('./routes/productSellingPrices'));
 // ── HEALTH CHECK ─────────────────────────────────────────────
+startSalesTargetsSyncJob(); // ← begins background recalculation of Sales Target achievements (read-only against sales_invoices)
+
 app.get('/api/health', (req, res) => {
   res.status(200).json({
     message:     '✅ Backend is running!',
