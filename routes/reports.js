@@ -19,111 +19,33 @@ const express = require('express');
 const router  = express.Router();
 
 const authenticateToken = require('../middleware/auth');
+const requireIndustry    = require('../middleware/industry');
 const ctrl               = require('../controllers/reportsController');
 
 // ═══════════════════════════════════════════════════════════════
 // NET PROFIT (DASHBOARD)  → /api/reports/net-profit
 // ═══════════════════════════════════════════════════════════════
-router.get('/net-profit', authenticateToken, ctrl.netProfitSummary);
-
-// ═══════════════════════════════════════════════════════════════
-// STOCK REPORT  → /api/reports/stock
-// ═══════════════════════════════════════════════════════════════
-router.get('/stock', authenticateToken, ctrl.stockReport);
-
-// ═══════════════════════════════════════════════════════════════
-// LOCATION-WISE STOCK REPORT  → /api/reports/location-wise-stock
-// Query params: location_id, product_id, page, limit
-// ═══════════════════════════════════════════════════════════════
-router.get('/location-wise-stock', authenticateToken, ctrl.locationWiseStockReport);
-
-// ═══════════════════════════════════════════════════════════════
-// STOCK ADJUSTMENT REPORT  → /api/reports/stock-adjustment
-// ═══════════════════════════════════════════════════════════════
-router.get('/stock-adjustment', authenticateToken, ctrl.stockAdjustmentReport);
-
-// ═══════════════════════════════════════════════════════════════
-// ITEMS REPORT  → /api/reports/items
-// ═══════════════════════════════════════════════════════════════
-router.get('/items', authenticateToken, ctrl.itemsReport);
-
-// ═══════════════════════════════════════════════════════════════
-// PRODUCT PURCHASE REPORT  → /api/reports/product-purchase
-// ═══════════════════════════════════════════════════════════════
-router.get('/product-purchase', authenticateToken, ctrl.productPurchaseReport);
-
-// ═══════════════════════════════════════════════════════════════
-// PRODUCT SELL REPORT  → /api/reports/product-sell
-// ═══════════════════════════════════════════════════════════════
-router.get('/product-sell', authenticateToken, ctrl.productSellReport);
-
-// ═══════════════════════════════════════════════════════════════
-// EXPENSE REPORT  → /api/reports/expense
-// ═══════════════════════════════════════════════════════════════
-router.get('/expense', authenticateToken, ctrl.expenseReport);
-
-// ═══════════════════════════════════════════════════════════════
-// SALES REPRESENTATIVE REPORT  → /api/reports/sales-representative
-// ═══════════════════════════════════════════════════════════════
-router.get('/sales-representative', authenticateToken, ctrl.salesRepresentativeReport);
-
-// ═══════════════════════════════════════════════════════════════
-// PURCHASE PAYMENT REPORT  → /api/reports/purchase-payment
-// ═══════════════════════════════════════════════════════════════
-router.get('/purchase-payment', authenticateToken, ctrl.purchasePaymentReport);
-
-// ═══════════════════════════════════════════════════════════════
-// SELL PAYMENT REPORT  → /api/reports/sell-payment
-// ═══════════════════════════════════════════════════════════════
-router.get('/sell-payment', authenticateToken, ctrl.sellPaymentReport);
-// ═══════════════════════════════════════════════════════════════
-// PROFIT / LOSS REPORT  → /api/reports/profit-loss
-// ═══════════════════════════════════════════════════════════════
-router.get('/profit-loss', authenticateToken, ctrl.profitLossReport);
-
-// ═══════════════════════════════════════════════════════════════
-// TAX REPORT  → /api/reports/tax
-// ═══════════════════════════════════════════════════════════════
-router.get('/tax', authenticateToken, ctrl.taxReport);
-
-// ═══════════════════════════════════════════════════════════════
-// TAX BY PRODUCT REPORT  → /api/reports/tax-by-product
-// ═══════════════════════════════════════════════════════════════
-router.get('/tax-by-product', authenticateToken, ctrl.taxByProductReport);
-
-// ═══════════════════════════════════════════════════════════════
-// TRENDING PRODUCTS REPORT  → /api/reports/trending-products
-// ═══════════════════════════════════════════════════════════════
-router.get('/trending-products', authenticateToken, ctrl.trendingProductsReport);
-
-// ═══════════════════════════════════════════════════════════════
-// SUPPLIER & CUSTOMER REPORT  → /api/reports/supplier-customer
-// ═══════════════════════════════════════════════════════════════
-router.get('/supplier-customer', authenticateToken, ctrl.supplierCustomerReport);
-router.post('/send-ledger/:contactId', authenticateToken, ctrl.sendLedger);
-// ═══════════════════════════════════════════════════════════════
-// CUSTOMER GROUPS REPORT  → /api/reports/customer-groups
-// ═══════════════════════════════════════════════════════════════
-router.get('/customer-groups', authenticateToken, ctrl.customerGroupsReport);
-
-// ═══════════════════════════════════════════════════════════════
-// PURCHASE & SALE REPORT  → /api/reports/purchase-sale
-// ═══════════════════════════════════════════════════════════════
-router.get('/purchase-sale', authenticateToken, ctrl.purchaseSaleReport);
-
-// ═══════════════════════════════════════════════════════════════
-// SALES BY CATEGORY REPORT  → /api/reports/sales-by-category
-// ═══════════════════════════════════════════════════════════════
-router.get('/sales-by-category', authenticateToken, ctrl.salesByCategoryReport);
-
-// ═══════════════════════════════════════════════════════════════
-// ACTIVITY LOG REPORT  → /api/reports/activity-log
-// ═══════════════════════════════════════════════════════════════
-router.get('/activity-log', authenticateToken, ctrl.activityLogReport);
-
-// ═══════════════════════════════════════════════════════════════
-// REGISTER REPORT  → /api/reports/register
-// ═══════════════════════════════════════════════════════════════
-router.get('/register', authenticateToken, ctrl.registerReport);
+router.get('/net-profit', authenticateToken, requireIndustry, ctrl.netProfitSummary);
+router.get('/stock', authenticateToken, requireIndustry, ctrl.stockReport);
+router.get('/location-wise-stock', authenticateToken, requireIndustry, ctrl.locationWiseStockReport);
+router.get('/stock-adjustment', authenticateToken, requireIndustry, ctrl.stockAdjustmentReport);
+router.get('/items', authenticateToken, requireIndustry, ctrl.itemsReport);
+router.get('/product-purchase', authenticateToken, requireIndustry, ctrl.productPurchaseReport);
+router.get('/product-sell', authenticateToken, requireIndustry, ctrl.productSellReport);
+router.get('/expense', authenticateToken, requireIndustry, ctrl.expenseReport);
+router.get('/sales-representative', authenticateToken, requireIndustry, ctrl.salesRepresentativeReport);
+router.get('/purchase-payment', authenticateToken, requireIndustry, ctrl.purchasePaymentReport);
+router.get('/sell-payment', authenticateToken, requireIndustry, ctrl.sellPaymentReport);
+router.get('/profit-loss', authenticateToken, requireIndustry, ctrl.profitLossReport);
+router.get('/tax', authenticateToken, requireIndustry, ctrl.taxReport);
+router.get('/tax-by-product', authenticateToken, requireIndustry, ctrl.taxByProductReport);
+router.get('/trending-products', authenticateToken, requireIndustry, ctrl.trendingProductsReport);
+router.get('/supplier-customer', authenticateToken, requireIndustry, ctrl.supplierCustomerReport);
+router.post('/send-ledger/:contactId', authenticateToken, requireIndustry, ctrl.sendLedger);
+router.get('/customer-groups', authenticateToken, requireIndustry, ctrl.customerGroupsReport);
+router.get('/purchase-sale', authenticateToken, requireIndustry, ctrl.purchaseSaleReport);
+router.get('/sales-by-category', authenticateToken, requireIndustry, ctrl.salesByCategoryReport);
+router.get('/activity-log', authenticateToken, requireIndustry, ctrl.activityLogReport);
+router.get('/register', authenticateToken, requireIndustry, ctrl.registerReport);
 
 module.exports = router;

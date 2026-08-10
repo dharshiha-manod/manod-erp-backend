@@ -30,13 +30,13 @@ const DEFAULT_BUSINESS_ID = 1; // single-business setup for now
 /**
  * Auto-generate the next transfer number: ST-2026-001, ST-2026-002, …
  */
-const generateTransferNumber = async () => {
+const generateTransferNumber = async (industryId) => {
   const year = new Date().getFullYear();
   const result = await pool.query(
     `SELECT transfer_number FROM stock_transfers
-     WHERE transfer_number LIKE $1
+     WHERE transfer_number LIKE $1 AND industry_id = $2
      ORDER BY id DESC LIMIT 1`,
-    [`ST-${year}-%`]
+    [`ST-${year}-%`, industryId]
   );
   let next = 1;
   if (result.rows.length > 0) {
@@ -45,21 +45,22 @@ const generateTransferNumber = async () => {
   }
   return `ST-${year}-${String(next).padStart(3, '0')}`;
 };
-
 // ── STOCK IMPACT ────────────────────────────────────────────────────────────
 // Transfers move stock from location_from to location_to once "Completed".
 // 'apply' moves it out of location_from and into location_to; 'reverse'
 // (delete, status rollback, item edit) undoes exactly that same movement.
 const applyTransferStockImpact = async (transferId, direction, client) => {
-  const transferRes = await client.query(`SELECT location_from, location_to FROM stock_transfers WHERE id = $1`, [transferId]);
+  const transferRes = await client.query(`SELECT location_from, location_to, industry_id FROM stock_transfers WHERE id = $1`, [transferId]);
   const transfer = transferRes.rows[0];
   if (!transfer) return;
-  const { location_from, location_to } = transfer;
+  const { location_from, location_to, industry_id } = transfer;
 
   // location_from/location_to are stored as names; resolve to ids for stockLocationService.
+  // Scoped to the transfer's own industry — a location name that exists in
+  // another workspace must never resolve here.
   const idLookup = await client.query(
-    `SELECT id, location_name FROM business_locations WHERE location_name IN ($1, $2)`,
-    [location_from, location_to]
+    `SELECT id, location_name FROM business_locations WHERE location_name IN ($1, $2) AND industry_id = $3`,
+    [location_from, location_to, industry_id]
   );
   const fromLocationId = idLookup.rows.find(r => r.location_name === location_from)?.id;
   const toLocationId   = idLookup.rows.find(r => r.location_name === location_to)?.id;
@@ -90,7 +91,7 @@ const applyTransferStockImpact = async (transferId, direction, client) => {
   }
 };
 // ── FETCH ALL STOCK TRANSFERS (paginated + filtered) ─────────────────────────
-const fetchAllStockTransfers = async (filters = {}) => {
+const fetchAllStockTransfers = async (industryId, filters = {}) => {
   const {
     page = 1, limit = 25, search = '',
     status = '', location_from = '', location_to = '',
@@ -117,9 +118,9 @@ const fetchAllStockTransfers = async (filters = {}) => {
       LEFT JOIN products p ON p.id = sti.product_id
       GROUP BY sti.stock_transfer_id
     ) tot ON tot.stock_transfer_id = st.id
-    WHERE 1=1
+    WHERE st.industry_id = $1
   `;
-  const params = [];
+  const params = [industryId];
 
  if (search) {
     params.push(`%${search}%`);
@@ -148,7 +149,7 @@ const fetchAllStockTransfers = async (filters = {}) => {
     params.push(date_from);
     q += ` AND st.transfer_date >= $${params.length}`;
   }
-  if (date_to) {
+if (date_to) {
     params.push(date_to);
     q += ` AND st.transfer_date <= $${params.length}`;
   }
@@ -169,13 +170,13 @@ const fetchAllStockTransfers = async (filters = {}) => {
 };
 
 // ── FETCH ONE STOCK TRANSFER (with items + product info) ─────────────────────
-const fetchStockTransferById = async (id) => {
+const fetchStockTransferById = async (id, industryId) => {
   const headerResult = await pool.query(
     `SELECT st.*, u.full_name AS added_by_name
      FROM stock_transfers st
      LEFT JOIN users u ON u.id = st.created_by
-     WHERE st.id = $1`,
-    [id]
+     WHERE st.id = $1 AND st.industry_id = $2`,
+    [id, industryId]
   );
   if (headerResult.rows.length === 0) return null;
 
@@ -203,7 +204,7 @@ const fetchStockTransferById = async (id) => {
 };
 
 // ── CREATE STOCK TRANSFER ─────────────────────────────────────────────────────
-const createStockTransfer = async (body, userId, userName) => {
+const createStockTransfer = async (industryId, body, userId, userName) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -218,26 +219,27 @@ const createStockTransfer = async (body, userId, userName) => {
       throw new Error('Source and destination locations must be different');
     }
 
-    // Reject any location string that isn't a real registered business location —
-    // prevents a typo/free-text value from silently creating phantom rows
-    // in product_stock_by_location.
+    // Reject any location string that isn't a real registered business location
+    // IN THIS INDUSTRY — prevents a typo/free-text value from silently creating
+    // phantom rows, and prevents referencing another workspace's warehouse.
     const locCheck = await client.query(
-      `SELECT location_name FROM business_locations WHERE location_name IN ($1, $2)`,
-      [body.location_from, body.location_to]
+      `SELECT location_name FROM business_locations WHERE location_name IN ($1, $2) AND industry_id = $3`,
+      [body.location_from, body.location_to, industryId]
     );
     const foundNames = locCheck.rows.map(r => r.location_name);
     if (!foundNames.includes(body.location_from)) {
-      throw new Error(`Location "${body.location_from}" does not exist in Business Locations`);
+      throw new Error(`Location "${body.location_from}" does not exist in this Industry's Business Locations`);
     }
 if (!foundNames.includes(body.location_to)) {
-      throw new Error(`Location "${body.location_to}" does not exist in Business Locations`);
+      throw new Error(`Location "${body.location_to}" does not exist in this Industry's Business Locations`);
     }
 
     // stockLocationService keys everything by numeric location_id, but this
-    // table stores location_from/location_to as names — resolve both once here.
+    // table stores location_from/location_to as names — resolve both once here,
+    // scoped to the active industry so cross-industry name collisions can't resolve.
     const idLookup = await client.query(
-      `SELECT id, location_name FROM business_locations WHERE location_name IN ($1, $2)`,
-      [body.location_from, body.location_to]
+      `SELECT id, location_name FROM business_locations WHERE location_name IN ($1, $2) AND industry_id = $3`,
+      [body.location_from, body.location_to, industryId]
     );
 const fromLocationId = idLookup.rows.find(r => r.location_name === body.location_from)?.id;
     const toLocationId   = idLookup.rows.find(r => r.location_name === body.location_to)?.id;
@@ -245,20 +247,20 @@ const fromLocationId = idLookup.rows.find(r => r.location_name === body.location
 
     const transferNumber = body.transfer_number?.trim()
       ? body.transfer_number.trim()
-      : await generateTransferNumber();
+      : await generateTransferNumber(industryId);
 
-    // Check transfer number uniqueness
+    // Check transfer number uniqueness within this industry
     const dupCheck = await client.query(
-      `SELECT id FROM stock_transfers WHERE transfer_number = $1`, [transferNumber]
+      `SELECT id FROM stock_transfers WHERE transfer_number = $1 AND industry_id = $2`, [transferNumber, industryId]
     );
     if (dupCheck.rows.length > 0) throw new Error(`Transfer number "${transferNumber}" already exists`);
 
     const headerResult = await client.query(
       `INSERT INTO stock_transfers (
         transfer_number, transfer_date, location_from, location_to,
-        status, notes, business_id, created_by
+        status, notes, business_id, created_by, industry_id
       ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8
+        $1,$2,$3,$4,$5,$6,$7,$8,$9
       ) RETURNING *`,
       [
         transferNumber,
@@ -269,6 +271,7 @@ const fromLocationId = idLookup.rows.find(r => r.location_name === body.location
         body.notes             || body.additional_notes || null,
         body.business_id       || DEFAULT_BUSINESS_ID,
         userId                 || null,
+        industryId,
       ]
     );
 
@@ -280,8 +283,8 @@ const fromLocationId = idLookup.rows.find(r => r.location_name === body.location
       const qty = parseFloat(item.quantity) || 1;
 
     const prodRes = await client.query(
-        `SELECT name, sku, purchase_price_exc_tax FROM products WHERE id = $1`,
-        [productId]
+        `SELECT name, sku, purchase_price_exc_tax FROM products WHERE id = $1 AND industry_id = $2`,
+        [productId, industryId]
       );
       const prod = prodRes.rows[0];
       if (!prod) throw new Error(`Product not found (id: ${productId})`);
@@ -310,7 +313,7 @@ const fromLocationId = idLookup.rows.find(r => r.location_name === body.location
 
   await client.query('COMMIT');
     console.log(`✅ Stock Transfer created: ${transfer.transfer_number} (id: ${transfer.id})`);
-    const created = await fetchStockTransferById(transfer.id);
+    const created = await fetchStockTransferById(transfer.id, industryId);
 
     logAudit({
       userId, userName,
@@ -332,12 +335,12 @@ const fromLocationId = idLookup.rows.find(r => r.location_name === body.location
 };
 
 // ── UPDATE STOCK TRANSFER ─────────────────────────────────────────────────────
-const updateStockTransfer = async (id, body, userId, userName) => {
+const updateStockTransfer = async (industryId, id, body, userId, userName) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    const existing = await client.query(`SELECT * FROM stock_transfers WHERE id = $1`, [id]);
+    const existing = await client.query(`SELECT * FROM stock_transfers WHERE id = $1 AND industry_id = $2`, [id, industryId]);
     if (existing.rows.length === 0) throw new Error('Stock Transfer not found');
     const prev = existing.rows[0];
     const oldData = prev;
@@ -392,15 +395,15 @@ const updateStockTransfer = async (id, body, userId, userName) => {
         const qty = parseFloat(item.quantity) || 1;
 
       const prodRes = await client.query(
-          `SELECT name, sku, purchase_price_exc_tax FROM products WHERE id = $1`,
-          [productId]
+          `SELECT name, sku, purchase_price_exc_tax FROM products WHERE id = $1 AND industry_id = $2`,
+          [productId, industryId]
         );
         const prod = prodRes.rows[0];
         if (!prod) throw new Error(`Product not found (id: ${productId})`);
         const sourceLocation = body.location_from || prev.location_from;
         const sourceLocIdRes = await client.query(
-          `SELECT id FROM business_locations WHERE location_name = $1`,
-          [sourceLocation]
+          `SELECT id FROM business_locations WHERE location_name = $1 AND industry_id = $2`,
+          [sourceLocation, industryId]
         );
         const sourceLocationId = sourceLocIdRes.rows[0]?.id;
         const stockAtSource = await stockLocationService.stockAtLocation(client, productId, sourceLocationId);
@@ -432,7 +435,7 @@ const updateStockTransfer = async (id, body, userId, userName) => {
 
     await client.query('COMMIT');
     console.log(`✅ Stock Transfer updated: id ${id}`);
-    const updated = await fetchStockTransferById(id);
+    const updated = await fetchStockTransferById(id, industryId);
 
     logAudit({
       userId, userName,
@@ -454,12 +457,12 @@ const updateStockTransfer = async (id, body, userId, userName) => {
 };
 
 // ── DELETE STOCK TRANSFER ─────────────────────────────────────────────────────
-const deleteStockTransfer = async (id, userId, userName) => {
+const deleteStockTransfer = async (industryId, id, userId, userName) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    const existing = await client.query(`SELECT * FROM stock_transfers WHERE id = $1`, [id]);
+    const existing = await client.query(`SELECT * FROM stock_transfers WHERE id = $1 AND industry_id = $2`, [id, industryId]);
     if (existing.rows.length === 0) throw new Error('Stock Transfer not found');
     const oldData = existing.rows[0];
 
@@ -471,10 +474,9 @@ const deleteStockTransfer = async (id, userId, userName) => {
     // Delete items first as a safety net in case no ON DELETE CASCADE FK exists
     await client.query(`DELETE FROM stock_transfer_items WHERE stock_transfer_id = $1`, [id]);
     const result = await client.query(
-      `DELETE FROM stock_transfers WHERE id = $1 RETURNING id, transfer_number`,
-      [id]
+      `DELETE FROM stock_transfers WHERE id = $1 AND industry_id = $2 RETURNING id, transfer_number`,
+      [id, industryId]
     );
-
   await client.query('COMMIT');
     console.log(`🗑️  Stock Transfer deleted: ${result.rows[0].transfer_number}`);
 
@@ -499,7 +501,7 @@ const deleteStockTransfer = async (id, userId, userName) => {
 
 // ── DASHBOARD STATS ───────────────────────────────────────────────────────────
 // NEW
-const getStockTransferStats = async () => {
+const getStockTransferStats = async (industryId) => {
   const result = await pool.query(`
     SELECT
       COUNT(*)                                          AS total_transfers,
@@ -510,23 +512,28 @@ const getStockTransferStats = async () => {
       (
         SELECT COALESCE(SUM(sti.quantity * COALESCE(p.purchase_price_exc_tax, 0)), 0)
         FROM stock_transfer_items sti
+        JOIN stock_transfers st2 ON st2.id = sti.stock_transfer_id
         LEFT JOIN products p ON p.id = sti.product_id
+        WHERE st2.industry_id = $1
       )                                                   AS total_value
     FROM stock_transfers
-  `);
+    WHERE industry_id = $1
+  `, [industryId]);
   return result.rows[0];
 };
 
 // ── PRODUCTS DROPDOWN (for Add/Edit form item search) ─────────────────────────
-const getProductsList = async () => {
+const getProductsList = async (industryId) => {
   const result = await pool.query(
     `SELECT id, name AS product_name, sku,
             purchase_price_exc_tax AS cost_price,
             selling_price_exc_tax  AS selling_price,
             current_stock
      FROM products
-     WHERE status IS NULL OR status NOT IN ('inactive', 'disabled')
-     ORDER BY name`
+     WHERE (status IS NULL OR status NOT IN ('inactive', 'disabled'))
+       AND industry_id = $1
+     ORDER BY name`,
+    [industryId]
   );
   return result.rows;
 };

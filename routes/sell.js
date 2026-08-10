@@ -14,6 +14,7 @@ const express = require('express');
 const router  = express.Router();
 
 const authenticateToken        = require('../middleware/auth');
+const requireIndustry          = require('../middleware/industry');
 const { requireAnyPermission } = require('../middleware/permission');
 const ctrl                     = require('../controllers/sellController');// NOTE: only 'View all sell' / 'View own sell only' / 'View paid
 // sells only' and 'View POS sell' / 'Add POS sell' are confirmed to
@@ -35,69 +36,68 @@ const ADD_POS = [['POS', 'Add POS sell']];
 // ═══════════════════════════════════════════════════════════════
 // SALES INVOICES  → /api/sales-invoice
 // ═══════════════════════════════════════════════════════════════
-router.get('/sales-invoice',      authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.getAllInvoices);
-router.get('/sales-invoice/:id',  authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.getInvoiceById);
-router.post('/sales-invoice',     authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.createInvoice);
-router.put('/sales-invoice/:id',  authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.updateInvoice);
-router.delete('/sales-invoice/:id', authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.deleteInvoice);
+router.get('/sales-invoice',      authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.getAllInvoices);
+router.get('/sales-invoice/:id',  authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.getInvoiceById);
+router.post('/sales-invoice',     authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.createInvoice);
+router.put('/sales-invoice/:id',  authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.updateInvoice);
+router.delete('/sales-invoice/:id', authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.deleteInvoice);
 
 // ═══════════════════════════════════════════════════════════════
 // POS SALES  → /api/pos-sales
 // ═══════════════════════════════════════════════════════════════
-router.get('/pos-sales',      authenticateToken, requireAnyPermission(VIEW_POS), ctrl.getAllPOSSales);
-router.get('/pos-sales/:id',  authenticateToken, requireAnyPermission(VIEW_POS), ctrl.getPOSSaleById);
-router.post('/pos-sales',     authenticateToken, requireAnyPermission(ADD_POS),  ctrl.createPOSSale);
-router.put('/pos-sales/:id',  authenticateToken, requireAnyPermission(ADD_POS),  ctrl.updatePOSSale);
-router.delete('/pos-sales/:id', authenticateToken, requireAnyPermission(ADD_POS), ctrl.deletePOSSale);
+router.get('/pos-sales',      authenticateToken, requireIndustry, requireAnyPermission(VIEW_POS), ctrl.getAllPOSSales);
+router.get('/pos-sales/:id',  authenticateToken, requireIndustry, requireAnyPermission(VIEW_POS), ctrl.getPOSSaleById);
+router.post('/pos-sales',     authenticateToken, requireIndustry, requireAnyPermission(ADD_POS),  ctrl.createPOSSale);
+router.put('/pos-sales/:id',  authenticateToken, requireIndustry, requireAnyPermission(ADD_POS),  ctrl.updatePOSSale);
+router.delete('/pos-sales/:id', authenticateToken, requireIndustry, requireAnyPermission(ADD_POS), ctrl.deletePOSSale);
 
 // ═══════════════════════════════════════════════════════════════
 // QUOTATIONS  → /api/quotations
 // ═══════════════════════════════════════════════════════════════
-router.get('/quotations',      authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.getAllQuotations);
-router.get('/quotations/:id',  authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.getQuotationById);
-router.post('/quotations',     authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.createQuotation);
-router.put('/quotations/:id',  authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.updateQuotation);
-router.delete('/quotations/:id', authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.deleteQuotation);
+router.get('/quotations',      authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.getAllQuotations);
+router.get('/quotations/:id',  authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.getQuotationById);
+router.post('/quotations',     authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.createQuotation);
+router.put('/quotations/:id',  authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.updateQuotation);
+router.delete('/quotations/:id', authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.deleteQuotation);
 // ═══════════════════════════════════════════════════════════════
 // DRAFTS  → /api/sales-drafts
 // ═══════════════════════════════════════════════════════════════
-router.get('/sales-drafts',      authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.getAllDrafts);
-router.get('/sales-drafts/:id',  authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.getDraftById);
-router.post('/sales-drafts',     authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.createDraft);
-router.put('/sales-drafts/:id',  authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.updateDraft);
-router.delete('/sales-drafts/:id', authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.deleteDraft);
+router.get('/sales-drafts',      authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.getAllDrafts);
+router.get('/sales-drafts/:id',  authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.getDraftById);
+router.post('/sales-drafts',     authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.createDraft);
+router.put('/sales-drafts/:id',  authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.updateDraft);
+router.delete('/sales-drafts/:id', authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.deleteDraft);
 
 // ═══════════════════════════════════════════════════════════════
 // SALES RETURNS  → /api/sales-returns
 // ═══════════════════════════════════════════════════════════════
-router.get('/sales-returns',      authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.getAllReturns);
-router.get('/sales-returns/:id',  authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.getReturnById);
-router.post('/sales-returns',     authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.createReturn);
-router.put('/sales-returns/:id',  authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.updateReturn);
-router.delete('/sales-returns/:id', authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.deleteReturn);
+router.get('/sales-returns',      authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.getAllReturns);
+router.get('/sales-returns/:id',  authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.getReturnById);
+router.post('/sales-returns',     authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.createReturn);
+router.put('/sales-returns/:id',  authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.updateReturn);
+router.delete('/sales-returns/:id', authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.deleteReturn);
 // ═══════════════════════════════════════════════════════════════
 // SHIPMENTS  → /api/shipments
 // ═══════════════════════════════════════════════════════════════
-router.get('/shipments',      authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.getAllShipments);
-router.get('/shipments/:id',  authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.getShipmentById);
-router.post('/shipments',     authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.createShipment);
-router.put('/shipments/:id',  authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.updateShipment);
-router.delete('/shipments/:id', authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.deleteShipment);
+router.get('/shipments',      authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.getAllShipments);
+router.get('/shipments/:id',  authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.getShipmentById);
+router.post('/shipments',     authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.createShipment);
+router.put('/shipments/:id',  authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.updateShipment);
+router.delete('/shipments/:id', authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.deleteShipment);
 
 // ═══════════════════════════════════════════════════════════════
 // DISCOUNTS  → /api/discounts
 // ═══════════════════════════════════════════════════════════════
-router.get('/discounts',            authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.getAllDiscounts);
-router.get('/discounts/code/:code', authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.validateDiscountCode);
-router.get('/discounts/:id',        authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.getDiscountById);
-router.post('/discounts',           authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.createDiscount);
-router.put('/discounts/:id',        authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.updateDiscount);
-router.delete('/discounts/:id',     authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.deleteDiscount);
+router.get('/discounts',            authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.getAllDiscounts);
+router.get('/discounts/code/:code', authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.validateDiscountCode);
+router.get('/discounts/:id',        authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.getDiscountById);
+router.post('/discounts',           authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.createDiscount);
+router.put('/discounts/:id',        authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.updateDiscount);
+router.delete('/discounts/:id',     authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.deleteDiscount);
 
 // ═══════════════════════════════════════════════════════════════
 // IMPORT SALES (CSV)  → /api/import/sales
 // (matches the hard-coded URL already used in Sell.jsx's ImportSales)
 // ═══════════════════════════════════════════════════════════════
-router.post('/import/sales', authenticateToken, requireAnyPermission(VIEW_SELL), ctrl.importSales);
-
+router.post('/import/sales', authenticateToken, requireIndustry, requireAnyPermission(VIEW_SELL), ctrl.importSales);
 module.exports = router;

@@ -20,8 +20,10 @@ const SELECT_FIELDS = `
 // ── GET ALL USERS ──
 const getAllUsers = async (req, res) => {
   try {
+    const industryId = req.industryId;
     const result = await pool.query(
-      `SELECT ${SELECT_FIELDS} FROM users ORDER BY created_at DESC`
+      `SELECT ${SELECT_FIELDS} FROM users WHERE industry_id = $1 ORDER BY created_at DESC`,
+      [industryId]
     );
     res.status(200).json({ success: true, total: result.rows.length, users: result.rows });
   } catch (err) {
@@ -34,9 +36,10 @@ const getAllUsers = async (req, res) => {
 const getUserById = async (req, res) => {
   try {
     const { id } = req.params;
+    const industryId = req.industryId;
     const result = await pool.query(
-      `SELECT ${SELECT_FIELDS} FROM users WHERE id = $1`,
-      [id]
+      `SELECT ${SELECT_FIELDS} FROM users WHERE id = $1 AND industry_id = $2`,
+      [id, industryId]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ success: false, error: 'User not found' });
@@ -72,8 +75,10 @@ const createUser = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Email already exists' });
     }
 
+  const industryId = req.industryId;
+
     if (role) {
-      const roleCheck = await pool.query('SELECT id FROM roles WHERE LOWER(role_name) = LOWER($1)', [role]);
+      const roleCheck = await pool.query('SELECT id FROM roles WHERE LOWER(role_name) = LOWER($1) AND industry_id = $2', [role, industryId]);
       if (roleCheck.rows.length === 0) {
         return res.status(400).json({ success: false, error: `Role "${role}" does not exist. Please create it first under Roles.` });
       }
@@ -88,9 +93,9 @@ const createUser = async (req, res) => {
          dob, gender, marital_status,
          permanent_address, current_address,
          account_holder, account_number, bank_name, bank_code, branch,
-         sales_commission_pct, max_discount_pct
+         sales_commission_pct, max_discount_pct, industry_id
        )
-       VALUES ($1,$2,$3,$4,$5,$6,'active',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+       VALUES ($1,$2,$3,$4,$5,$6,'active',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
        RETURNING ${SELECT_FIELDS}`,
       [
         email, hashedPassword, full_name || null, phone || null, (role || 'employee').trim(), department || null,
@@ -98,7 +103,7 @@ const createUser = async (req, res) => {
         dob || null, gender || null, marital_status || null,
         permanent_address || null, current_address || null,
         account_holder || null, account_number || null, bank_name || null, bank_code || null, branch || null,
-        sales_commission_pct || null, max_discount_pct || null,
+        sales_commission_pct || null, max_discount_pct || null, industryId,
       ]
     );
 
@@ -110,11 +115,11 @@ const createUser = async (req, res) => {
     res.status(500).json({ success: false, error: 'Failed to create user' });
   }
 };
-
 // ── UPDATE USER ──
 const updateUser = async (req, res) => {
   try {
     const { id } = req.params;
+    const industryId = req.industryId;
     const {
       full_name, email, phone, role, status, department,
       designation, basic_salary, salary_period,
@@ -124,13 +129,13 @@ const updateUser = async (req, res) => {
       sales_commission_pct, max_discount_pct,
     } = req.body;
 
-    const existing = await pool.query('SELECT id FROM users WHERE id = $1', [id]);
+    const existing = await pool.query('SELECT id FROM users WHERE id = $1 AND industry_id = $2', [id, industryId]);
     if (existing.rows.length === 0) {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
 
     if (role) {
-      const roleCheck = await pool.query('SELECT id FROM roles WHERE LOWER(role_name) = LOWER($1)', [role]);
+      const roleCheck = await pool.query('SELECT id FROM roles WHERE LOWER(role_name) = LOWER($1) AND industry_id = $2', [role, industryId]);
       if (roleCheck.rows.length === 0) {
         return res.status(400).json({ success: false, error: `Role "${role}" does not exist. Please create it first under Roles.` });
       }
@@ -169,7 +174,7 @@ const updateUser = async (req, res) => {
            branch = COALESCE($19, branch),
            sales_commission_pct = COALESCE($20, sales_commission_pct),
            max_discount_pct = COALESCE($21, max_discount_pct)
-       WHERE id = $22
+       WHERE id = $22 AND industry_id = $23
        RETURNING ${SELECT_FIELDS}`,
       [
         full_name, email, phone, role, status, department,
@@ -178,7 +183,7 @@ const updateUser = async (req, res) => {
         permanent_address, current_address,
         account_holder, account_number, bank_name, bank_code, branch,
         sales_commission_pct, max_discount_pct,
-        id,
+        id, industryId,
       ]
     );
 
@@ -195,6 +200,7 @@ const updateUser = async (req, res) => {
 const deleteUser = async (req, res) => {
   try {
     const { id } = req.params;
+    const industryId = req.industryId;
 
     if (req.user.id === id) {
       return res.status(400).json({ success: false, error: 'Cannot delete your own account' });
@@ -202,8 +208,8 @@ const deleteUser = async (req, res) => {
 
     try {
       const result = await pool.query(
-        'DELETE FROM users WHERE id = $1 RETURNING id, email, full_name',
-        [id]
+        'DELETE FROM users WHERE id = $1 AND industry_id = $2 RETURNING id, email, full_name',
+        [id, industryId]
       );
       if (result.rows.length === 0) {
         return res.status(404).json({ success: false, error: 'User not found' });
@@ -215,9 +221,9 @@ const deleteUser = async (req, res) => {
       if (fkErr.code !== '23503') throw fkErr;
 
       const result = await pool.query(
-        `UPDATE users SET status = 'inactive' WHERE id = $1
+        `UPDATE users SET status = 'inactive' WHERE id = $1 AND industry_id = $2
          RETURNING id, email, full_name, status`,
-        [id]
+        [id, industryId]
       );
       if (result.rows.length === 0) {
         return res.status(404).json({ success: false, error: 'User not found' });

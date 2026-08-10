@@ -13,12 +13,12 @@ const notificationEngine = require('./notificationEngine');
 const { logAudit } = require('./auditLogService');
 
 // ── Reference number ──────────────────────────────────────────────────────────
-const generateReferenceNo = async (client = pool) => {
+const generateReferenceNo = async (industryId, client = pool) => {
   const year   = new Date().getFullYear();
   const result = await client.query(
     `SELECT reference_no FROM stock_adjustments
-     WHERE  reference_no LIKE $1 ORDER BY id DESC LIMIT 1`,
-    [`SA-${year}-%`]
+     WHERE  reference_no LIKE $1 AND industry_id = $2 ORDER BY id DESC LIMIT 1`,
+    [`SA-${year}-%`, industryId]
   );
   let next = 1;
   if (result.rows.length > 0) {
@@ -28,8 +28,28 @@ const generateReferenceNo = async (client = pool) => {
   return `SA-${year}-${String(next).padStart(3, '0')}`;
 };
 
+const stockLocationService = require('./stockLocationService');
+
+const resolveLocationId = async (client, locationName, industryId) => {
+  if (!locationName) return null;
+  const r = await client.query(
+    `SELECT id FROM business_locations WHERE location_name = $1 AND industry_id = $2`,
+    [locationName, industryId]
+  );
+  return r.rows[0]?.id || null;
+};
+
 // ── Stock impact ──────────────────────────────────────────────────────────────
-const applyStockImpact = async (adjustmentId, direction, client) => {
+// direction 'apply' always represents a write-off/loss (this module is for
+// Normal/Abnormal stock loss adjustments, not additions) — so it always
+// decrements. 'reverse' undoes a previously-applied adjustment (e.g. on
+// delete or status rollback), so it credits the stock back.
+//
+// locationId is required so the change lands on product_stock_by_location
+// (the table purchase returns / transfers / sales actually check), not just
+// the products.current_stock rollup — previously only the rollup was
+// touched, so a location's own stock never reflected adjustments made there.
+const applyStockImpact = async (adjustmentId, direction, client, locationId = null) => {
   const items = await client.query(
     `SELECT product_id, quantity FROM stock_adjustment_items
      WHERE  stock_adjustment_id = $1`,
@@ -39,14 +59,27 @@ const applyStockImpact = async (adjustmentId, direction, client) => {
     const delta = direction === 'apply'
       ? -Math.abs(parseFloat(item.quantity))
       :  Math.abs(parseFloat(item.quantity));
-    // product_id and products.id are both INTEGER — direct match
-    await client.query(
-      `UPDATE products
-       SET    current_stock = GREATEST(0, COALESCE(current_stock, 0) + $1),
-              updated_at    = NOW()
-       WHERE  id = $2`,
-      [delta, item.product_id]
-    );
+
+    if (locationId) {
+      // Keeps product_stock_by_location AND products.current_stock in sync
+      // (adjustStockAtLocation updates both) — same helper purchases,
+      // transfers, and sales use, so all stock movement stays consistent.
+      // allowNegative: true here because the negative-stock guard already
+      // ran against products.current_stock in createAdjustment; we don't
+      // want a location-level mismatch to block a legitimately-approved
+      // adjustment mid-transaction.
+      await stockLocationService.adjustStockAtLocation(client, item.product_id, locationId, delta, { allowNegative: true });
+    } else {
+      // No location on this adjustment (older rows before locationId was
+      // tracked) — fall back to the old rollup-only behavior.
+      await client.query(
+        `UPDATE products
+         SET    current_stock = GREATEST(0, COALESCE(current_stock, 0) + $1),
+                updated_at    = NOW()
+         WHERE  id = $2`,
+        [delta, item.product_id]
+      );
+    }
 
     // Stock only went DOWN when direction === 'apply' — that's the only
     // case that can newly cross the low-stock threshold, so only check then.
@@ -60,7 +93,7 @@ const applyStockImpact = async (adjustmentId, direction, client) => {
 };
 
 // ── FETCH ALL ─────────────────────────────────────────────────────────────────
-const fetchAllAdjustments = async (filters = {}) => {
+const fetchAllAdjustments = async (industryId, filters = {}) => {
   const {
     page = 1, limit = 25, search = '',
     status = '', adjustment_type = '', location = '',
@@ -68,7 +101,7 @@ const fetchAllAdjustments = async (filters = {}) => {
   } = filters;
 
   const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
-  const params = [];
+  const params = [industryId];
 
   // users.id = UUID, sa.created_by = UUID → JOIN works fine
   let q = `
@@ -85,7 +118,7 @@ const fetchAllAdjustments = async (filters = {}) => {
       SELECT stock_adjustment_id, COUNT(*) AS item_count
       FROM   stock_adjustment_items GROUP BY stock_adjustment_id
     ) itm ON itm.stock_adjustment_id = sa.id
-    WHERE 1=1
+    WHERE sa.industry_id = $1
   `;
 
   if (search) {
@@ -113,13 +146,13 @@ const fetchAllAdjustments = async (filters = {}) => {
 };
 
 // ── FETCH ONE ─────────────────────────────────────────────────────────────────
-const fetchAdjustmentById = async (id) => {
+const fetchAdjustmentById = async (id, industryId) => {
   const hdr = await pool.query(
     `SELECT sa.*, u.full_name AS added_by_name
      FROM   stock_adjustments sa
      LEFT   JOIN users u ON u.id = sa.created_by
-     WHERE  sa.id = $1`,
-    [id]
+     WHERE  sa.id = $1 AND sa.industry_id = $2`,
+    [id, industryId]
   );
   if (hdr.rows.length === 0) return null;
 
@@ -136,7 +169,7 @@ const fetchAdjustmentById = async (id) => {
 };
 
 // ── CREATE ────────────────────────────────────────────────────────────────────
-const createAdjustment = async (body, userId, userName) => {
+const createAdjustment = async (industryId, body, userId, userName) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -146,9 +179,9 @@ const createAdjustment = async (body, userId, userName) => {
     if (!body.adjustment_type) throw new Error('Adjustment type is required');
     if (items.length === 0)    throw new Error('At least one product item is required');
 
-    const refNo = body.reference_no?.trim() || await generateReferenceNo(client);
+    const refNo = body.reference_no?.trim() || await generateReferenceNo(industryId, client);
     const dup   = await client.query(
-      `SELECT id FROM stock_adjustments WHERE reference_no = $1`, [refNo]
+      `SELECT id FROM stock_adjustments WHERE reference_no = $1 AND industry_id = $2`, [refNo, industryId]
     );
     if (dup.rows.length > 0) throw new Error(`Reference no "${refNo}" already exists`);
 
@@ -158,12 +191,13 @@ const createAdjustment = async (body, userId, userName) => {
     }
 
     // Block adjustments that would take any product's stock negative
+    // (scoped to this industry — a product id from another workspace must not resolve)
     for (const it of items) {
       const productId = parseInt(it.product_id || it.id, 10);
       const qty       = parseFloat(it.quantity) || 0;
       const prodRes    = await client.query(
-        `SELECT name, COALESCE(current_stock,0) AS current_stock FROM products WHERE id = $1`,
-        [productId]
+        `SELECT name, COALESCE(current_stock,0) AS current_stock FROM products WHERE id = $1 AND industry_id = $2`,
+        [productId, industryId]
       );
       if (prodRes.rows.length === 0) throw new Error(`Product not found (id: ${productId})`);
       const { name, current_stock } = prodRes.rows[0];
@@ -171,13 +205,22 @@ const createAdjustment = async (body, userId, userName) => {
         throw new Error(`Insufficient stock for "${name}": current stock is ${current_stock}, cannot adjust by ${qty}`);
       }
     }
+    // Reject a location string that isn't a real registered business location
+    // IN THIS INDUSTRY — same guard used in stockTransferService.createStockTransfer.
+    const locCheck = await client.query(
+      `SELECT id FROM business_locations WHERE location_name = $1 AND industry_id = $2`,
+      [body.location, industryId]
+    );
+    if (locCheck.rows.length === 0) {
+      throw new Error(`Location "${body.location}" does not exist in this Industry's Business Locations`);
+    }
     // created_by = UUID — use $10::uuid so string from JWT is cast properly
     const hdrRes = await client.query(
       `INSERT INTO stock_adjustments
          (reference_no, adjustment_date, location, adjustment_type,
           status, total_amount, total_amount_recovered, reason,
-          business_id, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::uuid)
+          business_id, created_by, industry_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::uuid,$11)
        RETURNING *`,
       [
         refNo,
@@ -190,6 +233,7 @@ const createAdjustment = async (body, userId, userName) => {
         body.reason || null,
         1,
         userId || null,
+        industryId,
       ]
     );
     const adj = hdrRes.rows[0];
@@ -211,10 +255,10 @@ const createAdjustment = async (body, userId, userName) => {
     }
 
     if (adj.status === 'Completed') {
-      await applyStockImpact(adj.id, 'apply', client);
+      await applyStockImpact(adj.id, 'apply', client, locCheck.rows[0].id);
     }
 await client.query('COMMIT');
-    const created = await fetchAdjustmentById(adj.id);
+    const created = await fetchAdjustmentById(adj.id, industryId);
 
     logAudit({
       userId, userName,
@@ -236,18 +280,19 @@ await client.query('COMMIT');
 };
 
 // ── UPDATE ────────────────────────────────────────────────────────────────────
-const updateAdjustment = async (id, body, userId, userName) => {
+const updateAdjustment = async (industryId, id, body, userId, userName) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    const existing = await client.query(`SELECT * FROM stock_adjustments WHERE id=$1`, [id]);
+    const existing = await client.query(`SELECT * FROM stock_adjustments WHERE id=$1 AND industry_id=$2`, [id, industryId]);
     if (existing.rows.length === 0) throw new Error('Stock Adjustment not found');
     const prev = existing.rows[0];
     const oldData = prev;
 
     if (prev.status === 'Completed' && body.status && body.status !== 'Completed') {
-      await applyStockImpact(id, 'reverse', client);
+      const locId = await resolveLocationId(client, prev.location, industryId);
+      await applyStockImpact(id, 'reverse', client, locId);
     }
 
    const items  = Array.isArray(body.items) ? body.items : null;
@@ -260,8 +305,8 @@ const updateAdjustment = async (id, body, userId, userName) => {
         const productId = parseInt(it.product_id || it.id, 10);
         const qty        = parseFloat(it.quantity) || 0;
         const prodRes     = await client.query(
-          `SELECT name, COALESCE(current_stock,0) AS current_stock FROM products WHERE id = $1`,
-          [productId]
+          `SELECT name, COALESCE(current_stock,0) AS current_stock FROM products WHERE id = $1 AND industry_id = $2`,
+          [productId, industryId]
         );
         if (prodRes.rows.length === 0) throw new Error(`Product not found (id: ${productId})`);
         const { name, current_stock } = prodRes.rows[0];
@@ -289,9 +334,9 @@ const updateAdjustment = async (id, body, userId, userName) => {
     }
 
     if (sets.length > 0) {
-      params.push(id);
+      params.push(id, industryId);
       await client.query(
-        `UPDATE stock_adjustments SET ${sets.join(',')}, updated_at=NOW() WHERE id=$${params.length}`,
+        `UPDATE stock_adjustments SET ${sets.join(',')}, updated_at=NOW() WHERE id=$${params.length - 1} AND industry_id=$${params.length}`,
         params
       );
     }
@@ -312,10 +357,12 @@ const updateAdjustment = async (id, body, userId, userName) => {
 
     const newStatus = body.status || prev.status;
     if (prev.status !== 'Completed' && newStatus === 'Completed') {
-      await applyStockImpact(id, 'apply', client);
+      const finalLocation = body.location || prev.location;
+      const locId = await resolveLocationId(client, finalLocation, industryId);
+      await applyStockImpact(id, 'apply', client, locId);
     }
 await client.query('COMMIT');
-    const updated = await fetchAdjustmentById(id);
+    const updated = await fetchAdjustmentById(id, industryId);
 
     logAudit({
       userId, userName,
@@ -337,16 +384,19 @@ await client.query('COMMIT');
 };
 
 // ── DELETE ────────────────────────────────────────────────────────────────────
-const deleteAdjustment = async (id, userId, userName) => {
+const deleteAdjustment = async (industryId, id, userId, userName) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const ex = await client.query(`SELECT * FROM stock_adjustments WHERE id=$1`, [id]);
+    const ex = await client.query(`SELECT * FROM stock_adjustments WHERE id=$1 AND industry_id=$2`, [id, industryId]);
     if (ex.rows.length === 0) throw new Error('Stock Adjustment not found');
     const oldData = ex.rows[0];
-    if (ex.rows[0].status === 'Completed') await applyStockImpact(id, 'reverse', client);
+    if (ex.rows[0].status === 'Completed') {
+      const locId = await resolveLocationId(client, ex.rows[0].location, industryId);
+      await applyStockImpact(id, 'reverse', client, locId);
+    }
     await client.query(`DELETE FROM stock_adjustment_items WHERE stock_adjustment_id=$1`, [id]);
-    const r = await client.query(`DELETE FROM stock_adjustments WHERE id=$1 RETURNING id,reference_no`, [id]);
+    const r = await client.query(`DELETE FROM stock_adjustments WHERE id=$1 AND industry_id=$2 RETURNING id,reference_no`, [id, industryId]);
     await client.query('COMMIT');
 
     logAudit({
@@ -369,18 +419,19 @@ const deleteAdjustment = async (id, userId, userName) => {
 };
 
 // ── APPROVE ───────────────────────────────────────────────────────────────────
-const approveAdjustment = async (id, userId, userName) => {
+const approveAdjustment = async (industryId, id, userId, userName) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const ex = await client.query(`SELECT * FROM stock_adjustments WHERE id=$1`, [id]);
+    const ex = await client.query(`SELECT * FROM stock_adjustments WHERE id=$1 AND industry_id=$2`, [id, industryId]);
     if (ex.rows.length === 0) throw new Error('Stock Adjustment not found');
     if (ex.rows[0].status === 'Completed') throw new Error('Already completed');
     const oldData = ex.rows[0];
-    await client.query(`UPDATE stock_adjustments SET status='Completed',updated_at=NOW() WHERE id=$1`, [id]);
-    await applyStockImpact(id, 'apply', client);
+    await client.query(`UPDATE stock_adjustments SET status='Completed',updated_at=NOW() WHERE id=$1 AND industry_id=$2`, [id, industryId]);
+    const locId = await resolveLocationId(client, ex.rows[0].location, industryId);
+    await applyStockImpact(id, 'apply', client, locId);
     await client.query('COMMIT');
-    const updated = await fetchAdjustmentById(id);
+    const updated = await fetchAdjustmentById(id, industryId);
 
     logAudit({
       userId, userName,
@@ -401,7 +452,7 @@ const approveAdjustment = async (id, userId, userName) => {
   }
 };
 // ── STATS ─────────────────────────────────────────────────────────────────────
-const getAdjustmentStats = async () => {
+const getAdjustmentStats = async (industryId) => {
   const r = await pool.query(`
     SELECT
       COUNT(*)                                              AS total_adjustments,
@@ -414,22 +465,24 @@ const getAdjustmentStats = async () => {
       COALESCE(SUM(total_amount_recovered),0)              AS total_recovered,
       COALESCE(SUM(total_amount)-SUM(total_amount_recovered),0) AS net_loss
     FROM stock_adjustments
-  `);
+    WHERE industry_id = $1
+  `, [industryId]);
   return r.rows[0];
 };
 
 // ── PRODUCTS LIST — mirrors stockTransferService exactly ──────────────────────
-const getProductsList = async (search = '') => {
-  const params    = search ? [`%${search}%`] : [];
+const getProductsList = async (industryId, search = '') => {
+  const params    = [industryId, ...(search ? [`%${search}%`] : [])];
   const whereExtra = search
-    ? `AND (LOWER(name) LIKE LOWER($1) OR LOWER(sku) LIKE LOWER($1))`
+    ? `AND (LOWER(name) LIKE LOWER($2) OR LOWER(sku) LIKE LOWER($2))`
     : '';
   const r = await pool.query(
     `SELECT id, name AS product_name, sku,
             COALESCE(purchase_price_exc_tax,0) AS unit_cost,
             COALESCE(current_stock,0)          AS current_stock
      FROM   products
-     WHERE  (status IS NULL OR status NOT IN ('inactive','disabled'))
+     WHERE  industry_id = $1
+       AND  (status IS NULL OR status NOT IN ('inactive','disabled'))
      ${whereExtra}
      ORDER  BY name LIMIT 60`,
     params
@@ -438,11 +491,13 @@ const getProductsList = async (search = '') => {
 };
 
 // ── LOCATIONS ─────────────────────────────────────────────────────────────────
-const getLocations = async () => {
+const getLocations = async (industryId) => {
   try {
     const r = await pool.query(
       `SELECT DISTINCT location_name AS location FROM business_locations
-       WHERE is_active = true OR is_active IS NULL ORDER BY location_name`
+       WHERE (is_active = true OR is_active IS NULL) AND industry_id = $1
+       ORDER BY location_name`,
+      [industryId]
     );
     if (r.rows.length > 0) return r.rows.map(row => row.location);
   } catch (err) {
@@ -450,7 +505,8 @@ const getLocations = async () => {
   }
   const r = await pool.query(
     `SELECT DISTINCT location FROM stock_adjustments
-     WHERE location IS NOT NULL ORDER BY location`
+     WHERE location IS NOT NULL AND industry_id = $1 ORDER BY location`,
+    [industryId]
   );
   return r.rows.map(row => row.location);
 };

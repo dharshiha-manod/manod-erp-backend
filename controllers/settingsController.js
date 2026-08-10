@@ -9,13 +9,12 @@ const DEFAULT_BUSINESS_ID = 1;
 
 // ── GENERAL SETTINGS ─────────────────────────────────────────
 // NEW
+// NEW
 exports.getGeneralSettings = async (req, res) => {
   try {
     const businessId = DEFAULT_BUSINESS_ID;
-    const settings = await settingsService.getGeneralSettings(businessId);
-    if (!settings) {
-      return res.status(200).json({ success: true, data: null, message: 'No general settings configured yet' });
-    }
+    const industryId = req.industryId; // set by requireIndustry middleware — see routes file
+    const settings = await settingsService.getMergedGeneralSettings(businessId, industryId);
     res.status(200).json({ success: true, data: settings });
   } catch (error) {
     console.error('❌ Error fetching general settings:', error.message);
@@ -26,13 +25,14 @@ exports.getGeneralSettings = async (req, res) => {
 exports.updateGeneralSettings = async (req, res) => {
   try {
     const businessId = DEFAULT_BUSINESS_ID;
-    const settings = await settingsService.updateGeneralSettings(businessId, req.body);
+    const industryId = req.industryId;
+    const settings = await settingsService.updateGeneralSettings(businessId, industryId, req.body);
     res.status(200).json({ success: true, message: 'General settings updated successfully', data: settings });
   } catch (error) {
     console.error('❌ Error updating general settings:', error.message);
     res.status(400).json({ success: false, message: error.message || 'Failed to update general settings', code: 'UPDATE_FAILED' });
   }
-}; // integer id — business_settings, business_locations, barcode_settings
+};// integer id — business_settings, business_locations, barcode_settings
 const DEFAULT_BUSINESS_UUID = 'e4138fb0-00fa-4ab0-b2dd-4f44470b7e93'; // uuid — tax_rates, invoice_settings, receipt_printers
 // ── BUSINESS SETTINGS ──────────────────────────────────────────
 exports.getBusinessSettings = async (req, res) => {
@@ -110,7 +110,8 @@ exports.uploadBusinessLogo = async (req, res) => {
 exports.getBusinessLocations = async (req, res) => {
   try {
 const businessId = DEFAULT_BUSINESS_ID;
-    const locations = await settingsService.getBusinessLocations(businessId);
+    const industryId = req.industryId;
+    const locations = await settingsService.getBusinessLocations(businessId, industryId);
 
     res.status(200).json({
       success: true,
@@ -128,7 +129,9 @@ const businessId = DEFAULT_BUSINESS_ID;
 };
 exports.createBusinessLocation = async (req, res) => {
   try {
-    const businessId = DEFAULT_BUSINESS_ID;    const location = await settingsService.createBusinessLocation(businessId, req.body);
+    const businessId = DEFAULT_BUSINESS_ID;
+    const industryId = req.industryId;
+    const location = await settingsService.createBusinessLocation(businessId, industryId, req.body);
 
     res.status(201).json({
       success: true,
@@ -148,8 +151,9 @@ exports.createBusinessLocation = async (req, res) => {
 exports.updateBusinessLocation = async (req, res) => {
   try {
     const businessId = DEFAULT_BUSINESS_ID;
+    const industryId = req.industryId;
     const { id } = req.params;
-    const location = await settingsService.updateBusinessLocation(businessId, id, req.body);
+    const location = await settingsService.updateBusinessLocation(businessId, industryId, id, req.body);
 
     if (!location) {
       return res.status(404).json({
@@ -178,8 +182,9 @@ exports.updateBusinessLocation = async (req, res) => {
 exports.deactivateBusinessLocation = async (req, res) => {
   try {
     const businessId = DEFAULT_BUSINESS_ID;
+    const industryId = req.industryId;
     const { id } = req.params;
-    const location = await settingsService.deactivateBusinessLocation(businessId, id);
+    const location = await settingsService.deactivateBusinessLocation(businessId, industryId, id);
 
     if (!location) {
       return res.status(404).json({
@@ -207,8 +212,9 @@ exports.deactivateBusinessLocation = async (req, res) => {
 exports.deleteBusinessLocation = async (req, res) => {
   try {
     const businessId = DEFAULT_BUSINESS_ID;
+    const industryId = req.industryId;
     const { id } = req.params;
-    const location = await settingsService.deleteBusinessLocation(businessId, id);
+    const location = await settingsService.deleteBusinessLocation(businessId, industryId, id);
 
     if (!location) {
       return res.status(404).json({
@@ -245,7 +251,8 @@ exports.deleteBusinessLocation = async (req, res) => {
 exports.getTaxRates = async (req, res) => {
   try {
     const businessId = DEFAULT_BUSINESS_UUID;
-    const taxRates = await settingsService.getTaxRates(businessId);
+    const industryId = req.industryId;
+    const taxRates = await settingsService.getTaxRates(businessId, industryId);
 
     res.status(200).json({
       success: true,
@@ -264,9 +271,10 @@ exports.getTaxRates = async (req, res) => {
 
 exports.createTaxRate = async (req, res) => {
   console.log('🔍 req.user is:', req.user);
-  try {
+try {
  const businessId = DEFAULT_BUSINESS_UUID;
-    const taxRate = await settingsService.createTaxRate(businessId, req.body);
+    const industryId = req.industryId;
+    const taxRate = await settingsService.createTaxRate(businessId, industryId, req.body);
 
     res.status(201).json({
       success: true,
@@ -284,10 +292,11 @@ exports.createTaxRate = async (req, res) => {
 };
 
 exports.updateTaxRate = async (req, res) => {
-  try {
+try {
    const businessId = DEFAULT_BUSINESS_UUID;
+    const industryId = req.industryId;
     const { id } = req.params;
-    const taxRate = await settingsService.updateTaxRate(businessId, id, req.body);
+    const taxRate = await settingsService.updateTaxRate(businessId, industryId, id, req.body);
 
     if (!taxRate) {
       return res.status(404).json({
@@ -315,8 +324,9 @@ exports.updateTaxRate = async (req, res) => {
 exports.deleteTaxRate = async (req, res) => {
   try {
     const businessId = DEFAULT_BUSINESS_UUID;
+    const industryId = req.industryId;
     const { id } = req.params;
-    const taxRate = await settingsService.deleteTaxRate(businessId, id);
+    const taxRate = await settingsService.deleteTaxRate(businessId, industryId, id);
 
     if (!taxRate) {
       return res.status(404).json({
@@ -342,10 +352,12 @@ exports.deleteTaxRate = async (req, res) => {
 };
 
 // ── INVOICE SETTINGS ───────────────────────────────────────────
+
 exports.getInvoiceSettings = async (req, res) => {
   try {
     const businessId = DEFAULT_BUSINESS_UUID;
-    const settings = await settingsService.getInvoiceSettings(businessId);
+    const industryId = req.industryId;
+    const settings = await settingsService.getInvoiceSettings(businessId, industryId);
 
     res.status(200).json({
       success: true,
@@ -361,10 +373,12 @@ exports.getInvoiceSettings = async (req, res) => {
   }
 };
 
+// NEW
 exports.updateInvoiceSettings = async (req, res) => {
   try {
     const businessId = DEFAULT_BUSINESS_UUID;
-    const settings = await settingsService.updateInvoiceSettings(businessId, req.body);
+    const industryId = req.industryId;
+    const settings = await settingsService.updateInvoiceSettings(businessId, industryId, req.body);
 
     res.status(200).json({
       success: true,
@@ -385,7 +399,8 @@ exports.updateInvoiceSettings = async (req, res) => {
 exports.getReceiptPrinters = async (req, res) => {
   try {
     const businessId = DEFAULT_BUSINESS_UUID;
-    const printers = await settingsService.getReceiptPrinters(businessId);
+    const industryId = req.industryId;
+    const printers = await settingsService.getReceiptPrinters(businessId, industryId);
 
     res.status(200).json({
       success: true,
@@ -405,7 +420,8 @@ exports.getReceiptPrinters = async (req, res) => {
 exports.createReceiptPrinter = async (req, res) => {
   try {
     const businessId = DEFAULT_BUSINESS_UUID;
-    const printer = await settingsService.createReceiptPrinter(businessId, req.body);
+    const industryId = req.industryId;
+    const printer = await settingsService.createReceiptPrinter(businessId, industryId, req.body);
 
     res.status(201).json({
       success: true,
@@ -425,8 +441,9 @@ exports.createReceiptPrinter = async (req, res) => {
 exports.updateReceiptPrinter = async (req, res) => {
   try {
     const businessId = DEFAULT_BUSINESS_UUID;
+    const industryId = req.industryId;
     const { id } = req.params;
-    const printer = await settingsService.updateReceiptPrinter(businessId, id, req.body);
+    const printer = await settingsService.updateReceiptPrinter(businessId, industryId, id, req.body);
 
     if (!printer) {
       return res.status(404).json({
@@ -454,8 +471,9 @@ exports.updateReceiptPrinter = async (req, res) => {
 exports.deleteReceiptPrinter = async (req, res) => {
   try {
     const businessId = DEFAULT_BUSINESS_UUID;
+    const industryId = req.industryId;
     const { id } = req.params;
-    const printer = await settingsService.deleteReceiptPrinter(businessId, id);
+    const printer = await settingsService.deleteReceiptPrinter(businessId, industryId, id);
 
     if (!printer) {
       return res.status(404).json({
@@ -484,7 +502,8 @@ exports.deleteReceiptPrinter = async (req, res) => {
 exports.getBarcodeSettings = async (req, res) => {
   try {
     const businessId = DEFAULT_BUSINESS_ID;
-    const settings = await settingsService.getBarcodeSettings(businessId);
+    const industryId = req.industryId;
+    const settings = await settingsService.getBarcodeSettings(businessId, industryId);
 
     res.status(200).json({
       success: true,
@@ -503,7 +522,8 @@ exports.getBarcodeSettings = async (req, res) => {
 exports.updateBarcodeSettings = async (req, res) => {
   try {
     const businessId = DEFAULT_BUSINESS_ID;
-    const settings = await settingsService.updateBarcodeSettings(businessId, req.body);
+    const industryId = req.industryId;
+    const settings = await settingsService.updateBarcodeSettings(businessId, industryId, req.body);
 
     res.status(200).json({
       success: true,
@@ -523,7 +543,7 @@ exports.updateBarcodeSettings = async (req, res) => {
 // ── EXPORT/IMPORT ────────────────────────────────────────────
 exports.exportSettings = async (req, res) => {
   try {
-    const settings = await settingsService.exportAllSettings(DEFAULT_BUSINESS_ID, DEFAULT_BUSINESS_UUID);
+    const settings = await settingsService.exportAllSettings(DEFAULT_BUSINESS_ID, DEFAULT_BUSINESS_UUID, req.industryId);
 
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition', `attachment; filename="settings-${new Date().toISOString().split('T')[0]}.json"`);
@@ -548,7 +568,7 @@ exports.importSettings = async (req, res) => {
       });
     }
 
-    const result = await settingsService.importSettings(DEFAULT_BUSINESS_ID, DEFAULT_BUSINESS_UUID, req.body);
+  const result = await settingsService.importSettings(DEFAULT_BUSINESS_ID, DEFAULT_BUSINESS_UUID, req.industryId, req.body);
 
     res.status(200).json({
       success: true,

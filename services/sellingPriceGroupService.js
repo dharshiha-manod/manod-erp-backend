@@ -7,11 +7,11 @@
 
 const pool = require('../config/database');
 
-const fetchAllGroups = async (filters = {}) => {
+const fetchAllGroups = async (industryId, filters = {}) => {
   const { search = '', limit = 25, offset = 0 } = filters;
 
-  let where = 'WHERE 1=1';
-  const params = [];
+  let where = 'WHERE industry_id = $1';
+  const params = [industryId];
 
   if (search) {
     params.push(`%${search}%`);
@@ -40,47 +40,46 @@ const fetchAllGroups = async (filters = {}) => {
   );
   return { groups: result.rows, total };
 };
-
-const fetchGroupById = async (id) => {
+const fetchGroupById = async (id, industryId) => {
   const result = await pool.query(
-    'SELECT id, name, description, percentage, type, is_default, created_at, updated_at FROM selling_price_groups WHERE id = $1',
-    [id]
+    'SELECT id, name, description, percentage, type, is_default, created_at, updated_at FROM selling_price_groups WHERE id = $1 AND industry_id = $2',
+    [id, industryId]
   );
   return result.rows[0] || null;
 };
 
-const groupNameExists = async (name, excludeId = null) => {
-  let q = 'SELECT id FROM selling_price_groups WHERE LOWER(name) = LOWER($1)';
-  const p = [name];
-  if (excludeId) { q += ' AND id != $2'; p.push(excludeId); }
+const groupNameExists = async (industryId, name, excludeId = null) => {
+  let q = 'SELECT id FROM selling_price_groups WHERE LOWER(name) = LOWER($1) AND industry_id = $2';
+  const p = [name, industryId];
+  if (excludeId) { q += ' AND id != $3'; p.push(excludeId); }
   const result = await pool.query(q, p);
   return result.rows.length > 0;
 };
-
-const createGroup = async ({ name, description, percentage, type, is_default }) => {
+const createGroup = async (industryId, { name, description, percentage, type, is_default }) => {
   if (!name?.trim()) throw new Error('Group name is required');
   if (percentage === undefined || percentage === null || percentage === '') throw new Error('Percentage is required');
-  if (await groupNameExists(name)) throw new Error('Group name already exists');
+  if (await groupNameExists(industryId, name)) throw new Error('Group name already exists');
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // If this one is set default, unset any existing default first
+    // If this one is set default, unset any existing default first (within this industry only)
     if (is_default) {
-      await client.query('UPDATE selling_price_groups SET is_default = FALSE WHERE is_default = TRUE');
+      await client.query('UPDATE selling_price_groups SET is_default = FALSE WHERE is_default = TRUE AND industry_id = $1', [industryId]);
     }
 
     const result = await client.query(
-      `INSERT INTO selling_price_groups (name, description, percentage, type, is_default)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO selling_price_groups (name, description, percentage, type, is_default, industry_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id, name, description, percentage, type, is_default, created_at, updated_at`,
       [
         name.trim(),
         description?.trim() || null,
         parseFloat(percentage) || 0,
         type === 'Markup' ? 'Markup' : 'Discount',
-        is_default === true || is_default === 'true'
+        is_default === true || is_default === 'true',
+        industryId
       ]
     );
 
@@ -94,17 +93,17 @@ const createGroup = async ({ name, description, percentage, type, is_default }) 
   }
 };
 
-const updateGroup = async (id, { name, description, percentage, type, is_default }) => {
-  const existing = await fetchGroupById(id);
+const updateGroup = async (id, industryId, { name, description, percentage, type, is_default }) => {
+  const existing = await fetchGroupById(id, industryId);
   if (!existing) throw new Error('Selling price group not found');
-  if (name && await groupNameExists(name, id)) throw new Error('Group name already in use');
+  if (name && await groupNameExists(industryId, name, id)) throw new Error('Group name already in use');
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
     if (is_default === true || is_default === 'true') {
-      await client.query('UPDATE selling_price_groups SET is_default = FALSE WHERE is_default = TRUE AND id != $1', [id]);
+      await client.query('UPDATE selling_price_groups SET is_default = FALSE WHERE is_default = TRUE AND id != $1 AND industry_id = $2', [id, industryId]);
     }
 
     const result = await client.query(
@@ -115,7 +114,7 @@ const updateGroup = async (id, { name, description, percentage, type, is_default
            type        = COALESCE($4, type),
            is_default  = COALESCE($5, is_default),
            updated_at  = CURRENT_TIMESTAMP
-       WHERE id = $6
+       WHERE id = $6 AND industry_id = $7
        RETURNING id, name, description, percentage, type, is_default, updated_at`,
       [
         name?.trim() || null,
@@ -123,7 +122,8 @@ const updateGroup = async (id, { name, description, percentage, type, is_default
         percentage !== undefined ? parseFloat(percentage) : null,
         type === 'Markup' || type === 'Discount' ? type : null,
         is_default !== undefined ? (is_default === true || is_default === 'true') : null,
-        id
+        id,
+        industryId
       ]
     );
 
@@ -136,8 +136,7 @@ const updateGroup = async (id, { name, description, percentage, type, is_default
     client.release();
   }
 };
-
-const deleteGroup = async (id) => {
+const deleteGroup = async (id, industryId) => {
   // Check if group is referenced in product_selling_prices
   const inUse = await pool.query(
     'SELECT id FROM product_selling_prices WHERE selling_price_group_id = $1 LIMIT 1',
@@ -148,13 +147,12 @@ const deleteGroup = async (id) => {
   }
 
   const result = await pool.query(
-    'DELETE FROM selling_price_groups WHERE id = $1 RETURNING id, name',
-    [id]
+    'DELETE FROM selling_price_groups WHERE id = $1 AND industry_id = $2 RETURNING id, name',
+    [id, industryId]
   );
   if (result.rows.length === 0) throw new Error('Selling price group not found');
   return result.rows[0];
 };
-
 module.exports = {
   fetchAllGroups,
   fetchGroupById,

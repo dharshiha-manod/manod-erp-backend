@@ -11,6 +11,7 @@ const bankIntegrationService = require('./bankIntegrationService');
 const { logAudit } = require('./auditLogService');
 const notificationService = require('./notificationService');
 const salesTargetsService = require('./salesTargetsService');
+const essentialsService = require('./essentialsService');
 
 // Prevent node-postgres from converting DATE columns into JS Date objects.
 // JS Date objects are timezone-sensitive and can silently shift the
@@ -85,15 +86,197 @@ async function seedDefaultLeaveTypes() {
 }
 
 // NEW
+// NEW
+// NEW
 async function ensureHrmSchema() {
   if (hrmSchemaReady) return;
+  try {
+    // Industry Workspace isolation for Payroll (self-healing, additive only)
+    await pool.query(`ALTER TABLE hrm_payroll ADD COLUMN IF NOT EXISTS industry_id INTEGER REFERENCES industries(id) ON DELETE SET NULL;`);
+    await pool.query(`ALTER TABLE hrm_payroll_groups ADD COLUMN IF NOT EXISTS industry_id INTEGER REFERENCES industries(id) ON DELETE SET NULL;`);
+    await pool.query(`ALTER TABLE hrm_pay_components ADD COLUMN IF NOT EXISTS industry_id INTEGER REFERENCES industries(id) ON DELETE SET NULL;`);
+
+    // Industry Workspace isolation for Employees + sub-records + Settings
+    // (self-healing, additive only — same pattern as Payroll above)
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS industry_id INTEGER REFERENCES industries(id) ON DELETE SET NULL;`);
+    await pool.query(`ALTER TABLE hrm_employee_education ADD COLUMN IF NOT EXISTS industry_id INTEGER REFERENCES industries(id) ON DELETE SET NULL;`);
+    await pool.query(`ALTER TABLE hrm_employee_experience ADD COLUMN IF NOT EXISTS industry_id INTEGER REFERENCES industries(id) ON DELETE SET NULL;`);
+    await pool.query(`ALTER TABLE hrm_employee_documents ADD COLUMN IF NOT EXISTS industry_id INTEGER REFERENCES industries(id) ON DELETE SET NULL;`);
+    await pool.query(`ALTER TABLE hrm_employee_skills ADD COLUMN IF NOT EXISTS industry_id INTEGER REFERENCES industries(id) ON DELETE SET NULL;`);
+    await pool.query(`ALTER TABLE hrm_employee_timeline ADD COLUMN IF NOT EXISTS industry_id INTEGER REFERENCES industries(id) ON DELETE SET NULL;`);
+    // hrm_settings used to be a single global row (id=1). Give every industry
+    // its own settings row instead, while keeping the table additive-safe.
+    await pool.query(`ALTER TABLE hrm_settings ADD COLUMN IF NOT EXISTS industry_id INTEGER REFERENCES industries(id) ON DELETE SET NULL;`);
+  } catch (e) {
+    console.error('ensureHrmSchema (industry columns) warning:', e.message);
+  }
   try {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS payroll_group_id INTEGER REFERENCES hrm_payroll_groups(id) ON DELETE SET NULL;`);
     await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS payroll_group_id INTEGER REFERENCES hrm_payroll_groups(id) ON DELETE SET NULL;`);
     // Enable Login feature — links a non-login hrm_employees row to the
     // users row created for it, and back again, so we can tell who's converted.
-    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS linked_user_id UUID REFERENCES users(id) ON DELETE SET NULL;`);
+await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS linked_user_id UUID REFERENCES users(id) ON DELETE SET NULL;`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS linked_employee_id INTEGER REFERENCES hrm_employees(id) ON DELETE SET NULL;`);
+
+    // ── EMPLOYEE MASTER (Phase 1) — additive columns only, all nullable.
+    // Existing employees keep working exactly as before; these just add
+    // new optional fields on top of the current record.
+    // Personal Details
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS employee_code VARCHAR(20);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS first_name VARCHAR(100);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS last_name VARCHAR(100);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS gender VARCHAR(20);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS date_of_birth DATE;`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS blood_group VARCHAR(10);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS marital_status VARCHAR(20);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS nationality VARCHAR(100);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS aadhaar_number VARCHAR(20);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS pan_number VARCHAR(20);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS passport_number VARCHAR(30);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS driving_license VARCHAR(30);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS personal_email VARCHAR(255);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS alternate_mobile VARCHAR(20);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS emergency_contact_name VARCHAR(150);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS emergency_contact_relationship VARCHAR(50);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS emergency_contact_number VARCHAR(20);`);
+    // Address
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS current_address TEXT;`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS permanent_address TEXT;`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS country VARCHAR(100);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS state VARCHAR(100);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS district VARCHAR(100);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS city VARCHAR(100);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS pincode VARCHAR(12);`);
+    // Employment
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS joining_date DATE;`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS confirmation_date DATE;`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS probation_period_months INTEGER;`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS employment_type VARCHAR(30);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS reporting_manager_id INTEGER REFERENCES hrm_employees(id) ON DELETE SET NULL;`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS branch VARCHAR(100);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS office_location VARCHAR(150);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS shift_id INTEGER REFERENCES hrm_shifts(id) ON DELETE SET NULL;`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS notice_period_days INTEGER;`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS resignation_date DATE;`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS exit_date DATE;`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS reason_for_leaving TEXT;`);
+    // Salary Information
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS salary_structure VARCHAR(50);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS pf_number VARCHAR(30);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS esi_number VARCHAR(30);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS uan_number VARCHAR(30);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS professional_tax NUMERIC(10,2);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS bank_name VARCHAR(150);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS bank_account_number VARCHAR(40);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS bank_ifsc VARCHAR(20);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS salary_payment_mode VARCHAR(30);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS ctc NUMERIC(14,2);`);
+    await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS overtime_rate NUMERIC(10,2);`);
+    // Backfill existing rows with a deterministic code, then enforce uniqueness
+    // (partial index so legacy NULLs never collide with each other).
+    await pool.query(`UPDATE hrm_employees SET employee_code = 'EMP-' || LPAD(id::text, 4, '0') WHERE employee_code IS NULL;`);
+await pool.query(`ALTER TABLE hrm_employees ADD COLUMN IF NOT EXISTS contract_end_date DATE;`);
+await pool.query(`ALTER TABLE hrm_employee_documents ADD COLUMN IF NOT EXISTS expiry_date DATE;`);
+
+    // ── EMPLOYEE SUB-RECORDS (Phase 2) — Education / Experience / Documents / Skills.
+    // Independent child tables, purely additive. Nothing in Phase 1 or any
+    // other module reads/writes these, so this cannot break existing code.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS hrm_employee_education (
+        id            SERIAL PRIMARY KEY,
+        employee_id   INTEGER NOT NULL REFERENCES hrm_employees(id) ON DELETE CASCADE,
+        degree        VARCHAR(150),
+        college       VARCHAR(200),
+        university    VARCHAR(200),
+        percentage    NUMERIC(5,2),
+        year          VARCHAR(10),
+        certificate_url TEXT,
+        created_at    TIMESTAMP DEFAULT NOW(),
+        updated_at    TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_hrm_edu_employee ON hrm_employee_education(employee_id);`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS hrm_employee_experience (
+        id                SERIAL PRIMARY KEY,
+        employee_id       INTEGER NOT NULL REFERENCES hrm_employees(id) ON DELETE CASCADE,
+        previous_company  VARCHAR(200),
+        designation       VARCHAR(150),
+        experience_years  NUMERIC(4,1),
+        joining_date      DATE,
+        leaving_date      DATE,
+        salary            NUMERIC(14,2),
+        reason_for_leaving TEXT,
+        reference_name    VARCHAR(150),
+        reference_contact VARCHAR(50),
+        created_at        TIMESTAMP DEFAULT NOW(),
+        updated_at        TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_hrm_exp_employee ON hrm_employee_experience(employee_id);`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS hrm_employee_documents (
+        id            SERIAL PRIMARY KEY,
+        employee_id   INTEGER NOT NULL REFERENCES hrm_employees(id) ON DELETE CASCADE,
+        doc_type      VARCHAR(50) NOT NULL,
+        file_name     VARCHAR(255),
+        file_url      TEXT NOT NULL,
+        uploaded_by   VARCHAR(255),
+        created_at    TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_hrm_docs_employee ON hrm_employee_documents(employee_id);`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS hrm_employee_skills (
+        id            SERIAL PRIMARY KEY,
+        employee_id   INTEGER NOT NULL REFERENCES hrm_employees(id) ON DELETE CASCADE,
+        skill_type    VARCHAR(30) NOT NULL DEFAULT 'Technical',
+        name          VARCHAR(150) NOT NULL,
+        level         VARCHAR(30),
+        created_at    TIMESTAMP DEFAULT NOW()
+      );
+    `);
+await pool.query(`CREATE INDEX IF NOT EXISTS idx_hrm_skills_employee ON hrm_employee_skills(employee_id);`);
+
+    // ── EMPLOYEE TIMELINE (Phase 3) — one unified history feed.
+    // employee_id is nullable because some events (leave/attendance today)
+    // are keyed by employee_name for login users too; we store both so the
+    // timeline can resolve either non-login employees or login users.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS hrm_employee_timeline (
+        id            SERIAL PRIMARY KEY,
+        employee_id   INTEGER REFERENCES hrm_employees(id) ON DELETE CASCADE,
+        employee_name VARCHAR(200) NOT NULL,
+        event_type    VARCHAR(50) NOT NULL,
+        title         TEXT NOT NULL,
+        description   TEXT,
+        event_date    DATE DEFAULT CURRENT_DATE,
+        created_by    VARCHAR(255),
+        created_at    TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_hrm_timeline_employee ON hrm_employee_timeline(employee_id);`);
+await pool.query(`CREATE INDEX IF NOT EXISTS idx_hrm_timeline_name ON hrm_employee_timeline(employee_name);`);
+
+
+
+    // ── ATTENDANCE AUTOMATION (Phase 4) — additive columns on hrm_attendance.
+    await pool.query(`ALTER TABLE hrm_attendance ADD COLUMN IF NOT EXISTS ip_address VARCHAR(64);`);
+    await pool.query(`ALTER TABLE hrm_attendance ADD COLUMN IF NOT EXISTS device VARCHAR(30);`);
+    await pool.query(`ALTER TABLE hrm_attendance ADD COLUMN IF NOT EXISTS browser VARCHAR(30);`);
+    await pool.query(`ALTER TABLE hrm_attendance ADD COLUMN IF NOT EXISTS location VARCHAR(255);`);
+    await pool.query(`ALTER TABLE hrm_attendance ADD COLUMN IF NOT EXISTS late_minutes INTEGER DEFAULT 0;`);
+    await pool.query(`ALTER TABLE hrm_attendance ADD COLUMN IF NOT EXISTS working_hours NUMERIC(5,2);`);
+    await pool.query(`ALTER TABLE hrm_attendance ADD COLUMN IF NOT EXISTS break_minutes INTEGER DEFAULT 0;`);
+await pool.query(`ALTER TABLE hrm_attendance ADD COLUMN IF NOT EXISTS overtime_minutes INTEGER DEFAULT 0;`);
+
+    // ── PAYROLL POLICY (Phase 5) — additive settings for Half-Day / Late / Overtime.
+    await pool.query(`ALTER TABLE hrm_settings ADD COLUMN IF NOT EXISTS late_penalty_after_count INTEGER DEFAULT 3;`);
+    await pool.query(`ALTER TABLE hrm_settings ADD COLUMN IF NOT EXISTS late_penalty_per_day NUMERIC(10,2) DEFAULT 0;`);
+    await pool.query(`ALTER TABLE hrm_settings ADD COLUMN IF NOT EXISTS half_day_deduction_percent NUMERIC(5,2) DEFAULT 50;`);
 // Leave notifications — employee_seen already exists in prod DB; kept here so fresh DBs self-heal too.
     await pool.query(`ALTER TABLE hrm_leaves ADD COLUMN IF NOT EXISTS employee_seen BOOLEAN DEFAULT TRUE;`);
     await pool.query(`ALTER TABLE hrm_leaves ADD COLUMN IF NOT EXISTS approver_name VARCHAR(255);`);
@@ -191,35 +374,36 @@ async function nextPayrollRef() {
 
 // ── DEPARTMENTS ──────────────────────────────────────────────
 
-async function fetchDepartments() {
+async function fetchDepartments(industryId) {
   const { rows } = await pool.query(
-    `SELECT id, dept_code, name, description, created_at FROM hrm_departments ORDER BY id`
+    `SELECT id, dept_code, name, description, created_at FROM hrm_departments WHERE industry_id=$1 ORDER BY id`,
+    [industryId]
   );
   return rows;
 }
 
-async function createDepartment({ name, description }, userId, userName) {
+async function createDepartment(industryId, { name, description }, userId, userName) {
   if (!name) throw new Error('Department name is required');
   const code = 'DEPT-' + name.slice(0, 4).toUpperCase().replace(/\s/g, '');
   const { rows } = await pool.query(
-    `INSERT INTO hrm_departments (dept_code, name, description)
-     VALUES ($1, $2, $3) RETURNING *`,
-    [code, name, description || null]
+    `INSERT INTO hrm_departments (dept_code, name, description, industry_id)
+     VALUES ($1, $2, $3, $4) RETURNING *`,
+    [code, name, description || null, industryId]
   );
   const dept = rows[0];
   logAudit({ userId, userName, module: 'HRM Departments', action: 'CREATE', recordId: dept.id, recordLabel: dept.name, oldData: null, newData: dept }).catch(() => {});
   return dept;
 }
 
-async function updateDepartment(id, { name, description, dept_code }, userId, userName) {
-  const existing = await pool.query(`SELECT * FROM hrm_departments WHERE id=$1`, [id]);
+async function updateDepartment(industryId, id, { name, description, dept_code }, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_departments WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Department not found');
   const oldData = existing.rows[0];
 
   const { rows } = await pool.query(
     `UPDATE hrm_departments SET name=$1, description=$2, dept_code=COALESCE($3, dept_code), updated_at=NOW()
-     WHERE id=$4 RETURNING *`,
-    [name, description, dept_code || null, id]
+     WHERE id=$4 AND industry_id=$5 RETURNING *`,
+    [name, description, dept_code || null, id, industryId]
   );
   if (!rows.length) throw new Error('Department not found');
   const dept = rows[0];
@@ -227,44 +411,45 @@ async function updateDepartment(id, { name, description, dept_code }, userId, us
   return dept;
 }
 
-async function deleteDepartment(id, userId, userName) {
-  const existing = await pool.query(`SELECT * FROM hrm_departments WHERE id=$1`, [id]);
+async function deleteDepartment(industryId, id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_departments WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Department not found');
   const oldData = existing.rows[0];
-  await pool.query(`DELETE FROM hrm_departments WHERE id=$1`, [id]);
+  await pool.query(`DELETE FROM hrm_departments WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   logAudit({ userId, userName, module: 'HRM Departments', action: 'DELETE', recordId: id, recordLabel: oldData.name, oldData, newData: null }).catch(() => {});
 }
 
 // ── DESIGNATIONS ─────────────────────────────────────────────
 
-async function fetchDesignations() {
+async function fetchDesignations(industryId) {
   const { rows } = await pool.query(
-    `SELECT id, name, description, created_at FROM hrm_designations ORDER BY id`
+    `SELECT id, name, description, created_at FROM hrm_designations WHERE industry_id=$1 ORDER BY id`,
+    [industryId]
   );
   return rows;
 }
 
-async function createDesignation({ name, description }, userId, userName) {
+async function createDesignation(industryId, { name, description }, userId, userName) {
   if (!name) throw new Error('Designation name is required');
   const { rows } = await pool.query(
-    `INSERT INTO hrm_designations (name, description)
-     VALUES ($1, $2) RETURNING *`,
-    [name, description || null]
+    `INSERT INTO hrm_designations (name, description, industry_id)
+     VALUES ($1, $2, $3) RETURNING *`,
+    [name, description || null, industryId]
   );
   const desig = rows[0];
   logAudit({ userId, userName, module: 'HRM Designations', action: 'CREATE', recordId: desig.id, recordLabel: desig.name, oldData: null, newData: desig }).catch(() => {});
   return desig;
 }
 
-async function updateDesignation(id, { name, description }, userId, userName) {
-  const existing = await pool.query(`SELECT * FROM hrm_designations WHERE id=$1`, [id]);
+async function updateDesignation(industryId, id, { name, description }, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_designations WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Designation not found');
   const oldData = existing.rows[0];
 
   const { rows } = await pool.query(
     `UPDATE hrm_designations SET name=$1, description=$2, updated_at=NOW()
-     WHERE id=$3 RETURNING *`,
-    [name, description, id]
+     WHERE id=$3 AND industry_id=$4 RETURNING *`,
+    [name, description, id, industryId]
   );
   if (!rows.length) throw new Error('Designation not found');
   const desig = rows[0];
@@ -272,18 +457,17 @@ async function updateDesignation(id, { name, description }, userId, userName) {
   return desig;
 }
 
-async function deleteDesignation(id, userId, userName) {
-  const existing = await pool.query(`SELECT * FROM hrm_designations WHERE id=$1`, [id]);
+async function deleteDesignation(industryId, id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_designations WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Designation not found');
   const oldData = existing.rows[0];
-  await pool.query(`DELETE FROM hrm_designations WHERE id=$1`, [id]);
+  await pool.query(`DELETE FROM hrm_designations WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   logAudit({ userId, userName, module: 'HRM Designations', action: 'DELETE', recordId: id, recordLabel: oldData.name, oldData, newData: null }).catch(() => {});
 }
-
 // ── LEAVE TYPES ──────────────────────────────────────────────
 
 // NEW
-async function fetchLeaveTypes() {
+async function fetchLeaveTypes(industryId) {
   await ensureHrmSchema();
   const { rows } = await pool.query(
     `SELECT id, name, leave_code, description, max_count, interval,
@@ -302,12 +486,13 @@ async function fetchLeaveTypes() {
             COALESCE(count_as_absent, FALSE) AS count_as_absent,
             COALESCE(active, TRUE) AS active,
             created_at
-     FROM hrm_leave_types ORDER BY id`
+     FROM hrm_leave_types WHERE industry_id = $1 ORDER BY id`,
+    [industryId]
   );
   return rows;
 }
 
-async function createLeaveType(body, userId, userName) {
+async function createLeaveType(industryId, body, userId, userName) {
   await ensureHrmSchema();
   const {
     name, leave_code, description, max_count, interval, is_paid,
@@ -324,8 +509,8 @@ async function createLeaveType(body, userId, userName) {
         monthly_accrual, carry_forward, max_carry_forward_days,
         requires_approval, requires_document, min_days_requiring_attachment,
         allow_half_day, allow_negative_balance, deduct_from_balance,
-        affects_payroll, count_as_present, count_as_absent, active)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+        affects_payroll, count_as_present, count_as_absent, active, industry_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
      RETURNING *`,
     [
       name, leave_code || null, description || null, max_count || 0, interval || 'None', paid,
@@ -339,6 +524,7 @@ async function createLeaveType(body, userId, userName) {
       count_as_present === undefined ? true : !!count_as_present,
       !!count_as_absent,
       active === undefined ? true : !!active,
+      industryId,
     ]
   );
   const lt = rows[0];
@@ -346,9 +532,9 @@ async function createLeaveType(body, userId, userName) {
   return lt;
 }
 
-async function updateLeaveType(id, body, userId, userName) {
+async function updateLeaveType(industryId, id, body, userId, userName) {
   await ensureHrmSchema();
-  const existing = await pool.query(`SELECT * FROM hrm_leave_types WHERE id=$1`, [id]);
+  const existing = await pool.query(`SELECT * FROM hrm_leave_types WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Leave type not found');
   const oldData = existing.rows[0];
   const {
@@ -368,7 +554,7 @@ async function updateLeaveType(id, body, userId, userName) {
        allow_half_day=$13, allow_negative_balance=$14, deduct_from_balance=$15,
        affects_payroll=$16, count_as_present=$17, count_as_absent=$18, active=$19,
        updated_at=NOW()
-     WHERE id=$20 RETURNING *`,
+     WHERE id=$20 AND industry_id=$21 RETURNING *`,
     [
       name, leave_code || null, description || null, max_count, interval,
       is_paid === undefined ? null : !!is_paid,
@@ -383,64 +569,64 @@ async function updateLeaveType(id, body, userId, userName) {
       !!count_as_absent,
       active === undefined ? true : !!active,
       id,
+      industryId,
     ]
   );
-// NEW — nothing. Just delete it. The first updateLeaveType (right above it,
-// which already updates all 19 fields) is what remains and now actually runs.
   if (!rows.length) throw new Error('Leave type not found');
   const lt = rows[0];
   logAudit({ userId, userName, module: 'HRM Leave Types', action: 'UPDATE', recordId: id, recordLabel: lt.name, oldData, newData: lt }).catch(() => {});
   return lt;
 }
 
-async function deleteLeaveType(id, userId, userName) {
-  const existing = await pool.query(`SELECT * FROM hrm_leave_types WHERE id=$1`, [id]);
+async function deleteLeaveType(industryId, id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_leave_types WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Leave type not found');
   const oldData = existing.rows[0];
-  await pool.query(`DELETE FROM hrm_leave_types WHERE id=$1`, [id]);
+  await pool.query(`DELETE FROM hrm_leave_types WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   logAudit({ userId, userName, module: 'HRM Leave Types', action: 'DELETE', recordId: id, recordLabel: oldData.name, oldData, newData: null }).catch(() => {});
 }
 
 // ── LEAVES ───────────────────────────────────────────────────
 
-async function fetchLeaves({ status = '', employee = '', date_from = '', date_to = '' } = {}) {
-  const conditions = [];
-  const values = [];
-  let idx = 1;
+async function fetchLeaves(industryId, { status = '', employee = '', date_from = '', date_to = '' } = {}) {
+  const conditions = ['industry_id = $1'];
+  const values = [industryId];
+  let idx = 2;
 
   if (status)    { conditions.push(`status = $${idx++}`);       values.push(status); }
   if (employee)  { conditions.push(`employee_name ILIKE $${idx++}`); values.push(`%${employee}%`); }
   if (date_from) { conditions.push(`start_date >= $${idx++}`);  values.push(date_from); }
   if (date_to)   { conditions.push(`end_date <= $${idx++}`);    values.push(date_to); }
 
-  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const where = `WHERE ${conditions.join(' AND ')}`;
   const { rows } = await pool.query(
     `SELECT * FROM hrm_leaves ${where} ORDER BY id DESC`, values
   );
   return rows;
 }
 
-async function createLeave({ leave_type_id, leave_type_name, employee_name, start_date, end_date, reason }, createdBy, userName) {
+async function createLeave(industryId, { leave_type_id, leave_type_name, employee_name, start_date, end_date, reason }, createdBy, userName) {
   if (!employee_name || !start_date || !end_date)
     throw new Error('Employee, start date and end date are required');
 
   const ref = await nextLeaveRef();
   const { rows } = await pool.query(
     `INSERT INTO hrm_leaves
-       (reference_no, leave_type_id, leave_type_name, employee_name, start_date, end_date, reason, status, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,'Pending',$8) RETURNING *`,
-    [ref, leave_type_id || null, leave_type_name || '', employee_name, start_date, end_date, reason || '', createdBy || null]
+       (industry_id, reference_no, leave_type_id, leave_type_name, employee_name, start_date, end_date, reason, status, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'Pending',$9) RETURNING *`,
+    [industryId, ref, leave_type_id || null, leave_type_name || '', employee_name, start_date, end_date, reason || '', createdBy || null]
   );
-  const leave = rows[0];
+const leave = rows[0];
   logAudit({ userId: createdBy, userName, module: 'HRM Leaves', action: 'CREATE', recordId: leave.id, recordLabel: leave.reference_no, oldData: null, newData: leave }).catch(() => {});
+  logTimeline({ industryId, employeeName: leave.employee_name, eventType: 'leave', title: `Applied for ${leave.leave_type_name || 'leave'}`, description: `${leave.start_date} → ${leave.end_date}`, createdBy: userName });
   return leave;
 }
 
-async function updateLeaveStatus(id, status, userId, userName, remarks) {
+async function updateLeaveStatus(industryId, id, status, userId, userName, remarks) {
   await ensureHrmSchema();
   const allowed = ['Pending', 'Approved', 'Rejected'];
   if (!allowed.includes(status)) throw new Error('Invalid status');
-  const existing = await pool.query(`SELECT * FROM hrm_leaves WHERE id=$1`, [id]);
+  const existing = await pool.query(`SELECT * FROM hrm_leaves WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Leave not found');
   const oldData = existing.rows[0];
 
@@ -455,73 +641,84 @@ const { rows } = await pool.query(
          approver_name = CASE WHEN $1::varchar IN ('Approved','Rejected') THEN $4 ELSE approver_name END,
          employee_seen = CASE WHEN $1::varchar IN ('Approved','Rejected') THEN FALSE ELSE employee_seen END,
          updated_at=NOW()
-     WHERE id=$3 RETURNING *`,
-    [status, remarks || null, id, userName || null]
+     WHERE id=$3 AND industry_id=$5 RETURNING *`,
+    [status, remarks || null, id, userName || null, industryId]
   );
- // NEW
+// NEW
   if (!rows.length) throw new Error('Leave not found');
   const leave = rows[0];
+if (status === 'Approved' || status === 'Rejected') {
+    logTimeline({ industryId, employeeName: leave.employee_name, eventType: 'leave', title: `Leave ${status.toLowerCase()}`, description: `${leave.leave_type_name || 'Leave'} — ${leave.start_date} → ${leave.end_date}`, createdBy: userName });
+    if (leave.employee_id) {
+      notificationService.notifyUser({
+        recipientId: leave.employee_id, recipientSource: leave.employee_source || 'user',
+        module: 'Leave', eventType: status === 'Approved' ? 'leave_approved' : 'leave_rejected', recordId: leave.id,
+        title: `Your leave request was ${status.toLowerCase()}`,
+        message: `${leave.leave_type_name || 'Leave'} — ${String(leave.start_date).slice(0,10)} to ${String(leave.end_date).slice(0,10)}${remarks ? `. ${remarks}` : '.'}`,
+      }).catch(() => {});
+    }
+  }
   logAudit({ userId, userName, module: 'HRM Leaves', action: 'UPDATE', recordId: id, recordLabel: leave.reference_no, oldData, newData: leave }).catch(() => {});
   syncAttendanceForLeave(leave).catch(e => console.error('attendance sync warning:', e.message));
   return leave;
 }
-async function updateLeave(id, data, userId, userName) {
+async function updateLeave(industryId, id, data, userId, userName) {
   const { leave_type_name, employee_name, start_date, end_date, reason, status } = data;
-  const existing = await pool.query(`SELECT * FROM hrm_leaves WHERE id=$1`, [id]);
+  const existing = await pool.query(`SELECT * FROM hrm_leaves WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Leave not found');
   const oldData = existing.rows[0];
 
   const { rows } = await pool.query(
     `UPDATE hrm_leaves
      SET leave_type_name=$1, employee_name=$2, start_date=$3, end_date=$4, reason=$5, status=$6, updated_at=NOW()
-     WHERE id=$7 RETURNING *`,
-    [leave_type_name, employee_name, start_date, end_date, reason, status, id]
+     WHERE id=$7 AND industry_id=$8 RETURNING *`,
+    [leave_type_name, employee_name, start_date, end_date, reason, status, id, industryId]
   );
   if (!rows.length) throw new Error('Leave not found');
   const leave = rows[0];
   logAudit({ userId, userName, module: 'HRM Leaves', action: 'UPDATE', recordId: id, recordLabel: leave.reference_no, oldData, newData: leave }).catch(() => {});
   return leave;
 }
-
-async function deleteLeave(id, userId, userName) {
-  const existing = await pool.query(`SELECT * FROM hrm_leaves WHERE id=$1`, [id]);
+async function deleteLeave(industryId, id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_leaves WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Leave not found');
   const oldData = existing.rows[0];
-  await pool.query(`DELETE FROM hrm_leaves WHERE id=$1`, [id]);
+  await pool.query(`DELETE FROM hrm_leaves WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   logAudit({ userId, userName, module: 'HRM Leaves', action: 'DELETE', recordId: id, recordLabel: oldData.reference_no, oldData, newData: null }).catch(() => {});
 }
 
 // ── SHIFTS ───────────────────────────────────────────────────
 
-async function fetchShifts() {
+async function fetchShifts(industryId) {
   const { rows } = await pool.query(
-    `SELECT id, name, shift_type, start_time, end_time, holiday_day FROM hrm_shifts ORDER BY id`
+    `SELECT id, name, shift_type, start_time, end_time, holiday_day FROM hrm_shifts WHERE industry_id = $1 ORDER BY id`,
+    [industryId]
   );
   return rows;
 }
 
-async function createShift({ name, shift_type, start_time, end_time, holiday_day }, userId, userName) {
+async function createShift(industryId, { name, shift_type, start_time, end_time, holiday_day }, userId, userName) {
   if (!name || !start_time || !end_time) throw new Error('Name, start time and end time are required');
   const { rows } = await pool.query(
-    `INSERT INTO hrm_shifts (name, shift_type, start_time, end_time, holiday_day)
-     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-    [name, shift_type || 'Fixed shift', start_time, end_time, holiday_day || null]
+    `INSERT INTO hrm_shifts (industry_id, name, shift_type, start_time, end_time, holiday_day)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+    [industryId, name, shift_type || 'Fixed shift', start_time, end_time, holiday_day || null]
   );
   const shift = rows[0];
   logAudit({ userId, userName, module: 'HRM Shifts', action: 'CREATE', recordId: shift.id, recordLabel: shift.name, oldData: null, newData: shift }).catch(() => {});
   return shift;
 }
 
-async function updateShift(id, data, userId, userName) {
+async function updateShift(industryId, id, data, userId, userName) {
   const { name, shift_type, start_time, end_time, holiday_day } = data;
-  const existing = await pool.query(`SELECT * FROM hrm_shifts WHERE id=$1`, [id]);
+  const existing = await pool.query(`SELECT * FROM hrm_shifts WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Shift not found');
   const oldData = existing.rows[0];
 
   const { rows } = await pool.query(
     `UPDATE hrm_shifts SET name=$1, shift_type=$2, start_time=$3, end_time=$4, holiday_day=$5, updated_at=NOW()
-     WHERE id=$6 RETURNING *`,
-    [name, shift_type, start_time, end_time, holiday_day, id]
+     WHERE id=$6 AND industry_id=$7 RETURNING *`,
+    [name, shift_type, start_time, end_time, holiday_day, id, industryId]
   );
   if (!rows.length) throw new Error('Shift not found');
   const shift = rows[0];
@@ -529,20 +726,20 @@ async function updateShift(id, data, userId, userName) {
   return shift;
 }
 
-async function deleteShift(id, userId, userName) {
-  const existing = await pool.query(`SELECT * FROM hrm_shifts WHERE id=$1`, [id]);
+async function deleteShift(industryId, id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_shifts WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Shift not found');
   const oldData = existing.rows[0];
-  await pool.query(`DELETE FROM hrm_shifts WHERE id=$1`, [id]);
+  await pool.query(`DELETE FROM hrm_shifts WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   logAudit({ userId, userName, module: 'HRM Shifts', action: 'DELETE', recordId: id, recordLabel: oldData.name, oldData, newData: null }).catch(() => {});
 }
 
 // ── ATTENDANCE ───────────────────────────────────────────────
 
-async function fetchAttendance({ date_from, date_to, employee, status, date_filter } = {}) {
-  const conditions = [];
-  const values = [];
-  let idx = 1;
+async function fetchAttendance(industryId, { date_from, date_to, employee, status, date_filter } = {}) {
+  const conditions = ['industry_id = $1'];
+  const values = [industryId];
+  let idx = 2;
 
   const today = new Date().toISOString().split('T')[0];
 
@@ -608,44 +805,61 @@ async function computeAttendanceStatus(nowHHMM) {
   const graceDate = new Date(0, 0, 0, sh, sm + graceMin);
   const graceThreshold = `${String(graceDate.getHours()).padStart(2, '0')}:${String(graceDate.getMinutes()).padStart(2, '0')}`;
 
-  return nowHHMM > graceThreshold ? 'Late' : 'Present';
+  // NEW (Phase 4) — minutes late measured against the plain start time
+  // (not the grace threshold), so HR can see exactly how late someone
+  // was even if it's still inside the grace window.
+  const [nh, nm] = nowHHMM.split(':').map(Number);
+  const lateMinutes = Math.max(0, (nh * 60 + nm) - (sh * 60 + sm));
+
+  return { status: nowHHMM > graceThreshold ? 'Late' : 'Present', lateMinutes };
 }
 
-async function clockIn({ employee_name, employee_id, department, note }, createdBy, userName) {
+// NEW (Phase 4) — hours between two "HH:MM" strings, crossing midnight safely.
+function computeWorkingHours(clockIn, clockOut) {
+  if (!clockIn || !clockOut) return null;
+  const [ih, im] = String(clockIn).slice(0, 5).split(':').map(Number);
+  const [oh, om] = String(clockOut).slice(0, 5).split(':').map(Number);
+  let minutes = (oh * 60 + om) - (ih * 60 + im);
+  if (minutes < 0) minutes += 24 * 60;
+  return Math.round((minutes / 60) * 100) / 100;
+}
+async function clockIn(industryId, { employee_name, employee_id, department, note, location }, createdBy, userName, meta = {}) {
   const today = new Date().toISOString().split('T')[0];
   const now   = new Date().toTimeString().slice(0, 5);
 
-  const status = await computeAttendanceStatus(now);
+  const { status, lateMinutes } = await computeAttendanceStatus(now);
 
   const { rows } = await pool.query(
-    `INSERT INTO hrm_attendance (employee_name, employee_id, attendance_date, clock_in, status, department, note)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
-     ON CONFLICT (employee_name, attendance_date)
-     DO UPDATE SET clock_in=$4, status=$5, note=$7, updated_at=NOW()
+    `INSERT INTO hrm_attendance (industry_id, employee_name, employee_id, attendance_date, clock_in, status, department, note, ip_address, device, browser, location, late_minutes)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+     ON CONFLICT (industry_id, employee_name, attendance_date)
+     DO UPDATE SET clock_in=$5, status=$6, note=$8, ip_address=$9, device=$10, browser=$11, location=$12, late_minutes=$13, updated_at=NOW()
      RETURNING *`,
-    [employee_name || 'Admin', employee_id || null, today, now, status, department || 'Admin', note || '']
+    [industryId, employee_name || 'Admin', employee_id || null, today, now, status, department || 'Admin', note || '',
+     meta.ip || null, meta.device || null, meta.browser || null, location || null, lateMinutes]
   );
   const rec = rows[0];
   logAudit({ userId: createdBy, userName, module: 'HRM Attendance', action: 'CREATE', recordId: rec.id, recordLabel: rec.employee_name, oldData: null, newData: rec }).catch(() => {});
+  logTimeline({ industryId, employeeId: employee_id, employeeName: rec.employee_name, eventType: 'attendance', title: status === 'Late' ? `Clocked in late (${lateMinutes}m)` : 'Clocked in', createdBy: userName });
   return rec;
 }
-async function clockOut(id, userId, userName) {
-  const existing = await pool.query(`SELECT * FROM hrm_attendance WHERE id=$1`, [id]);
+async function clockOut(industryId, id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_attendance WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Attendance record not found');
   const oldData = existing.rows[0];
 
   const now = new Date().toTimeString().slice(0, 5);
+  const workingHours = computeWorkingHours(oldData.clock_in, now);
   const { rows } = await pool.query(
-    `UPDATE hrm_attendance SET clock_out=$1, updated_at=NOW() WHERE id=$2 RETURNING *`,
-    [now, id]
+    `UPDATE hrm_attendance SET clock_out=$1, working_hours=$2, updated_at=NOW() WHERE id=$3 AND industry_id=$4 RETURNING *`,
+    [now, workingHours, id, industryId]
   );
   if (!rows.length) throw new Error('Attendance record not found');
   const rec = rows[0];
   logAudit({ userId, userName, module: 'HRM Attendance', action: 'UPDATE', recordId: id, recordLabel: rec.employee_name, oldData, newData: rec }).catch(() => {});
   return rec;
 }
-
-async function fetchAttendanceStats() {
+async function fetchAttendanceStats(industryId) {
   const today = new Date().toISOString().split('T')[0];
   const { rows } = await pool.query(
     `SELECT
@@ -654,18 +868,18 @@ async function fetchAttendanceStats() {
        COUNT(*) FILTER (WHERE status='Absent')  AS absent,
        COUNT(*) FILTER (WHERE status='On Leave') AS on_leave
      FROM hrm_attendance
-     WHERE attendance_date = $1`,
-    [today]
+     WHERE attendance_date = $1 AND industry_id = $2`,
+    [today, industryId]
   );
   return rows[0];
 }
 
-async function createAttendanceRecord({ employee_name, employee_id, attendance_date, clock_in, clock_out, status, department, note, shift_name }, userId, userName) {
+async function createAttendanceRecord(industryId, { employee_name, employee_id, attendance_date, clock_in, clock_out, status, department, note, shift_name }, userId, userName) {
   if (!employee_name || !attendance_date || !status) throw new Error('Employee, date and status are required');
 
   const existing = await pool.query(
-    `SELECT id FROM hrm_attendance WHERE employee_name = $1 AND attendance_date = $2`,
-    [employee_name, attendance_date]
+    `SELECT id FROM hrm_attendance WHERE employee_name = $1 AND attendance_date = $2 AND industry_id = $3`,
+    [employee_name, attendance_date, industryId]
   );
 
   let rec;
@@ -673,18 +887,18 @@ async function createAttendanceRecord({ employee_name, employee_id, attendance_d
     const { rows } = await pool.query(
       `UPDATE hrm_attendance
          SET clock_in=$1, clock_out=$2, status=$3, department=$4, note=$5, shift_name=$6, updated_at=NOW()
-       WHERE id=$7
+       WHERE id=$7 AND industry_id=$8
        RETURNING *`,
-      [clock_in || null, clock_out || null, status, department || null, note || '', shift_name || null, existing.rows[0].id]
+      [clock_in || null, clock_out || null, status, department || null, note || '', shift_name || null, existing.rows[0].id, industryId]
     );
     rec = rows[0];
     logAudit({ userId, userName, module: 'HRM Attendance', action: 'UPDATE', recordId: rec.id, recordLabel: rec.employee_name, oldData: null, newData: rec }).catch(() => {});
   } else {
     const { rows } = await pool.query(
-      `INSERT INTO hrm_attendance (employee_name, employee_id, attendance_date, clock_in, clock_out, status, department, note, shift_name)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      `INSERT INTO hrm_attendance (industry_id, employee_name, employee_id, attendance_date, clock_in, clock_out, status, department, note, shift_name)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        RETURNING *`,
-      [employee_name, employee_id || null, attendance_date, clock_in || null, clock_out || null, status, department || null, note || '', shift_name || null]
+      [industryId, employee_name, employee_id || null, attendance_date, clock_in || null, clock_out || null, status, department || null, note || '', shift_name || null]
     );
     rec = rows[0];
     logAudit({ userId, userName, module: 'HRM Attendance', action: 'CREATE', recordId: rec.id, recordLabel: rec.employee_name, oldData: null, newData: rec }).catch(() => {});
@@ -692,57 +906,58 @@ async function createAttendanceRecord({ employee_name, employee_id, attendance_d
 
   return rec;
 }
-async function updateAttendanceRecord(id, data, userId, userName) {
+async function updateAttendanceRecord(industryId, id, data, userId, userName) {
   const { employee_name, attendance_date, clock_in, clock_out, status, department, shift_name } = data;
-  const existing = await pool.query(`SELECT * FROM hrm_attendance WHERE id=$1`, [id]);
+  const existing = await pool.query(`SELECT * FROM hrm_attendance WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Attendance record not found');
   const oldData = existing.rows[0];
 
   const { rows } = await pool.query(
     `UPDATE hrm_attendance SET employee_name=$1, attendance_date=$2, clock_in=$3, clock_out=$4, status=$5, department=$6, shift_name=$7, updated_at=NOW()
-     WHERE id=$8 RETURNING *`,
-    [employee_name, attendance_date, clock_in || null, clock_out || null, status, department || null, shift_name || null, id]
+     WHERE id=$8 AND industry_id=$9 RETURNING *`,
+    [employee_name, attendance_date, clock_in || null, clock_out || null, status, department || null, shift_name || null, id, industryId]
   );
   if (!rows.length) throw new Error('Attendance record not found');
   const rec = rows[0];
   logAudit({ userId, userName, module: 'HRM Attendance', action: 'UPDATE', recordId: id, recordLabel: rec.employee_name, oldData, newData: rec }).catch(() => {});
   return rec;
 }
-
-async function deleteAttendanceRecord(id, userId, userName) {
-  const existing = await pool.query(`SELECT * FROM hrm_attendance WHERE id=$1`, [id]);
+async function deleteAttendanceRecord(industryId, id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_attendance WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Attendance record not found');
   const oldData = existing.rows[0];
-  await pool.query(`DELETE FROM hrm_attendance WHERE id=$1`, [id]);
+  await pool.query(`DELETE FROM hrm_attendance WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   logAudit({ userId, userName, module: 'HRM Attendance', action: 'DELETE', recordId: id, recordLabel: oldData.employee_name, oldData, newData: null }).catch(() => {});
 }
 
 // ── PAYROLL ──────────────────────────────────────────────────
 
-async function fetchPayrolls({ status = '', employee = '', month_year = '' } = {}) {
-  const conditions = [];
-  const values = [];
-  let idx = 1;
+// NEW
+async function fetchPayrolls(industryId, { status = '', employee = '', month_year = '' } = {}) {
+  await ensureHrmSchema();
+  const conditions = [`industry_id = $1`];
+  const values = [industryId];
+  let idx = 2;
 
   if (status)     { conditions.push(`status = $${idx++}`);            values.push(status); }
   if (employee)   { conditions.push(`employee_name ILIKE $${idx++}`); values.push(`%${employee}%`); }
   if (month_year) { conditions.push(`month_year = $${idx++}`);        values.push(month_year); }
 
-  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const where = `WHERE ${conditions.join(' AND ')}`;
   const { rows } = await pool.query(
     `SELECT * FROM hrm_payroll ${where} ORDER BY id DESC`, values
   );
   return rows;
 }
-
-async function createPayroll({ employee_name, employee_id, department, designation, month_year, net_salary }, createdBy, userName) {
+// NEW
+async function createPayroll(industryId, { employee_name, employee_id, department, designation, month_year, net_salary }, createdBy, userName) {
   if (!employee_name || !month_year) throw new Error('Employee and month/year are required');
   const ref = await nextPayrollRef();
   const { rows } = await pool.query(
     `INSERT INTO hrm_payroll
-       (reference_no, employee_name, employee_id, department, designation, month_year, net_salary, status, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,'Pending',$8) RETURNING *`,
-    [ref, employee_name, employee_id || null, department || '—', designation || '—', month_year, net_salary || 0, createdBy || null]
+       (reference_no, employee_name, employee_id, department, designation, month_year, net_salary, status, created_by, industry_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'Pending',$8,$9) RETURNING *`,
+    [ref, employee_name, employee_id || null, department || '—', designation || '—', month_year, net_salary || 0, createdBy || null, industryId]
   );
   const payroll = rows[0];
   logAudit({ userId: createdBy, userName, module: 'HRM Payroll', action: 'CREATE', recordId: payroll.id, recordLabel: payroll.reference_no, oldData: null, newData: payroll }).catch(() => {});
@@ -780,9 +995,10 @@ async function fetchEligibleEmployeesForRun(monthYear) {
 async function computeEmployeePayroll(employeeId, source = 'user', monthYear = null) {
   await ensureHrmSchema();
   const table = source === 'employee' ? 'hrm_employees' : 'users';
-  const empRes = await pool.query(
+ const empRes = await pool.query(
   `SELECT t.id, t.full_name, ${source === 'employee' ? 'NULL' : 't.email'} AS email, t.department, t.designation,
-          t.basic_salary, t.payroll_group_id, pg.name AS payroll_group_name
+          t.basic_salary, t.payroll_group_id, pg.name AS payroll_group_name,
+          ${source === 'employee' ? 't.overtime_rate' : 'NULL'} AS overtime_rate
    FROM ${table} t
    LEFT JOIN hrm_payroll_groups pg ON pg.id = t.payroll_group_id
    WHERE t.id = $1`,
@@ -871,7 +1087,7 @@ let grossEarnings = 0;
     // by Leave Type config (is_paid = FALSE). Paid leave types (Casual,
     // Sick, Earned, etc. by default) never trigger this. Additive only:
     // does not change the Absent-day block above.
-    const unpaidLeaveDays = await countUnpaidLeaveDays(employeeId, source, monthYear);
+const unpaidLeaveDays = await countUnpaidLeaveDays(employeeId, source, monthYear);
     if (unpaidLeaveDays > 0) {
       const perDayRate = await getPerDayRate(grossEarnings);
       const lopDeduction = Math.round(perDayRate * unpaidLeaveDays * 100) / 100;
@@ -882,6 +1098,63 @@ let grossEarnings = 0;
  component_type: 'Deduction',
         amount: lopDeduction,
       });
+    }
+
+    // NEW (Phase 5) — Half-Day deduction: configurable % of a day's pay
+    // per Half Day attendance row this month.
+    const halfDays = await countHalfDays(employeeId, source, monthYear);
+    if (halfDays > 0) {
+      const perDayRate = await getPerDayRate(grossEarnings);
+      const pctRes = await pool.query(`SELECT half_day_deduction_percent FROM hrm_settings WHERE id = 1`);
+      const pct = Number(pctRes.rows[0]?.half_day_deduction_percent) || 50;
+      const halfDayDeduction = Math.round(perDayRate * (pct / 100) * halfDays * 100) / 100;
+      totalDeductions += halfDayDeduction;
+      items.push({
+        component_id: null,
+        component_name: `Half Day Deduction (${halfDays} day${halfDays > 1 ? 's' : ''})`,
+        component_type: 'Deduction',
+        amount: halfDayDeduction,
+      });
+    }
+
+    // NEW (Phase 5) — Late-arrival policy deduction: a flat amount per
+    // Late day beyond the configured free-pass count for the month.
+    const penalisableLateDays = await countPenalisableLateDays(employeeId, source, monthYear);
+    if (penalisableLateDays > 0) {
+      const policyRes = await pool.query(`SELECT late_penalty_per_day FROM hrm_settings WHERE id = 1`);
+      const perLate = Number(policyRes.rows[0]?.late_penalty_per_day) || 0;
+      if (perLate > 0) {
+        const lateDeduction = Math.round(perLate * penalisableLateDays * 100) / 100;
+        totalDeductions += lateDeduction;
+        items.push({
+          component_id: null,
+          component_name: `Late Arrival Deduction (${penalisableLateDays} day${penalisableLateDays > 1 ? 's' : ''})`,
+          component_type: 'Deduction',
+          amount: lateDeduction,
+        });
+      }
+    }
+
+    // NEW (Phase 5) — Overtime pay: uses the employee's own overtime_rate
+    // (₹/hour, Phase 1 field) if set, otherwise a computed per-hour rate
+    // × the settings overtime multiplier.
+    const overtimeHours = await sumOvertimeHours(employeeId, source, monthYear);
+    if (overtimeHours > 0) {
+      const otSettingsRes = await pool.query(`SELECT work_hours_per_day, overtime_rate_multiplier FROM hrm_settings WHERE id = 1`);
+      const standardHours = Number(otSettingsRes.rows[0]?.work_hours_per_day) || 8;
+      const multiplier = Number(otSettingsRes.rows[0]?.overtime_rate_multiplier) || 1;
+      const perDayRate = await getPerDayRate(grossEarnings);
+      const perHourRate = Number(emp.overtime_rate) > 0 ? Number(emp.overtime_rate) : (perDayRate / standardHours) * multiplier;
+      const overtimePay = Math.round(perHourRate * overtimeHours * 100) / 100;
+      if (overtimePay > 0) {
+        grossEarnings += overtimePay;
+        items.push({
+          component_id: null,
+          component_name: `Overtime Pay (${overtimeHours.toFixed(1)} hrs)`,
+          component_type: 'Earning',
+          amount: overtimePay,
+        });
+      }
     }
 // Sales commission — calculated per the target's own type (Sales
     // Amount % vs Orders/Customers fixed incentive). See
@@ -966,7 +1239,7 @@ const { rows } = await pool.query(
   return { amount: commissionAmt, label: `Sales Commission (${target.month_year})` };
 }
 
-async function runPayrollForEmployee(employeeId, monthYear, createdBy, userName, source = 'user') {
+async function runPayrollForEmployee(industryId, employeeId, monthYear, createdBy, userName, source = 'user') {
   const calc = await computeEmployeePayroll(employeeId, source, monthYear);
   const ref = await nextPayrollRef();
 
@@ -976,13 +1249,13 @@ async function runPayrollForEmployee(employeeId, monthYear, createdBy, userName,
     const payrollRes = await client.query(
       `INSERT INTO hrm_payroll
          (reference_no, employee_name, employee_id, employee_source, department, designation, month_year,
-          net_salary, gross_salary, total_deductions, status, payroll_group_id, created_by)
-       VALUES ($1,$2,$3::text,$4,$5,$6,$7,$8,$9,$10,'Pending',$11,$12) RETURNING *`,
+          net_salary, gross_salary, total_deductions, status, payroll_group_id, created_by, industry_id)
+       VALUES ($1,$2,$3::text,$4,$5,$6,$7,$8,$9,$10,'Pending',$11,$12,$13) RETURNING *`,
       [
         ref, calc.employee.full_name, String(employeeId), source,
         calc.employee.department || '—', calc.employee.designation || '—',
         monthYear, calc.netSalary, calc.grossEarnings, calc.totalDeductions,
-        calc.employee.payroll_group_id, createdBy || null,
+        calc.employee.payroll_group_id, createdBy || null, industryId,
       ]
     );
     const payrollId = payrollRes.rows[0].id;
@@ -1005,7 +1278,8 @@ async function runPayrollForEmployee(employeeId, monthYear, createdBy, userName,
     client.release();
   }
 }
-async function runPayrollBulk(employeeEntries, monthYear, createdBy, userName) {
+// NEW
+async function runPayrollBulk(industryId, employeeEntries, monthYear, createdBy, userName) {
   // employeeEntries: array of ids (legacy, source defaults to 'user')
   //                 OR array of { id, source } objects (new: mixed users + employees)
   const results = [];
@@ -1014,7 +1288,7 @@ async function runPayrollBulk(employeeEntries, monthYear, createdBy, userName) {
     const id     = typeof entry === 'object' ? entry.id : entry;
     const source = typeof entry === 'object' ? (entry.source || 'user') : 'user';
     try {
-      const rec = await runPayrollForEmployee(id, monthYear, createdBy, userName, source);
+      const rec = await runPayrollForEmployee(industryId, id, monthYear, createdBy, userName, source);
       results.push(rec);
     } catch (e) {
       errors.push({ employee_id: id, error: e.message });
@@ -1022,7 +1296,10 @@ async function runPayrollBulk(employeeEntries, monthYear, createdBy, userName) {
   }
   return { created: results, errors };
 }
-async function fetchPayrollItems(payrollId) {
+// NEW
+async function fetchPayrollItems(industryId, payrollId) {
+  const owner = await pool.query(`SELECT id FROM hrm_payroll WHERE id = $1 AND industry_id = $2`, [payrollId, industryId]);
+  if (!owner.rows.length) throw new Error('Payroll not found');
   const { rows } = await pool.query(
     `SELECT id, component_id, component_name, component_type, amount
      FROM hrm_payroll_items WHERE payroll_id = $1 ORDER BY id`,
@@ -1030,10 +1307,11 @@ async function fetchPayrollItems(payrollId) {
   );
   return rows;
 }
-async function updatePayroll(id, data, userId, userName) {
+// NEW
+async function updatePayroll(industryId, id, data, userId, userName) {
   const { employee_name, department, designation, month_year, net_salary, status } = data;
 
-  const before = await pool.query(`SELECT * FROM hrm_payroll WHERE id = $1`, [id]);
+  const before = await pool.query(`SELECT * FROM hrm_payroll WHERE id = $1 AND industry_id = $2`, [id, industryId]);
   if (!before.rows.length) throw new Error('Payroll not found');
   const oldData = before.rows[0];
   const prevStatus = oldData.status;
@@ -1041,8 +1319,8 @@ async function updatePayroll(id, data, userId, userName) {
   const { rows } = await pool.query(
     `UPDATE hrm_payroll
      SET employee_name=$1, department=$2, designation=$3, month_year=$4, net_salary=$5, status=$6, updated_at=NOW()
-     WHERE id=$7 RETURNING *`,
-    [employee_name, department, designation, month_year, net_salary, status, id]
+     WHERE id=$7 AND industry_id=$8 RETURNING *`,
+    [employee_name, department, designation, month_year, net_salary, status, id, industryId]
   );
   if (!rows.length) throw new Error('Payroll not found');
   const payroll = rows[0];
@@ -1060,97 +1338,106 @@ async function updatePayroll(id, data, userId, userName) {
       amount: payroll.net_salary,
       paymentMethod: 'Bank Transfer',
       description: `Salary payment — ${payroll.employee_name} (${payroll.month_year})`,
-      txnDate: new Date(),
+txnDate: new Date(),
     }).catch(() => {});
+
+    if (payroll.employee_id) {
+      notificationService.notifyUser({
+        recipientId: payroll.employee_id, recipientSource: payroll.employee_source || 'user',
+        module: 'Payroll', eventType: 'salary_generated', recordId: payroll.id,
+        title: 'Your salary has been generated',
+        message: `${payroll.month_year}: ₹${Number(payroll.net_salary).toLocaleString('en-IN')} — payslip is now available.`,
+      }).catch(() => {});
+    }
   }
 
   return payroll;
 }
 
-async function deletePayroll(id, userId, userName) {
-  const existing = await pool.query(`SELECT * FROM hrm_payroll WHERE id=$1`, [id]);
+async function deletePayroll(industryId, id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_payroll WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Payroll not found');
   const oldData = existing.rows[0];
-  await pool.query(`DELETE FROM hrm_payroll WHERE id=$1`, [id]);
+  await pool.query(`DELETE FROM hrm_payroll WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   logAudit({ userId, userName, module: 'HRM Payroll', action: 'DELETE', recordId: id, recordLabel: oldData.reference_no, oldData, newData: null }).catch(() => {});
 }
 
 // ── PAY COMPONENTS ───────────────────────────────────────────
-async function fetchPayComponents() {
+async function fetchPayComponents(industryId) {
   const { rows } = await pool.query(
-    `SELECT id, description, component_type, amount, calc_method, status, applicable_from FROM hrm_pay_components ORDER BY id`
+    `SELECT id, description, component_type, amount, calc_method, status, applicable_from FROM hrm_pay_components WHERE industry_id = $1 ORDER BY id`,
+    [industryId]
   );
   return rows;
 }
 
-async function createPayComponent({ description, component_type, amount, calc_method, status, applicable_from }, userId, userName) {
+async function createPayComponent(industryId, { description, component_type, amount, calc_method, status, applicable_from }, userId, userName) {
   if (!description) throw new Error('Description is required');
   const { rows } = await pool.query(
-    `INSERT INTO hrm_pay_components (description, component_type, amount, calc_method, status, applicable_from)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [description, component_type || 'Earning', amount || 0, calc_method || 'Fixed', status || 'Active', applicable_from || null]
+    `INSERT INTO hrm_pay_components (industry_id, description, component_type, amount, calc_method, status, applicable_from)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [industryId, description, component_type || 'Earning', amount || 0, calc_method || 'Fixed', status || 'Active', applicable_from || null]
   );
   const comp = rows[0];
   logAudit({ userId, userName, module: 'HRM Pay Components', action: 'CREATE', recordId: comp.id, recordLabel: comp.description, oldData: null, newData: comp }).catch(() => {});
   return comp;
 }
-
-async function updatePayComponent(id, data, userId, userName) {
+async function updatePayComponent(industryId, id, data, userId, userName) {
   const { description, component_type, amount, calc_method, status, applicable_from } = data;
-  const existing = await pool.query(`SELECT * FROM hrm_pay_components WHERE id=$1`, [id]);
+  const existing = await pool.query(`SELECT * FROM hrm_pay_components WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Pay component not found');
   const oldData = existing.rows[0];
 
   const { rows } = await pool.query(
     `UPDATE hrm_pay_components SET description=$1, component_type=$2, amount=$3, calc_method=$4, status=$5, applicable_from=$6, updated_at=NOW()
-     WHERE id=$7 RETURNING *`,
-    [description, component_type, amount, calc_method, status, applicable_from, id]
+     WHERE id=$7 AND industry_id=$8 RETURNING *`,
+    [description, component_type, amount, calc_method, status, applicable_from, id, industryId]
   );
   if (!rows.length) throw new Error('Pay component not found');
   const comp = rows[0];
   logAudit({ userId, userName, module: 'HRM Pay Components', action: 'UPDATE', recordId: id, recordLabel: comp.description, oldData, newData: comp }).catch(() => {});
   return comp;
-}
+} 
 
-async function deletePayComponent(id, userId, userName) {
-  const existing = await pool.query(`SELECT * FROM hrm_pay_components WHERE id=$1`, [id]);
+async function deletePayComponent(industryId, id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_pay_components WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Pay component not found');
   const oldData = existing.rows[0];
-  await pool.query(`DELETE FROM hrm_pay_components WHERE id=$1`, [id]);
+  await pool.query(`DELETE FROM hrm_pay_components WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   logAudit({ userId, userName, module: 'HRM Pay Components', action: 'DELETE', recordId: id, recordLabel: oldData.description, oldData, newData: null }).catch(() => {});
 }
 
 // ── PAYROLL GROUPS ───────────────────────────────────────────
 
-async function fetchPayrollGroups() {
+async function fetchPayrollGroups(industryId) {
   const { rows } = await pool.query(
-    `SELECT id, name, pay_schedule, employee_count, description, created_at FROM hrm_payroll_groups ORDER BY id`
+    `SELECT id, name, pay_schedule, employee_count, description, created_at FROM hrm_payroll_groups WHERE industry_id = $1 ORDER BY id`,
+    [industryId]
   );
   return rows;
 }
 
-async function createPayrollGroup({ name, pay_schedule, employee_count, description }, userId, userName) {
+async function createPayrollGroup(industryId, { name, pay_schedule, employee_count, description }, userId, userName) {
   if (!name) throw new Error('Group name is required');
   const { rows } = await pool.query(
-    `INSERT INTO hrm_payroll_groups (name, pay_schedule, employee_count, description)
-     VALUES ($1,$2,$3,$4) RETURNING *`,
-    [name, pay_schedule || 'Monthly', employee_count || 0, description || '']
+    `INSERT INTO hrm_payroll_groups (industry_id, name, pay_schedule, employee_count, description)
+     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+    [industryId, name, pay_schedule || 'Monthly', employee_count || 0, description || '']
   );
   const group = rows[0];
   logAudit({ userId, userName, module: 'HRM Payroll Groups', action: 'CREATE', recordId: group.id, recordLabel: group.name, oldData: null, newData: group }).catch(() => {});
   return group;
-}
-
-async function updatePayrollGroup(id, data, userId, userName) {
+} 
+async function updatePayrollGroup(industryId, id, data, userId, userName) {
   const { name, pay_schedule, employee_count, description } = data;
-  const existing = await pool.query(`SELECT * FROM hrm_payroll_groups WHERE id=$1`, [id]);
+  const existing = await pool.query(`SELECT * FROM hrm_payroll_groups WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Payroll group not found');
   const oldData = existing.rows[0];
 
   const { rows } = await pool.query(
     `UPDATE hrm_payroll_groups SET name=$1, pay_schedule=$2, employee_count=$3, description=$4, updated_at=NOW()
-     WHERE id=$5 RETURNING *`,
-    [name, pay_schedule, employee_count, description, id]
+     WHERE id=$5 AND industry_id=$6 RETURNING *`,
+    [name, pay_schedule, employee_count, description, id, industryId]
   );
   if (!rows.length) throw new Error('Payroll group not found');
   const group = rows[0];
@@ -1158,42 +1445,86 @@ async function updatePayrollGroup(id, data, userId, userName) {
   return group;
 }
 
-async function deletePayrollGroup(id, userId, userName) {
-  const existing = await pool.query(`SELECT * FROM hrm_payroll_groups WHERE id=$1`, [id]);
+async function deletePayrollGroup(industryId, id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_payroll_groups WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Payroll group not found');
   const oldData = existing.rows[0];
-  await pool.query(`DELETE FROM hrm_payroll_groups WHERE id=$1`, [id]);
+  await pool.query(`DELETE FROM hrm_payroll_groups WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   logAudit({ userId, userName, module: 'HRM Payroll Groups', action: 'DELETE', recordId: id, recordLabel: oldData.name, oldData, newData: null }).catch(() => {});
 }
 // ── EMPLOYEES (non-login staff for Payroll/Attendance/Leave) ──
 
-// NEW
-async function fetchEmployees() {
-  await ensureHrmSchema();
+// NEW — Employee Master (Phase 1) extra fields, kept as one list so
+// createEmployee/updateEmployee/fetchEmployees always stay in sync.
+const EMPLOYEE_MASTER_FIELDS = [
+  'first_name','last_name','gender','date_of_birth','blood_group','marital_status','nationality',
+  'aadhaar_number','pan_number','passport_number','driving_license','personal_email','alternate_mobile',
+  'emergency_contact_name','emergency_contact_relationship','emergency_contact_number',
+  'current_address','permanent_address','country','state','district','city','pincode',
+  'joining_date','confirmation_date','probation_period_months','employment_type','reporting_manager_id',
+  'branch','office_location','shift_id','notice_period_days','resignation_date','exit_date','reason_for_leaving',
+  'salary_structure','pf_number','esi_number','uan_number','professional_tax','bank_name',
+  'bank_account_number','bank_ifsc','salary_payment_mode','ctc','overtime_rate',
+];
+
+// NEW — next EMP-0001 style code, based on the highest existing numeric suffix.
+async function generateEmployeeCode() {
   const { rows } = await pool.query(
-    `SELECT id::text AS id, full_name, department, designation, basic_salary, salary_period,
+    `SELECT employee_code FROM hrm_employees
+     WHERE employee_code ~ '^EMP-[0-9]+$'
+     ORDER BY (regexp_replace(employee_code,'\\D','','g'))::int DESC LIMIT 1`
+  );
+  let next = 1;
+  if (rows.length && rows[0].employee_code) {
+    const m = rows[0].employee_code.match(/(\d+)$/);
+    if (m) next = parseInt(m[1], 10) + 1;
+  }
+  return `EMP-${String(next).padStart(4, '0')}`;
+}
+
+// NEW
+async function fetchEmployees(industryId) {
+  await ensureHrmSchema();
+  const masterCols = EMPLOYEE_MASTER_FIELDS.join(', ');
+  const nullCols = EMPLOYEE_MASTER_FIELDS.map(() => 'NULL').join(', ');
+  const { rows } = await pool.query(
+    `SELECT id::text AS id, employee_code, full_name, department, designation, basic_salary, salary_period,
             phone, status, payroll_group_id, created_at, 'employee' AS source,
-            linked_user_id::text AS linked_user_id
+            linked_user_id::text AS linked_user_id, ${masterCols}
      FROM hrm_employees
-     WHERE linked_user_id IS NULL
+     WHERE linked_user_id IS NULL AND industry_id = $1
      UNION ALL
-     SELECT id::text AS id, full_name, department, designation, basic_salary, salary_period,
+     SELECT id::text AS id, NULL AS employee_code, full_name, department, designation, basic_salary, salary_period,
             phone, status, payroll_group_id, created_at, 'user' AS source,
-            NULL AS linked_user_id
+            NULL AS linked_user_id, ${nullCols}
      FROM users
-     ORDER BY source, created_at`
+     WHERE industry_id = $1
+     ORDER BY source, created_at`,
+    [industryId]
   );
   return rows;
 }
-async function createEmployee({ full_name, department, designation, basic_salary, salary_period, phone, status }, userId, userName) {
+async function createEmployee(industryId, data, userId, userName) {
+  await ensureHrmSchema();
+  const { full_name, department, designation, basic_salary, salary_period, phone, status } = data;
   if (!full_name) throw new Error('Full name is required');
-  const { rows } = await pool.query(
-    `INSERT INTO hrm_employees (full_name, department, designation, basic_salary, salary_period, phone, status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [full_name, department || null, designation || null, basic_salary || 0, salary_period || 'Per Month', phone || null, status || 'active']
+
+  const employee_code = data.employee_code || await generateEmployeeCode();
+  const cols = ['industry_id','employee_code','full_name','department','designation','basic_salary','salary_period','phone','status', ...EMPLOYEE_MASTER_FIELDS];
+  const vals = [
+    industryId, employee_code, full_name, department || null, designation || null,
+    basic_salary || 0, salary_period || 'Per Month', phone || null, status || 'active',
+    ...EMPLOYEE_MASTER_FIELDS.map(f => (data[f] === undefined || data[f] === '') ? null : data[f]),
+  ];
+  const placeholders = cols.map((_, i) => `$${i + 1}`).join(',');
+
+const { rows } = await pool.query(
+    `INSERT INTO hrm_employees (${cols.join(',')}) VALUES (${placeholders}) RETURNING *`,
+    vals
   );
   const emp = rows[0];
   logAudit({ userId, userName, module: 'HRM Employees', action: 'CREATE', recordId: emp.id, recordLabel: emp.full_name, oldData: null, newData: emp }).catch(() => {});
+  logTimeline({ industryId, employeeId: emp.id, employeeName: emp.full_name, eventType: 'joined', title: 'Joined the company', description: emp.designation ? `as ${emp.designation}` : null, createdBy: userName });
   return emp;
 }
 // ── ENABLE LOGIN FOR AN EXISTING EMPLOYEE ───────────────────
@@ -1201,9 +1532,9 @@ async function createEmployee({ full_name, department, designation, basic_salary
 // never asks HR to re-type name/department/designation — and links
 // both records together. Refuses if the Employee already has a login.
 // NEW
-async function enableEmployeeLogin(employeeId, { email, password }, userId, userName) {
+async function enableEmployeeLogin(industryId, employeeId, { email, password }, userId, userName) {
   await ensureHrmSchema();
-  const empRes = await pool.query(`SELECT * FROM hrm_employees WHERE id=$1`, [employeeId]);
+  const empRes = await pool.query(`SELECT * FROM hrm_employees WHERE id=$1 AND industry_id=$2`, [employeeId, industryId]);
   if (!empRes.rows.length) throw new Error('Employee not found');
   const emp = empRes.rows[0];
 
@@ -1221,11 +1552,11 @@ async function enableEmployeeLogin(employeeId, { email, password }, userId, user
     await client.query('BEGIN');
     const userRes = await client.query(
       `INSERT INTO users (email, password_hash, full_name, phone, role, department, designation,
-                           basic_salary, salary_period, status, linked_employee_id)
-       VALUES ($1,$2,$3,$4,'employee',$5,$6,$7,$8,'active',$9)
+                           basic_salary, salary_period, status, linked_employee_id, industry_id)
+       VALUES ($1,$2,$3,$4,'employee',$5,$6,$7,$8,'active',$9,$10)
        RETURNING id, email, full_name, department, designation`,
       [email, hashedPassword, emp.full_name, emp.phone, emp.department, emp.designation,
-       emp.basic_salary, emp.salary_period, employeeId]
+       emp.basic_salary, emp.salary_period, employeeId, industryId]
     );
     const newUser = userRes.rows[0];
 
@@ -1258,51 +1589,75 @@ async function enableEmployeeLogin(employeeId, { email, password }, userId, user
   }
 }
 
-async function updateEmployee(id, data, userId, userName) {
-  const { full_name, department, designation, basic_salary, salary_period, phone, status } = data;
-  const existing = await pool.query(`SELECT * FROM hrm_employees WHERE id=$1`, [id]);
+async function updateEmployee(industryId, id, data, userId, userName) {
+  await ensureHrmSchema();
+  const existing = await pool.query(`SELECT * FROM hrm_employees WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Employee not found');
   const oldData = existing.rows[0];
 
+  const { full_name, department, designation, basic_salary, salary_period, phone, status } = data;
+  const cols = ['full_name','department','designation','basic_salary','salary_period','phone','status', ...EMPLOYEE_MASTER_FIELDS];
+  const vals = [
+    full_name, department, designation, basic_salary, salary_period, phone, status,
+    ...EMPLOYEE_MASTER_FIELDS.map(f => (data[f] === undefined || data[f] === '') ? null : data[f]),
+  ];
+  const setClause = cols.map((c, i) => `${c}=$${i + 1}`).join(', ');
+
   const { rows } = await pool.query(
-    `UPDATE hrm_employees SET full_name=$1, department=$2, designation=$3, basic_salary=$4, salary_period=$5, phone=$6, status=$7, updated_at=NOW()
-     WHERE id=$8 RETURNING *`,
-    [full_name, department, designation, basic_salary, salary_period, phone, status, id]
+    `UPDATE hrm_employees SET ${setClause}, updated_at=NOW() WHERE id=$${cols.length + 1} AND industry_id=$${cols.length + 2} RETURNING *`,
+    [...vals, id, industryId]
   );
-  if (!rows.length) throw new Error('Employee not found');
+if (!rows.length) throw new Error('Employee not found');
   const emp = rows[0];
   logAudit({ userId, userName, module: 'HRM Employees', action: 'UPDATE', recordId: id, recordLabel: emp.full_name, oldData, newData: emp }).catch(() => {});
+
+  // NEW — Phase 3: turn specific field changes into readable timeline events.
+  if (oldData.department !== emp.department) {
+    logTimeline({ industryId, employeeId: emp.id, employeeName: emp.full_name, eventType: 'department_change', title: 'Department changed', description: `${oldData.department || '—'} → ${emp.department || '—'}`, createdBy: userName });
+  }
+  if (oldData.designation !== emp.designation) {
+    logTimeline({ industryId, employeeId: emp.id, employeeName: emp.full_name, eventType: 'promotion', title: 'Designation changed', description: `${oldData.designation || '—'} → ${emp.designation || '—'}`, createdBy: userName });
+  }
+  if (Number(oldData.basic_salary) !== Number(emp.basic_salary)) {
+    logTimeline({ industryId, employeeId: emp.id, employeeName: emp.full_name, eventType: 'salary_change', title: 'Salary updated', description: `₹${oldData.basic_salary || 0} → ₹${emp.basic_salary || 0}`, createdBy: userName });
+  }
+  if (oldData.status !== emp.status && emp.status === 'inactive') {
+    logTimeline({ industryId, employeeId: emp.id, employeeName: emp.full_name, eventType: 'exit', title: 'Marked inactive / exited', description: emp.reason_for_leaving || null, createdBy: userName });
+  }
   return emp;
 }
 
-async function deleteEmployee(id, userId, userName) {
-  const existing = await pool.query(`SELECT * FROM hrm_employees WHERE id=$1`, [id]);
+async function deleteEmployee(industryId, id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_employees WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Employee not found');
   const oldData = existing.rows[0];
-  await pool.query(`DELETE FROM hrm_employees WHERE id=$1`, [id]);
+  await pool.query(`DELETE FROM hrm_employees WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   logAudit({ userId, userName, module: 'HRM Employees', action: 'DELETE', recordId: id, recordLabel: oldData.full_name, oldData, newData: null }).catch(() => {});
 }
-async function fetchEmployeesWithGroups() {
+async function fetchEmployeesWithGroups(industryId) {
   await ensureHrmSchema();
   const { rows } = await pool.query(
     `SELECT u.id::text AS id, u.full_name, u.email, u.payroll_group_id, pg.name AS payroll_group_name, 'user' AS source
      FROM users u
      LEFT JOIN hrm_payroll_groups pg ON pg.id = u.payroll_group_id
+     WHERE u.industry_id = $1
      UNION ALL
      SELECT e.id::text AS id, e.full_name, NULL AS email, e.payroll_group_id, pg.name AS payroll_group_name, 'employee' AS source
      FROM hrm_employees e
      LEFT JOIN hrm_payroll_groups pg ON pg.id = e.payroll_group_id
-     ORDER BY full_name`
+     WHERE e.industry_id = $1
+     ORDER BY full_name`,
+    [industryId]
   );
   return rows;
 }
 
-async function assignPayrollGroup(entityId, payrollGroupId, source = 'user') {
+async function assignPayrollGroup(industryId, entityId, payrollGroupId, source = 'user') {
   await ensureHrmSchema();
   const table = source === 'employee' ? 'hrm_employees' : 'users';
   const { rows } = await pool.query(
-    `UPDATE ${table} SET payroll_group_id=$1 WHERE id=$2 RETURNING id, full_name, payroll_group_id`,
-    [payrollGroupId || null, entityId]
+    `UPDATE ${table} SET payroll_group_id=$1 WHERE id=$2 AND industry_id=$3 RETURNING id, full_name, payroll_group_id`,
+    [payrollGroupId || null, entityId, industryId]
   );
   if (!rows.length) throw new Error('Employee not found');
 
@@ -1354,22 +1709,23 @@ async function setGroupComponents(groupId, componentIds) {
 // ── HOLIDAYS ─────────────────────────────────────────────────
 
 // NEW CODE
-async function fetchHolidays() {
+async function fetchHolidays(industryId) {
   const { rows } = await pool.query(
     `SELECT id, name, start_date, end_date, duration, location, note, holiday_type, active
-     FROM hrm_holidays ORDER BY start_date`
+     FROM hrm_holidays WHERE industry_id = $1 ORDER BY start_date`,
+    [industryId]
   );
   return rows;
 }
-async function createHoliday({ name, start_date, end_date, location, note, holiday_type }, userId, userName) {
+async function createHoliday(industryId, { name, start_date, end_date, location, note, holiday_type }, userId, userName) {
   if (!name || !start_date || !end_date) throw new Error('Name and dates are required');
   const s = new Date(start_date), e = new Date(end_date);
   const days = Math.max(1, Math.round((e - s) / 86400000) + 1);
   const duration = `${days} day${days > 1 ? 's' : ''}`;
   const { rows } = await pool.query(
-    `INSERT INTO hrm_holidays (name, start_date, end_date, duration, location, note, holiday_type)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [name, start_date, end_date, duration, location || 'All Locations', note || '', holiday_type || 'Company Holiday']
+    `INSERT INTO hrm_holidays (industry_id, name, start_date, end_date, duration, location, note, holiday_type)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    [industryId, name, start_date, end_date, duration, location || 'All Locations', note || '', holiday_type || 'Company Holiday']
   );
   const holiday = rows[0];
   logAudit({ userId, userName, module: 'HRM Holidays', action: 'CREATE', recordId: holiday.id, recordLabel: holiday.name, oldData: null, newData: holiday }).catch(() => {});
@@ -1383,9 +1739,9 @@ async function createHoliday({ name, start_date, end_date, location, note, holid
   return holiday;
 }
 
-async function updateHoliday(id, data, userId, userName) {
+async function updateHoliday(industryId, id, data, userId, userName) {
   const { name, start_date, end_date, location, note, holiday_type } = data;
-  const existing = await pool.query(`SELECT * FROM hrm_holidays WHERE id=$1`, [id]);
+  const existing = await pool.query(`SELECT * FROM hrm_holidays WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Holiday not found');
   const oldData = existing.rows[0];
 
@@ -1393,8 +1749,8 @@ async function updateHoliday(id, data, userId, userName) {
   const days = Math.max(1, Math.round((e - s) / 86400000) + 1);
   const { rows } = await pool.query(
     `UPDATE hrm_holidays SET name=$1, start_date=$2, end_date=$3, duration=$4, location=$5, note=$6, holiday_type=COALESCE($7, holiday_type), updated_at=NOW()
-     WHERE id=$8 RETURNING *`,
-    [name, start_date, end_date, `${days} day${days > 1 ? 's' : ''}`, location, note, holiday_type || null, id]
+     WHERE id=$8 AND industry_id=$9 RETURNING *`,
+    [name, start_date, end_date, `${days} day${days > 1 ? 's' : ''}`, location, note, holiday_type || null, id, industryId]
   );
   if (!rows.length) throw new Error('Holiday not found');
   const holiday = rows[0];
@@ -1408,12 +1764,11 @@ async function updateHoliday(id, data, userId, userName) {
 
   return holiday;
 }
-
-async function deleteHoliday(id, userId, userName) {
-  const existing = await pool.query(`SELECT * FROM hrm_holidays WHERE id=$1`, [id]);
+async function deleteHoliday(industryId, id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_holidays WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Holiday not found');
   const oldData = existing.rows[0];
-  await pool.query(`DELETE FROM hrm_holidays WHERE id=$1`, [id]);
+  await pool.query(`DELETE FROM hrm_holidays WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   logAudit({ userId, userName, module: 'HRM Holidays', action: 'DELETE', recordId: id, recordLabel: oldData.name, oldData, newData: null }).catch(() => {});
 
   // Clear any lingering "holiday added/updated" notifications for this
@@ -1440,18 +1795,19 @@ async function fetchMyHolidays() {
 }
 // ── SALES TARGETS ────────────────────────────────────────────
 
-async function fetchSalesTargets({ month_year = '' } = {}) {
-  const where = month_year ? `WHERE month_year = $1` : '';
-  const values = month_year ? [month_year] : [];
+async function fetchSalesTargets(industryId, { month_year = '' } = {}) {
+  const conditions = ['industry_id = $1'];
+  const values = [industryId];
+  if (month_year) { conditions.push('month_year = $2'); values.push(month_year); }
   const { rows } = await pool.query(
-    `SELECT * FROM hrm_sales_targets ${where} ORDER BY id`, values
+    `SELECT * FROM hrm_sales_targets WHERE ${conditions.join(' AND ')} ORDER BY id`, values
   );
   // Live-calculate achievement from sales_invoices — read-only, no writes
   // to sales_invoices or any Sell-module table.
   return await salesTargetsService.enrichTargets(rows);
 }
 
-async function createSalesTarget({
+async function createSalesTarget(industryId, {
   employee_name, target_amount, commission_pct, month_year,
   order_target, customer_target, collection_target, remarks,
   employee_id, employee_source,
@@ -1460,11 +1816,11 @@ const hasTarget = Number(target_amount) > 0 || Number(order_target) > 0 || Numbe
 if (!employee_name || !hasTarget) throw new Error('Employee and at least one target value are required');
   const { rows } = await pool.query(
     `INSERT INTO hrm_sales_targets
-       (employee_name, target_amount, commission_pct, month_year,
+       (industry_id, employee_name, target_amount, commission_pct, month_year,
         order_target, customer_target, collection_target, remarks,
         employee_id, employee_source)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-    [employee_name, target_amount, commission_pct || 0, month_year || '',
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+    [industryId, employee_name, target_amount, commission_pct || 0, month_year || '',
      order_target || 0, customer_target || 0, collection_target || 0, remarks || null,
      employee_id || null, employee_source || 'user']
   );
@@ -1482,13 +1838,13 @@ if (!employee_name || !hasTarget) throw new Error('Employee and at least one tar
   return target;
 }
 
-async function updateSalesTarget(id, data, userId, userName) {
+async function updateSalesTarget(industryId, id, data, userId, userName) {
   const {
     employee_name, target_amount, commission_pct, month_year, achieved_amount,
     order_target, order_achieved, customer_target, customer_achieved,
     collection_target, collection_achieved, remarks,
   } = data;
-  const existing = await pool.query(`SELECT * FROM hrm_sales_targets WHERE id=$1`, [id]);
+  const existing = await pool.query(`SELECT * FROM hrm_sales_targets WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Sales target not found');
   const oldData = existing.rows[0];
 
@@ -1499,11 +1855,11 @@ async function updateSalesTarget(id, data, userId, userName) {
        customer_target=COALESCE($8, customer_target), customer_achieved=COALESCE($9, customer_achieved),
        collection_target=COALESCE($10, collection_target), collection_achieved=COALESCE($11, collection_achieved),
        remarks=COALESCE($12, remarks), updated_at=NOW()
-     WHERE id=$13 RETURNING *`,
+     WHERE id=$13 AND industry_id=$14 RETURNING *`,
     [employee_name, target_amount, commission_pct, month_year, achieved_amount || 0,
      order_target ?? null, order_achieved ?? null, customer_target ?? null, customer_achieved ?? null,
-     collection_target ?? null, collection_achieved ?? null, remarks ?? null, id]
-  );
+     collection_target ?? null, collection_achieved ?? null, remarks ?? null, id, industryId]
+  );  
   if (!rows.length) throw new Error('Sales target not found');
   const target = rows[0];
   logAudit({ userId, userName, module: 'HRM Sales Targets', action: 'UPDATE', recordId: id, recordLabel: target.employee_name, oldData, newData: target }).catch(() => {});
@@ -1530,11 +1886,11 @@ async function updateSalesTarget(id, data, userId, userName) {
   return target;
 }
 
-async function deleteSalesTarget(id, userId, userName) {
-  const existing = await pool.query(`SELECT * FROM hrm_sales_targets WHERE id=$1`, [id]);
+async function deleteSalesTarget(industryId, id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_sales_targets WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   if (!existing.rows.length) throw new Error('Sales target not found');
   const oldData = existing.rows[0];
-  await pool.query(`DELETE FROM hrm_sales_targets WHERE id=$1`, [id]);
+  await pool.query(`DELETE FROM hrm_sales_targets WHERE id=$1 AND industry_id=$2`, [id, industryId]);
   logAudit({ userId, userName, module: 'HRM Sales Targets', action: 'DELETE', recordId: id, recordLabel: oldData.employee_name, oldData, newData: null }).catch(() => {});
 }
 
@@ -1554,15 +1910,49 @@ async function fetchMySalesTarget(userId) {
 
 // ── SETTINGS ─────────────────────────────────────────────────
 
-async function fetchSettings() {
+// hrm_settings used to be a single global row (id=1) shared by every
+// Industry Type. It is now one row PER industry, keyed on industry_id.
+// fetchSettings self-heals: if the active industry has no settings row
+// yet, it clones the defaults from row id=1 (or hard-coded fallbacks)
+// into a brand-new row for that industry, so nothing else changes.
+async function fetchSettings(industryId) {
+  await ensureHrmSchema();
   const { rows } = await pool.query(
-    `SELECT * FROM hrm_settings WHERE id = 1`
+    `SELECT * FROM hrm_settings WHERE industry_id = $1`,
+    [industryId]
   );
-  if (!rows.length) throw new Error('Settings not found');
-  return rows[0];
+  if (rows.length) return rows[0];
+
+  // No settings row for this industry yet — create one, seeded from the
+  // legacy global row (id=1) if it still exists, otherwise sane defaults.
+  const legacy = await pool.query(`SELECT * FROM hrm_settings WHERE id = 1`);
+  const d = legacy.rows[0] || {};
+  const { rows: created } = await pool.query(
+    `INSERT INTO hrm_settings
+       (industry_id, work_days_per_week, work_hours_per_day, overtime_rate_multiplier,
+        currency, payslip_note, leave_approval, attendance_mode,
+        leave_prefix, max_casual_leave_days, auto_approval_after_days, auto_approval_enabled, leave_instructions,
+        payroll_cycle, payroll_date, payroll_currency,
+        work_start_time, work_end_time, late_grace_minutes)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+     RETURNING *`,
+    [
+      industryId,
+      d.work_days_per_week ?? 6, d.work_hours_per_day ?? 8, d.overtime_rate_multiplier ?? 1.5,
+      d.currency ?? 'INR', d.payslip_note ?? null, d.leave_approval ?? 'Manual', d.attendance_mode ?? 'Manual',
+      d.leave_prefix ?? 'LV', d.max_casual_leave_days ?? 12, d.auto_approval_after_days ?? null, d.auto_approval_enabled ?? false, d.leave_instructions ?? null,
+      d.payroll_cycle ?? 'Monthly', d.payroll_date ?? 1, d.payroll_currency ?? 'INR',
+      d.work_start_time ?? null, d.work_end_time ?? null, d.late_grace_minutes ?? 10,
+    ]
+  );
+  return created[0];
 }
 
-async function updateSettings(data, userId, userName) {
+async function updateSettings(industryId, data, userId, userName) {
+  await ensureHrmSchema();
+  // Make sure this industry already has its own row before updating it.
+  await fetchSettings(industryId);
+
   const {
     work_days_per_week, work_hours_per_day, overtime_rate_multiplier,
     currency, payslip_note, leave_approval, attendance_mode,
@@ -1571,7 +1961,7 @@ async function updateSettings(data, userId, userName) {
     work_start_time, work_end_time, late_grace_minutes,
   } = data;
 
-  const before = await pool.query(`SELECT * FROM hrm_settings WHERE id = 1`);
+  const before = await pool.query(`SELECT * FROM hrm_settings WHERE industry_id = $1`, [industryId]);
   const oldData = before.rows[0] || null;
 
   const { rows } = await pool.query(
@@ -1595,7 +1985,7 @@ async function updateSettings(data, userId, userName) {
        work_end_time            = COALESCE($17, work_end_time),
        late_grace_minutes       = COALESCE($18, late_grace_minutes),
        updated_at = NOW()
-     WHERE id = 1
+     WHERE industry_id = $19
      RETURNING *`,
     [
       work_days_per_week ?? null, work_hours_per_day ?? null, overtime_rate_multiplier ?? null,
@@ -1603,6 +1993,7 @@ async function updateSettings(data, userId, userName) {
       leave_prefix ?? null, max_casual_leave_days ?? null, auto_approval_after_days ?? null, auto_approval_enabled ?? null, leave_instructions ?? null,
       payroll_cycle ?? null, payroll_date ?? null, payroll_currency ?? null,
       work_start_time ?? null, work_end_time ?? null, late_grace_minutes ?? null,
+      industryId,
     ]
   );
   if (!rows.length) throw new Error('Settings not found');
@@ -1611,25 +2002,29 @@ async function updateSettings(data, userId, userName) {
   return settings;
 }
 // ── DASHBOARD STATS ──────────────────────────────────────────
-async function fetchDashboardStats() {
+async function fetchDashboardStats(industryId) {
+  await ensureHrmSchema();
   const today = new Date().toISOString().split('T')[0];
 
-  const [attStats, leaveStats, payStats] = await Promise.all([
+  const [attStats, leaveStats, payStats,
+         totalEmployees, birthdaysToday, anniversariesToday, newJoiners,
+         upcomingHolidays, expiringDocs, byDepartment, byBranch] = await Promise.all([
     pool.query(
       `SELECT
          COUNT(*) FILTER (WHERE status='Present')  AS present,
          COUNT(*) FILTER (WHERE status='Late')     AS late,
          COUNT(*) FILTER (WHERE status='Absent')   AS absent,
          COUNT(*) FILTER (WHERE status='On Leave') AS on_leave
-       FROM hrm_attendance WHERE attendance_date = $1`,
-      [today]
+       FROM hrm_attendance WHERE attendance_date = $1 AND industry_id = $2`,
+      [today, industryId]
     ),
     pool.query(
       `SELECT
          COUNT(*) AS total,
          COUNT(*) FILTER (WHERE status='Pending')  AS pending,
          COUNT(*) FILTER (WHERE status='Approved') AS approved
-       FROM hrm_leaves`
+       FROM hrm_leaves WHERE industry_id = $1`,
+      [industryId]
     ),
     pool.query(
       `SELECT
@@ -1637,7 +2032,66 @@ async function fetchDashboardStats() {
          COUNT(*) FILTER (WHERE status='Paid')     AS paid,
          COUNT(*) FILTER (WHERE status='Pending')  AS pending,
          COALESCE(SUM(net_salary),0)               AS total_payout
-       FROM hrm_payroll`
+       FROM hrm_payroll WHERE industry_id = $1`,
+      [industryId]
+    ),
+    pool.query(
+      `SELECT COUNT(*) AS total FROM (
+         SELECT id FROM hrm_employees WHERE COALESCE(status,'active') = 'active' AND linked_user_id IS NULL AND industry_id = $1
+         UNION ALL
+         SELECT id FROM users WHERE last_active_industry_id = $1
+       ) t`,
+      [industryId]
+    ),
+    pool.query(
+      `SELECT id, full_name, department, designation FROM hrm_employees
+       WHERE date_of_birth IS NOT NULL AND industry_id = $1
+         AND EXTRACT(MONTH FROM date_of_birth) = EXTRACT(MONTH FROM CURRENT_DATE)
+         AND EXTRACT(DAY   FROM date_of_birth) = EXTRACT(DAY   FROM CURRENT_DATE)`,
+      [industryId]
+    ),
+    pool.query(
+      `SELECT id, full_name, department, designation, joining_date FROM hrm_employees
+       WHERE joining_date IS NOT NULL AND industry_id = $1
+         AND EXTRACT(YEAR  FROM joining_date) < EXTRACT(YEAR FROM CURRENT_DATE)
+         AND EXTRACT(MONTH FROM joining_date) = EXTRACT(MONTH FROM CURRENT_DATE)
+         AND EXTRACT(DAY   FROM joining_date) = EXTRACT(DAY   FROM CURRENT_DATE)`,
+      [industryId]
+    ),
+    pool.query(
+      `SELECT id, full_name, department, designation, joining_date FROM hrm_employees
+       WHERE joining_date IS NOT NULL AND industry_id = $1
+         AND EXTRACT(YEAR  FROM joining_date) = EXTRACT(YEAR  FROM CURRENT_DATE)
+         AND EXTRACT(MONTH FROM joining_date) = EXTRACT(MONTH FROM CURRENT_DATE)
+       ORDER BY joining_date DESC`,
+      [industryId]
+    ),
+    pool.query(
+      `SELECT id, name, start_date, end_date, holiday_type FROM hrm_holidays
+       WHERE COALESCE(active, TRUE) = TRUE AND end_date >= CURRENT_DATE AND industry_id = $1
+       ORDER BY start_date ASC LIMIT 5`,
+      [industryId]
+    ),
+    pool.query(
+      `SELECT d.id, d.doc_type, d.expiry_date, e.id AS employee_id, e.full_name
+       FROM hrm_employee_documents d
+       JOIN hrm_employees e ON e.id = d.employee_id
+       WHERE d.expiry_date IS NOT NULL AND e.industry_id = $1
+         AND d.expiry_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'
+       ORDER BY d.expiry_date ASC`,
+      [industryId]
+    ),
+    pool.query(
+      `SELECT COALESCE(department,'Unassigned') AS department, COUNT(*) AS count
+       FROM hrm_employees WHERE COALESCE(status,'active') = 'active' AND linked_user_id IS NULL AND industry_id = $1
+       GROUP BY department ORDER BY count DESC`,
+      [industryId]
+    ),
+    pool.query(
+      `SELECT COALESCE(branch,'Unassigned') AS branch, COUNT(*) AS count
+       FROM hrm_employees WHERE COALESCE(status,'active') = 'active' AND linked_user_id IS NULL AND industry_id = $1
+       GROUP BY branch ORDER BY count DESC`,
+      [industryId]
     ),
   ]);
 
@@ -1645,9 +2099,16 @@ async function fetchDashboardStats() {
     attendance: attStats.rows[0],
     leaves:     leaveStats.rows[0],
     payroll:    payStats.rows[0],
+    total_employees:      Number(totalEmployees.rows[0]?.total || 0),
+    birthdays_today:      birthdaysToday.rows,
+    anniversaries_today:  anniversariesToday.rows,
+    new_joiners_this_month: newJoiners.rows,
+    upcoming_holidays:    upcomingHolidays.rows,
+    expiring_documents:   expiringDocs.rows,
+    by_department:        byDepartment.rows,
+    by_branch:            byBranch.rows,
   };
 }
-
 // ════════════════════════════════════════════════════════════
 // EMPLOYEE SELF-SERVICE (ESS)
 // Every function below is scoped strictly to a single employee_id
@@ -1658,10 +2119,25 @@ async function fetchDashboardStats() {
 
 // ── MY PROFILE ────────────────────────────────────────────────
 async function fetchMyProfile(userId) {
+  // NEW (Phase 6) — LEFT JOINs against hrm_employees via users.linked_employee_id
+  // (set by the existing "Enable Login" feature). If this login was never
+  // linked to a Master record, every he.* / mgr.* field just comes back
+  // NULL and the response looks exactly like it did before Phase 6.
   const { rows } = await pool.query(
-    `SELECT id, email, full_name, phone, role, department, designation,
-            dob, gender, marital_status, permanent_address, current_address
-     FROM users WHERE id = $1`,
+    `SELECT u.id, u.email, u.full_name, u.phone, u.role, u.department, u.designation,
+            u.dob, u.gender, u.marital_status, u.permanent_address, u.current_address,
+            u.linked_employee_id,
+            he.employee_code, he.joining_date, he.branch, he.office_location,
+            he.employment_type, he.shift_id, he.reporting_manager_id,
+            mgr.full_name AS reporting_manager_name,
+            he.personal_email, he.alternate_mobile,
+            he.emergency_contact_name, he.emergency_contact_relationship, he.emergency_contact_number,
+            he.pf_number, he.esi_number, he.uan_number,
+            he.bank_name, he.bank_account_number, he.bank_ifsc, he.ctc
+     FROM users u
+     LEFT JOIN hrm_employees he  ON he.id = u.linked_employee_id
+     LEFT JOIN hrm_employees mgr ON mgr.id = he.reporting_manager_id
+     WHERE u.id = $1`,
     [userId]
   );
   if (!rows.length) throw new Error('Profile not found');
@@ -1671,7 +2147,12 @@ async function fetchMyProfile(userId) {
 // Only these fields are allowed to be self-edited — matches the
 // existing MyProfile.jsx-allowed fields. Anything else (role,
 // department, designation, salary, etc.) is intentionally excluded.
-async function updateMyProfile(userId, { phone, dob, gender, marital_status, permanent_address, current_address }) {
+async function updateMyProfile(userId, {
+  phone, dob, gender, marital_status, permanent_address, current_address,
+  // NEW (Phase 6) — also self-editable, but only ever written to the
+  // linked hrm_employees row, never to salary/bank/document/HR fields.
+  personal_email, alternate_mobile, emergency_contact_name, emergency_contact_relationship, emergency_contact_number,
+}) {
   const { rows } = await pool.query(
     `UPDATE users
      SET phone=COALESCE($1,phone), dob=COALESCE($2,dob), gender=COALESCE($3,gender),
@@ -1680,13 +2161,29 @@ async function updateMyProfile(userId, { phone, dob, gender, marital_status, per
          current_address=COALESCE($6,current_address),
          updated_at=NOW()
      WHERE id=$7
-     RETURNING id, email, full_name, phone, role, department, designation,
-               dob, gender, marital_status, permanent_address, current_address`,
+     RETURNING id, linked_employee_id`,
     [phone || null, dob || null, gender || null, marital_status || null,
      permanent_address || null, current_address || null, userId]
   );
   if (!rows.length) throw new Error('Profile not found');
-  return rows[0];
+
+  const linkedId = rows[0].linked_employee_id;
+  if (linkedId) {
+    await pool.query(
+      `UPDATE hrm_employees SET
+         personal_email = COALESCE($1, personal_email),
+         alternate_mobile = COALESCE($2, alternate_mobile),
+         emergency_contact_name = COALESCE($3, emergency_contact_name),
+         emergency_contact_relationship = COALESCE($4, emergency_contact_relationship),
+         emergency_contact_number = COALESCE($5, emergency_contact_number),
+         updated_at = NOW()
+       WHERE id = $6`,
+      [personal_email || null, alternate_mobile || null, emergency_contact_name || null,
+       emergency_contact_relationship || null, emergency_contact_number || null, linkedId]
+    );
+  }
+
+  return fetchMyProfile(userId);
 }
 
 // ── MY ATTENDANCE ────────────────────────────────────────────
@@ -1720,19 +2217,31 @@ async function fetchMyAttendanceStats(userId) {
 // Self clock-in always uses the verified JWT id — a client can never
 // pass a different employee_id to clock in on someone else's behalf.
 
-async function clockInSelf(userId, fullName, department, note, shift_name) {
+async function clockInSelf(userId, fullName, department, note, shift_name, location, meta = {}) {
   const today = new Date().toISOString().split('T')[0];
   const now   = new Date().toTimeString().slice(0, 5);
-  const status = await computeAttendanceStatus(now);
+  const { status, lateMinutes } = await computeAttendanceStatus(now);
 
   const { rows } = await pool.query(
-    `INSERT INTO hrm_attendance (employee_name, employee_id, employee_source, attendance_date, clock_in, status, department, note, shift_name)
-     VALUES ($1,$2,'user',$3,$4,$5,$6,$7,$8)
+    `INSERT INTO hrm_attendance (employee_name, employee_id, employee_source, attendance_date, clock_in, status, department, note, shift_name, ip_address, device, browser, location, late_minutes)
+     VALUES ($1,$2,'user',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
      ON CONFLICT (employee_id, attendance_date)
-     DO UPDATE SET clock_in=$4, status=$5, note=$7, shift_name=$8, updated_at=NOW()
+     DO UPDATE SET clock_in=$4, status=$5, note=$7, shift_name=$8, ip_address=$9, device=$10, browser=$11, location=$12, late_minutes=$13, updated_at=NOW()
      RETURNING *`,
-    [fullName || 'Employee', String(userId), today, now, status, department || null, note || '', shift_name || null]
+    [fullName || 'Employee', String(userId), today, now, status, department || null, note || '', shift_name || null,
+     meta.ip || null, meta.device || null, meta.browser || null, location || null, lateMinutes]
   );
+logTimeline({ employeeName: fullName || 'Employee', eventType: 'attendance', title: status === 'Late' ? `Clocked in late (${lateMinutes}m)` : 'Clocked in', createdBy: fullName });
+
+  if (status === 'Late') {
+    notificationService.notifyUser({
+      recipientId: userId, recipientSource: 'user',
+      module: 'Attendance', eventType: 'late_arrival', recordId: rows[0]?.id,
+      title: `Late arrival recorded (${lateMinutes} min)`,
+      message: `You clocked in at ${now} today, ${lateMinutes} minute(s) after your shift start.`,
+    }).catch(() => {});
+  }
+
   return rows[0];
 }
 async function clockOutSelf(userId, recordId) {
@@ -1743,9 +2252,10 @@ async function clockOutSelf(userId, recordId) {
   if (!existing.rows.length) throw new Error('Attendance record not found');
 
   const now = new Date().toTimeString().slice(0, 5);
+  const workingHours = computeWorkingHours(existing.rows[0].clock_in, now);
   const { rows } = await pool.query(
-    `UPDATE hrm_attendance SET clock_out=$1, updated_at=NOW() WHERE id=$2 AND employee_id=$3 RETURNING *`,
-    [now, recordId, userId]
+    `UPDATE hrm_attendance SET clock_out=$1, working_hours=$2, updated_at=NOW() WHERE id=$3 AND employee_id=$4 RETURNING *`,
+    [now, workingHours, recordId, userId]
   );
   return rows[0];
 }
@@ -1760,9 +2270,9 @@ async function fetchMyLeaves(userId) {
 }
 
 
-async function fetchMyLeaveBalance(userId) {
+async function fetchMyLeaveBalance(industryId, userId) {
   await ensureHrmSchema();
-  const types = await pool.query(`SELECT id, name, max_count FROM hrm_leave_types WHERE COALESCE(active, TRUE) = TRUE ORDER BY id`);
+  const types = await pool.query(`SELECT id, name, max_count FROM hrm_leave_types WHERE industry_id = $1 AND COALESCE(active, TRUE) = TRUE ORDER BY id`, [industryId]);
   const used = await pool.query(
     `SELECT leave_type_name, COALESCE(SUM(end_date::date - start_date::date + 1),0) AS days_used
      FROM hrm_leaves
@@ -1842,6 +2352,35 @@ async function markLeaveNotificationSeen(userId, leaveId) {
   );
   if (!rows.length) throw new Error('Leave notification not found');
   return rows[0];
+}
+
+// NEW (Phase 6) — resolves the caller's own linked Employee Master id,
+// or null if this login was never linked to one.
+async function getMyLinkedEmployeeId(userId) {
+  const { rows } = await pool.query(`SELECT linked_employee_id, full_name FROM users WHERE id=$1`, [userId]);
+  return rows[0] || null;
+}
+
+// NEW (Phase 6) — same ownership-checked wrapper pattern as fetchMyPayrollItems:
+// an employee can only ever see documents/education/timeline for THEIR OWN
+// linked Employee Master record, resolved from the verified JWT, never
+// from a client-supplied id.
+async function fetchMyDocuments(userId) {
+  const me = await getMyLinkedEmployeeId(userId);
+  if (!me?.linked_employee_id) return [];
+  return fetchEmployeeDocuments(me.linked_employee_id);
+}
+
+async function fetchMyEducation(userId) {
+  const me = await getMyLinkedEmployeeId(userId);
+  if (!me?.linked_employee_id) return [];
+  return fetchEmployeeEducation(me.linked_employee_id);
+}
+
+async function fetchMyTimeline(userId) {
+  const me = await getMyLinkedEmployeeId(userId);
+  if (!me) return [];
+  return fetchEmployeeTimeline(me.linked_employee_id || me.full_name);
 }
 
 async function fetchMyPayroll(userId) {
@@ -1929,8 +2468,57 @@ async function countUnpaidLeaveDays(employeeId, employeeSource, monthYear) {
     const days = Math.round((e - s) / 86400000) + 1;
     if (days > 0) totalDays += days;
   }
-  return totalDays;
+return totalDays;
 }
+
+// NEW (Phase 5) — Half Day attendance rows for one employee within a month.
+async function countHalfDays(employeeId, employeeSource, monthYear) {
+  const [year, month] = monthYear.split('-');
+  const monthStart = `${year}-${month}-01`;
+  const { rows } = await pool.query(
+    `SELECT COUNT(*)::int AS half_days FROM hrm_attendance
+     WHERE employee_id = $1 AND employee_source = $2 AND status = 'Half Day'
+       AND attendance_date >= $3::date AND attendance_date < ($3::date + INTERVAL '1 month')`,
+    [String(employeeId), employeeSource, monthStart]
+  );
+  return rows[0].half_days;
+}
+
+// NEW (Phase 5) — Late arrivals beyond the configured free-pass count for
+// the month (e.g. first 3 Lates free, 4th onward penalised).
+async function countPenalisableLateDays(employeeId, employeeSource, monthYear) {
+  const [year, month] = monthYear.split('-');
+  const monthStart = `${year}-${month}-01`;
+  const { rows } = await pool.query(
+    `SELECT COUNT(*)::int AS late_days FROM hrm_attendance
+     WHERE employee_id = $1 AND employee_source = $2 AND status = 'Late'
+       AND attendance_date >= $3::date AND attendance_date < ($3::date + INTERVAL '1 month')`,
+    [String(employeeId), employeeSource, monthStart]
+  );
+  const settingsRes = await pool.query(`SELECT late_penalty_after_count FROM hrm_settings WHERE id = 1`);
+  const freeCount = settingsRes.rows[0]?.late_penalty_after_count ?? 3;
+  return Math.max(0, rows[0].late_days - freeCount);
+}
+
+// NEW (Phase 5) — Overtime hours worked beyond the standard work day,
+// only on days actually Present/Late (never Leave/Absent), using the
+// working_hours column Phase 4's clock-out already fills in.
+async function sumOvertimeHours(employeeId, employeeSource, monthYear) {
+  const [year, month] = monthYear.split('-');
+  const monthStart = `${year}-${month}-01`;
+  const settingsRes = await pool.query(`SELECT work_hours_per_day FROM hrm_settings WHERE id = 1`);
+  const standardHours = Number(settingsRes.rows[0]?.work_hours_per_day) || 8;
+  const { rows } = await pool.query(
+    `SELECT COALESCE(SUM(GREATEST(working_hours - $4, 0)), 0)::float AS overtime_hours
+     FROM hrm_attendance
+     WHERE employee_id = $1 AND employee_source = $2 AND status IN ('Present','Late')
+       AND attendance_date >= $3::date AND attendance_date < ($3::date + INTERVAL '1 month')
+       AND working_hours IS NOT NULL`,
+    [String(employeeId), employeeSource, monthStart, standardHours]
+  );
+  return Number(rows[0].overtime_hours) || 0;
+}
+
 // Per-day rate = gross earnings ÷ working days per month, using the
 // existing hrm_settings.work_days_per_week (falls back to 5/week ≈ 22/month).
 async function getPerDayRate(grossEarnings) {
@@ -1968,7 +2556,583 @@ async function syncAttendanceForLeave(leave) {
   }
 }
 
+// ── EMPLOYEE EDUCATION (Phase 2) ──────────────────────────────
+// NEW
+async function fetchEmployeeEducation(industryId, employeeId) {
+  const { rows } = await pool.query(
+    `SELECT ed.* FROM hrm_employee_education ed
+     JOIN hrm_employees e ON e.id = ed.employee_id
+     WHERE ed.employee_id=$1 AND e.industry_id=$2
+     ORDER BY ed.year DESC, ed.id DESC`,
+    [employeeId, industryId]
+  );
+  return rows;
+}
+async function createEmployeeEducation(industryId, employeeId, data, userId, userName) {
+  const { degree, college, university, percentage, year, certificate_url } = data;
+  if (!degree) throw new Error('Degree is required');
+  const empCheck = await pool.query(`SELECT id FROM hrm_employees WHERE id=$1 AND industry_id=$2`, [employeeId, industryId]);
+  if (!empCheck.rows.length) throw new Error('Employee not found');
+  const { rows } = await pool.query(
+    `INSERT INTO hrm_employee_education (employee_id, industry_id, degree, college, university, percentage, year, certificate_url)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    [employeeId, industryId, degree, college || null, university || null, percentage || null, year || null, certificate_url || null]
+  );
+  const rec = rows[0];
+  logAudit({ userId, userName, module: 'HRM Employee Education', action: 'CREATE', recordId: rec.id, recordLabel: `${degree} — ${college || ''}`, oldData: null, newData: rec }).catch(() => {});
+  return rec;
+}
+async function updateEmployeeEducation(industryId, id, data, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_employee_education WHERE id=$1 AND industry_id=$2`, [id, industryId]);
+  if (!existing.rows.length) throw new Error('Education record not found');
+  const oldData = existing.rows[0];
+  const { degree, college, university, percentage, year, certificate_url } = data;
+  const { rows } = await pool.query(
+    `UPDATE hrm_employee_education SET degree=$1, college=$2, university=$3, percentage=$4, year=$5,
+            certificate_url=COALESCE($6, certificate_url), updated_at=NOW()
+     WHERE id=$7 AND industry_id=$8 RETURNING *`,
+    [degree, college || null, university || null, percentage || null, year || null, certificate_url || null, id, industryId]
+  );
+  const rec = rows[0];
+  logAudit({ userId, userName, module: 'HRM Employee Education', action: 'UPDATE', recordId: id, recordLabel: `${degree} — ${college || ''}`, oldData, newData: rec }).catch(() => {});
+  return rec;
+}
+async function deleteEmployeeEducation(industryId, id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_employee_education WHERE id=$1 AND industry_id=$2`, [id, industryId]);
+  if (!existing.rows.length) throw new Error('Education record not found');
+  const oldData = existing.rows[0];
+  await pool.query(`DELETE FROM hrm_employee_education WHERE id=$1 AND industry_id=$2`, [id, industryId]);
+  logAudit({ userId, userName, module: 'HRM Employee Education', action: 'DELETE', recordId: id, recordLabel: `${oldData.degree} — ${oldData.college || ''}`, oldData, newData: null }).catch(() => {});
+}
+
+// ── EMPLOYEE EXPERIENCE (Phase 2) ─────────────────────────────
+// NEW
+async function fetchEmployeeExperience(industryId, employeeId) {
+  const { rows } = await pool.query(
+    `SELECT ex.* FROM hrm_employee_experience ex
+     JOIN hrm_employees e ON e.id = ex.employee_id
+     WHERE ex.employee_id=$1 AND e.industry_id=$2
+     ORDER BY ex.leaving_date DESC NULLS FIRST, ex.id DESC`,
+    [employeeId, industryId]
+  );
+  return rows;
+}
+async function createEmployeeExperience(industryId, employeeId, data, userId, userName) {
+  const { previous_company, designation, experience_years, joining_date, leaving_date, salary, reason_for_leaving, reference_name, reference_contact } = data;
+  if (!previous_company) throw new Error('Previous company is required');
+  const empCheck = await pool.query(`SELECT id FROM hrm_employees WHERE id=$1 AND industry_id=$2`, [employeeId, industryId]);
+  if (!empCheck.rows.length) throw new Error('Employee not found');
+  const { rows } = await pool.query(
+    `INSERT INTO hrm_employee_experience
+       (employee_id, industry_id, previous_company, designation, experience_years, joining_date, leaving_date, salary, reason_for_leaving, reference_name, reference_contact)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+    [employeeId, industryId, previous_company, designation || null, experience_years || null, joining_date || null,
+     leaving_date || null, salary || null, reason_for_leaving || null, reference_name || null, reference_contact || null]
+  );
+  const rec = rows[0];
+  logAudit({ userId, userName, module: 'HRM Employee Experience', action: 'CREATE', recordId: rec.id, recordLabel: `${previous_company} — ${designation || ''}`, oldData: null, newData: rec }).catch(() => {});
+  return rec;
+}
+async function updateEmployeeExperience(industryId, id, data, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_employee_experience WHERE id=$1 AND industry_id=$2`, [id, industryId]);
+  if (!existing.rows.length) throw new Error('Experience record not found');
+  const oldData = existing.rows[0];
+  const { previous_company, designation, experience_years, joining_date, leaving_date, salary, reason_for_leaving, reference_name, reference_contact } = data;
+  const { rows } = await pool.query(
+    `UPDATE hrm_employee_experience SET previous_company=$1, designation=$2, experience_years=$3, joining_date=$4,
+            leaving_date=$5, salary=$6, reason_for_leaving=$7, reference_name=$8, reference_contact=$9, updated_at=NOW()
+     WHERE id=$10 AND industry_id=$11 RETURNING *`,
+    [previous_company, designation || null, experience_years || null, joining_date || null, leaving_date || null,
+     salary || null, reason_for_leaving || null, reference_name || null, reference_contact || null, id, industryId]
+  );
+  const rec = rows[0];
+  logAudit({ userId, userName, module: 'HRM Employee Experience', action: 'UPDATE', recordId: id, recordLabel: `${previous_company} — ${designation || ''}`, oldData, newData: rec }).catch(() => {});
+  return rec;
+}
+async function deleteEmployeeExperience(industryId, id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_employee_experience WHERE id=$1 AND industry_id=$2`, [id, industryId]);
+  if (!existing.rows.length) throw new Error('Experience record not found');
+  const oldData = existing.rows[0];
+  await pool.query(`DELETE FROM hrm_employee_experience WHERE id=$1 AND industry_id=$2`, [id, industryId]);
+  logAudit({ userId, userName, module: 'HRM Employee Experience', action: 'DELETE', recordId: id, recordLabel: `${oldData.previous_company}`, oldData, newData: null }).catch(() => {});
+}
+
+// ── EMPLOYEE DOCUMENTS (Phase 2) ──────────────────────────────
+// NEW — actual file is saved to disk by multer in the route; this just
+// records the pointer (doc_type, file_name, file_url) against the employee.
+async function fetchEmployeeDocuments(industryId, employeeId) {
+  const { rows } = await pool.query(
+    `SELECT d.* FROM hrm_employee_documents d
+     JOIN hrm_employees e ON e.id = d.employee_id
+     WHERE d.employee_id=$1 AND e.industry_id=$2
+     ORDER BY d.created_at DESC`,
+    [employeeId, industryId]
+  );
+  return rows;
+}
+async function createEmployeeDocument(industryId, employeeId, { doc_type, file_name, file_url }, userId, userName) {
+  if (!doc_type || !file_url) throw new Error('Document type and file are required');
+  const empCheck = await pool.query(`SELECT id FROM hrm_employees WHERE id=$1 AND industry_id=$2`, [employeeId, industryId]);
+  if (!empCheck.rows.length) throw new Error('Employee not found');
+  const { rows } = await pool.query(
+    `INSERT INTO hrm_employee_documents (employee_id, industry_id, doc_type, file_name, file_url, uploaded_by)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+    [employeeId, industryId, doc_type, file_name || null, file_url, userName || null]
+  );
+  const rec = rows[0];
+  logAudit({ userId, userName, module: 'HRM Employee Documents', action: 'CREATE', recordId: rec.id, recordLabel: doc_type, oldData: null, newData: rec }).catch(() => {});
+  return rec;
+}
+async function deleteEmployeeDocument(industryId, id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_employee_documents WHERE id=$1 AND industry_id=$2`, [id, industryId]);
+  if (!existing.rows.length) throw new Error('Document not found');
+  const oldData = existing.rows[0];
+  await pool.query(`DELETE FROM hrm_employee_documents WHERE id=$1 AND industry_id=$2`, [id, industryId]);
+  logAudit({ userId, userName, module: 'HRM Employee Documents', action: 'DELETE', recordId: id, recordLabel: oldData.doc_type, oldData, newData: null }).catch(() => {});
+  // Best-effort local file cleanup — never blocks the response if it fails.
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    if (oldData.file_url && oldData.file_url.startsWith('/uploads/')) {
+      fs.unlink(path.join(__dirname, '..', oldData.file_url), () => {});
+    }
+  } catch (_) {}
+}
+
+// ── EMPLOYEE SKILLS (Phase 2) ─────────────────────────────────
+// NEW
+async function fetchEmployeeSkills(industryId, employeeId) {
+  const { rows } = await pool.query(
+    `SELECT s.* FROM hrm_employee_skills s
+     JOIN hrm_employees e ON e.id = s.employee_id
+     WHERE s.employee_id=$1 AND e.industry_id=$2
+     ORDER BY s.skill_type, s.id`,
+    [employeeId, industryId]
+  );
+  return rows;
+}
+async function createEmployeeSkill(industryId, employeeId, { skill_type, name, level }, userId, userName) {
+  if (!name) throw new Error('Skill name is required');
+  const empCheck = await pool.query(`SELECT id FROM hrm_employees WHERE id=$1 AND industry_id=$2`, [employeeId, industryId]);
+  if (!empCheck.rows.length) throw new Error('Employee not found');
+  const { rows } = await pool.query(
+    `INSERT INTO hrm_employee_skills (employee_id, industry_id, skill_type, name, level)
+     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+    [employeeId, industryId, skill_type || 'Technical', name, level || null]
+  );
+  const rec = rows[0];
+  logAudit({ userId, userName, module: 'HRM Employee Skills', action: 'CREATE', recordId: rec.id, recordLabel: name, oldData: null, newData: rec }).catch(() => {});
+  return rec;
+}
+async function deleteEmployeeSkill(industryId, id, userId, userName) {
+  const existing = await pool.query(`SELECT * FROM hrm_employee_skills WHERE id=$1 AND industry_id=$2`, [id, industryId]);
+  if (!existing.rows.length) throw new Error('Skill not found');
+  const oldData = existing.rows[0];
+  await pool.query(`DELETE FROM hrm_employee_skills WHERE id=$1 AND industry_id=$2`, [id, industryId]);
+  logAudit({ userId, userName, module: 'HRM Employee Skills', action: 'DELETE', recordId: id, recordLabel: oldData.name, oldData, newData: null }).catch(() => {});
+}
+
+// ── EMPLOYEE TIMELINE (Phase 3) ───────────────────────────────
+// NEW — fire-and-forget, same pattern as logAudit(). Never throws into
+// the caller, so a timeline write can never break the action that
+// triggered it.
+function logTimeline({ industryId, employeeId, employeeName, eventType, title, description, createdBy }) {
+  if (!employeeName) return Promise.resolve();
+  return pool.query(
+    `INSERT INTO hrm_employee_timeline (employee_id, industry_id, employee_name, event_type, title, description, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [employeeId || null, industryId || null, employeeName, eventType, title, description || null, createdBy || null]
+  ).catch(e => console.error('logTimeline warning:', e.message));
+}
+
+// NEW
+async function fetchEmployeeTimeline(industryId, employeeIdOrName) {
+  await ensureHrmSchema();
+  const { rows } = await pool.query(
+    `SELECT * FROM hrm_employee_timeline
+     WHERE (employee_id::text = $1 OR employee_name = $1) AND industry_id = $2
+     ORDER BY event_date DESC, created_at DESC`,
+    [String(employeeIdOrName), industryId]
+  );
+  return rows;
+}
+
+// ── ATTENDANCE AUTOMATION (Phase 4) ─────────────────────────────
+// Runs on a schedule from server.js (same setInterval pattern already
+// used for manufacturing's autoFinishOverdueWorkOrders). Safe to call
+// repeatedly: it only ever touches a day that has NO attendance row yet
+// for that employee, so a real clock-in, a leave sync, or a manual HR
+// entry always wins and is never overwritten.
+async function autoMarkAbsentees() {
+  await ensureHrmSchema();
+
+  const settingsRes = await pool.query(`SELECT work_end_time, late_grace_minutes FROM hrm_settings WHERE id = 1`);
+  const settings = settingsRes.rows[0] || {};
+  const endTime  = (settings.work_end_time || '18:00').slice(0, 5);
+  const graceMin = Number.isFinite(Number(settings.late_grace_minutes)) ? Number(settings.late_grace_minutes) : 15;
+
+  const now = new Date();
+  const nowHHMM = now.toTimeString().slice(0, 5);
+  const [eh, em] = endTime.split(':').map(Number);
+  const cutoffDate = new Date(0, 0, 0, eh, em + graceMin);
+  const cutoff = `${String(cutoffDate.getHours()).padStart(2, '0')}:${String(cutoffDate.getMinutes()).padStart(2, '0')}`;
+  if (nowHHMM < cutoff) return { skipped: true, reason: 'before office end + grace' };
+
+  const today = now.toISOString().split('T')[0];
+  const dow = now.getDay(); // 0=Sunday..6=Saturday
+
+  // Company holiday → skip the whole run.
+  const holiday = await pool.query(
+    `SELECT id FROM hrm_holidays WHERE COALESCE(active, TRUE) = TRUE AND $1::date BETWEEN start_date AND end_date LIMIT 1`,
+    [today]
+  );
+  if (holiday.rows.length) return { skipped: true, reason: 'holiday' };
+
+  // Roster = every active employee/login-user, same union fetchEmployees() uses.
+  const roster = await pool.query(
+    `SELECT id::text AS id, full_name, 'employee' AS source
+       FROM hrm_employees WHERE COALESCE(status,'active') = 'active' AND linked_user_id IS NULL
+     UNION ALL
+     SELECT id::text AS id, full_name, 'user' AS source
+       FROM users`
+  );
+
+  let marked = 0;
+  for (const emp of roster.rows) {
+    if (!emp.full_name) continue;
+
+    // Weekly off — uses the employee's shift's configured off-day, defaulting to Sunday.
+    const shiftRes = await pool.query(
+      `SELECT s.holiday_day FROM hrm_employees e
+       LEFT JOIN hrm_shifts s ON s.id = e.shift_id
+       WHERE e.id::text = $1 AND e.linked_user_id IS NULL`,
+      [emp.id]
+    );
+    const holidayDay = shiftRes.rows[0]?.holiday_day;
+    const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    const weeklyOffDow = holidayDay ? dayNames.indexOf(holidayDay) : 0;
+    if (dow === weeklyOffDow) continue;
+
+    // Any attendance row already exists today (Present/Late/On Leave/manual) → skip.
+    const existing = await pool.query(
+      `SELECT id FROM hrm_attendance WHERE employee_name = $1 AND attendance_date = $2`,
+      [emp.full_name, today]
+    );
+    if (existing.rows.length) continue;
+
+    // Approved leave covering today → skip (safety net alongside syncAttendanceForLeave).
+    const onLeave = await pool.query(
+      `SELECT id FROM hrm_leaves WHERE employee_name = $1 AND status = 'Approved'
+         AND $2::date BETWEEN start_date::date AND end_date::date LIMIT 1`,
+      [emp.full_name, today]
+    );
+    if (onLeave.rows.length) continue;
+const insertRes = await pool.query(
+      `INSERT INTO hrm_attendance (employee_name, employee_id, employee_source, attendance_date, status, note)
+       VALUES ($1,$2,$3,$4,'Absent','Auto-marked — no clock-in recorded')
+       ON CONFLICT (employee_name, attendance_date) DO NOTHING
+       RETURNING id`,
+      [emp.full_name, emp.id, emp.source, today]
+    );
+    if (!insertRes.rows.length) continue;
+    marked++;
+    logTimeline({ employeeName: emp.full_name, eventType: 'attendance', title: 'Marked Absent (auto)', description: `No clock-in by ${cutoff} on ${today}`, createdBy: 'System' });
+    notificationService.notifyUser({
+      recipientId: emp.id, recipientSource: emp.source,
+      module: 'Attendance', eventType: 'attendance_missing', recordId: null,
+      title: 'You were marked Absent today',
+      message: `No clock-in was recorded by ${cutoff} on ${today}. Contact HR if this is a mistake.`,
+    }).catch(() => {});
+  }
+
+  return { checked: roster.rows.length, marked };
+}
+async function runHrmDailyChecks() {
+  await ensureHrmSchema();
+  const results = { birthdays: 0, anniversaries: 0, expiringDocs: 0, probationEnding: 0, contractExpiring: 0 };
+
+  const birthdays = await pool.query(
+    `SELECT id, full_name FROM hrm_employees
+     WHERE date_of_birth IS NOT NULL AND COALESCE(status,'active') = 'active'
+       AND EXTRACT(MONTH FROM date_of_birth) = EXTRACT(MONTH FROM CURRENT_DATE)
+       AND EXTRACT(DAY   FROM date_of_birth) = EXTRACT(DAY   FROM CURRENT_DATE)`
+  );
+  for (const emp of birthdays.rows) {
+    notificationService.notifyAllActiveUsers({
+      module: 'HR', eventType: 'birthday', recordId: emp.id,
+      title: `🎂 It's ${emp.full_name}'s birthday today!`,
+      message: `Wish ${emp.full_name} a happy birthday.`,
+    }).catch(() => {});
+    results.birthdays++;
+  }
+
+  // Advance reminder (7 days out) into Essentials — the same-day notify
+  // above is immediate, this gives HR/admin lead time to plan ahead.
+  // Only fires for employees linked to a real user account.
+const upcomingBirthdays = await pool.query(
+    `SELECT e.id, e.full_name, e.linked_user_id, e.industry_id
+     FROM hrm_employees e
+     WHERE e.date_of_birth IS NOT NULL AND COALESCE(e.status,'active') = 'active'
+       AND e.linked_user_id IS NOT NULL
+       AND EXTRACT(MONTH FROM e.date_of_birth) = EXTRACT(MONTH FROM CURRENT_DATE + INTERVAL '7 days')
+       AND EXTRACT(DAY   FROM e.date_of_birth) = EXTRACT(DAY   FROM CURRENT_DATE + INTERVAL '7 days')`
+  );
+  for (const emp of upcomingBirthdays.rows) {
+    essentialsService.createReminder(
+      { name: `Upcoming birthday: ${emp.full_name}`, event_date: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10) },
+      emp.linked_user_id,
+      emp.industry_id
+    ).catch(err => console.error('[HRM] birthday advance reminder failed:', err.message));
+  }
+  const anniversaries = await pool.query(
+    `SELECT id, full_name, joining_date FROM hrm_employees
+     WHERE joining_date IS NOT NULL AND COALESCE(status,'active') = 'active'
+       AND EXTRACT(YEAR  FROM joining_date) < EXTRACT(YEAR FROM CURRENT_DATE)
+       AND EXTRACT(MONTH FROM joining_date) = EXTRACT(MONTH FROM CURRENT_DATE)
+       AND EXTRACT(DAY   FROM joining_date) = EXTRACT(DAY   FROM CURRENT_DATE)`
+  );
+  for (const emp of anniversaries.rows) {
+    const years = new Date().getFullYear() - new Date(emp.joining_date).getFullYear();
+    notificationService.notifyUser({
+      recipientId: emp.id, recipientSource: 'employee',
+      module: 'HR', eventType: 'work_anniversary', recordId: emp.id,
+      title: `🎉 Happy ${years}-year work anniversary!`,
+      message: `Thank you for ${years} year(s) with the company.`,
+    }).catch(() => {});
+    results.anniversaries++;
+  }
+
+  const expiringDocs = await pool.query(
+    `SELECT d.doc_type, d.expiry_date, e.id AS employee_id, e.full_name
+     FROM hrm_employee_documents d JOIN hrm_employees e ON e.id = d.employee_id
+     WHERE d.expiry_date IS NOT NULL
+       AND d.expiry_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'`
+  );
+  for (const doc of expiringDocs.rows) {
+    notificationService.notifyUser({
+      recipientId: doc.employee_id, recipientSource: 'employee',
+      module: 'HR', eventType: 'document_expiry', recordId: doc.employee_id,
+      title: `Your ${doc.doc_type} is expiring soon`,
+      message: `Expires on ${String(doc.expiry_date).slice(0, 10)}. Please renew and re-upload.`,
+    }).catch(() => {});
+    results.expiringDocs++;
+  }
+
+  const probation = await pool.query(
+    `SELECT id, full_name, confirmation_date FROM hrm_employees
+     WHERE confirmation_date IS NOT NULL AND COALESCE(status,'active') = 'active'
+       AND confirmation_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'`
+  );
+  for (const emp of probation.rows) {
+    notificationService.notifyUser({
+      recipientId: emp.id, recipientSource: 'employee',
+      module: 'HR', eventType: 'probation_ending', recordId: emp.id,
+      title: 'Your probation period is ending soon',
+      message: `Confirmation date: ${String(emp.confirmation_date).slice(0, 10)}.`,
+    }).catch(() => {});
+    results.probationEnding++;
+  }
+
+  const contracts = await pool.query(
+    `SELECT id, full_name, contract_end_date FROM hrm_employees
+     WHERE contract_end_date IS NOT NULL AND employment_type = 'Contract' AND COALESCE(status,'active') = 'active'
+       AND contract_end_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'`
+  );
+  for (const emp of contracts.rows) {
+    notificationService.notifyUser({
+      recipientId: emp.id, recipientSource: 'employee',
+      module: 'HR', eventType: 'contract_expiry', recordId: emp.id,
+      title: 'Your contract is expiring soon',
+      message: `Contract end date: ${String(emp.contract_end_date).slice(0, 10)}.`,
+    }).catch(() => {});
+    results.contractExpiring++;
+  }
+
+  return results;
+}
+
+async function searchEmployees(industryId, filters = {}) {
+  await ensureHrmSchema();
+  const { q = '', department = '', designation = '', branch = '', status = '' } = filters;
+
+  const conditions = ['linked_user_id IS NULL', 'industry_id = $1'];
+  const values = [industryId];
+
+  if (q) {
+    values.push(`%${q}%`);
+    const p = `$${values.length}`;
+    conditions.push(`(full_name ILIKE ${p} OR employee_code ILIKE ${p} OR phone ILIKE ${p}
+                       OR personal_email ILIKE ${p} OR department ILIKE ${p} OR designation ILIKE ${p})`);
+  }
+  if (department)  { values.push(`%${department}%`);  conditions.push(`department ILIKE $${values.length}`); }
+  if (designation) { values.push(`%${designation}%`); conditions.push(`designation ILIKE $${values.length}`); }
+  if (branch)      { values.push(`%${branch}%`);      conditions.push(`branch ILIKE $${values.length}`); }
+  if (status)      { values.push(status);             conditions.push(`status = $${values.length}`); }
+
+  const { rows } = await pool.query(
+    `SELECT id::text AS id, employee_code, full_name, department, designation, branch, phone,
+            personal_email, reporting_manager_id, status, 'employee' AS source
+     FROM hrm_employees WHERE ${conditions.join(' AND ')}
+     ORDER BY full_name LIMIT 50`,
+    values
+  );
+  return rows;
+}
+
+async function getAttendanceReport(industryId, { date_from, date_to, employee, status } = {}) {
+  const rows = await fetchAttendance(industryId, { date_from, date_to, employee, status, date_filter: (date_from || date_to) ? 'Custom' : 'All' });
+  const summary = {
+    total: rows.length,
+    present: rows.filter(r => r.status === 'Present').length,
+    late: rows.filter(r => r.status === 'Late').length,
+    absent: rows.filter(r => r.status === 'Absent').length,
+    on_leave: rows.filter(r => r.status === 'On Leave').length,
+  };
+  return { rows, summary };
+}
+
+async function getLeaveReport(industryId, { status = '', employee = '', date_from = '', date_to = '' } = {}) {
+  const rows = await fetchLeaves(industryId, { status, employee, date_from, date_to });
+  const summary = {
+    total: rows.length,
+    pending: rows.filter(r => r.status === 'Pending').length,
+    approved: rows.filter(r => r.status === 'Approved').length,
+    rejected: rows.filter(r => r.status === 'Rejected').length,
+  };
+  return { rows, summary };
+}
+
+async function getLateReport(industryId, { date_from, date_to, employee } = {}) {
+  const rows = await fetchAttendance(industryId, { date_from, date_to, employee, status: 'Late', date_filter: (date_from || date_to) ? 'Custom' : 'This Month' });
+  const summary = {
+    total: rows.length,
+    total_late_minutes: rows.reduce((s, r) => s + (Number(r.late_minutes) || 0), 0),
+  };
+  return { rows, summary };
+}
+
+async function getOvertimeReport(industryId, { date_from, date_to, employee } = {}) {
+  const conditions = ['overtime_minutes > 0', 'industry_id = $1'];
+  const values = [industryId];
+  let idx = 2;
+  if (date_from) { conditions.push(`attendance_date >= $${idx++}`); values.push(date_from); }
+  if (date_to)   { conditions.push(`attendance_date <= $${idx++}`); values.push(date_to); }
+  if (employee && employee !== 'All') { conditions.push(`employee_name = $${idx++}`); values.push(employee); }
+  const { rows } = await pool.query(
+    `SELECT * FROM hrm_attendance WHERE ${conditions.join(' AND ')} ORDER BY attendance_date DESC`, values
+  );
+  const summary = {
+    total_records: rows.length,
+    total_overtime_hours: Math.round(rows.reduce((s, r) => s + (Number(r.overtime_minutes) || 0), 0) / 60 * 100) / 100,
+  };
+  return { rows, summary };
+}
+
+async function getEmployeeDirectory(industryId) {
+  const rows = await fetchEmployees(industryId);
+  return { rows, summary: { total: rows.length } };
+}
+
+async function getPayrollReport(industryId, { status = '', employee = '', month_year = '' } = {}) {
+  const rows = await fetchPayrolls(industryId, { status, employee, month_year });
+  const summary = {
+    total: rows.length,
+    total_net_payout: rows.reduce((s, r) => s + (Number(r.net_salary) || 0), 0),
+    paid: rows.filter(r => r.status === 'Paid').length,
+    pending: rows.filter(r => r.status === 'Pending').length,
+  };
+  return { rows, summary };
+}
+
+async function getJoiningReport(industryId, { date_from, date_to } = {}) {
+  const conditions = ['joining_date IS NOT NULL', 'industry_id = $1'];
+  const values = [industryId];
+  let idx = 2;
+  if (date_from) { conditions.push(`joining_date >= $${idx++}`); values.push(date_from); }
+  if (date_to)   { conditions.push(`joining_date <= $${idx++}`); values.push(date_to); }
+  const { rows } = await pool.query(
+    `SELECT id::text AS id, employee_code, full_name, department, designation, branch, joining_date, employment_type
+     FROM hrm_employees WHERE ${conditions.join(' AND ')} ORDER BY joining_date DESC`, values
+  );
+  return { rows, summary: { total: rows.length } };
+}
+
+async function getExitReport(industryId, { date_from, date_to } = {}) {
+  const conditions = ['exit_date IS NOT NULL', 'industry_id = $1'];
+  const values = [industryId];
+  let idx = 2;
+  if (date_from) { conditions.push(`exit_date >= $${idx++}`); values.push(date_from); }
+  if (date_to)   { conditions.push(`exit_date <= $${idx++}`); values.push(date_to); }
+  const { rows } = await pool.query(
+    `SELECT id::text AS id, employee_code, full_name, department, designation, resignation_date, exit_date, reason_for_leaving
+     FROM hrm_employees WHERE ${conditions.join(' AND ')} ORDER BY exit_date DESC`, values
+  );
+  return { rows, summary: { total: rows.length } };
+}
+
+async function getDepartmentReport(industryId) {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(department,'Unassigned') AS department, COUNT(*) AS employee_count,
+            ROUND(AVG(basic_salary)::numeric, 2) AS avg_basic_salary
+     FROM hrm_employees WHERE COALESCE(status,'active') = 'active' AND linked_user_id IS NULL AND industry_id = $1
+     GROUP BY department ORDER BY employee_count DESC`,
+    [industryId]
+  );
+  return { rows, summary: { total_departments: rows.length } };
+}
+
+async function getBranchReport(industryId) {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(branch,'Unassigned') AS branch, COUNT(*) AS employee_count
+     FROM hrm_employees WHERE COALESCE(status,'active') = 'active' AND linked_user_id IS NULL AND industry_id = $1
+     GROUP BY branch ORDER BY employee_count DESC`,
+    [industryId]
+  );
+  return { rows, summary: { total_branches: rows.length } };
+}
+
+async function getSalaryReport(industryId, { month_year = '' } = {}) {
+  const conditions = ['industry_id = $1'];
+  const values = [industryId];
+  if (month_year) { values.push(month_year); conditions.push(`month_year = $${values.length}`); }
+  const where = `WHERE ${conditions.join(' AND ')}`;
+  const { rows } = await pool.query(
+    `SELECT employee_name, employee_id, department, designation, month_year, gross_salary, total_deductions, net_salary, status
+     FROM hrm_payroll ${where} ORDER BY month_year DESC, employee_name`, values
+  );
+  const summary = {
+    total_gross: rows.reduce((s, r) => s + (Number(r.gross_salary) || 0), 0),
+    total_deductions: rows.reduce((s, r) => s + (Number(r.total_deductions) || 0), 0),
+    total_net: rows.reduce((s, r) => s + (Number(r.net_salary) || 0), 0),
+  };
+  return { rows, summary };
+}
+
+async function getTrainingReport(industryId) {
+  const { rows } = await pool.query(
+    `SELECT s.id, s.name AS training_name, s.level, e.id::text AS employee_id, e.full_name, e.department
+     FROM hrm_employee_skills s JOIN hrm_employees e ON e.id = s.employee_id
+     WHERE (s.skill_type ILIKE 'Training' OR s.skill_type ILIKE 'Certification') AND e.industry_id = $1
+     ORDER BY e.full_name`,
+    [industryId]
+  );
+  return { rows, summary: { total: rows.length } };
+}
 module.exports = {
+  runHrmDailyChecks,
+  searchEmployees,
+  getAttendanceReport,
+  getLeaveReport,
+  getLateReport,
+  getOvertimeReport,
+  getEmployeeDirectory,
+  getPayrollReport,
+  getJoiningReport,
+  getExitReport,
+  getDepartmentReport,
+  getBranchReport,
+  getSalaryReport,
+  getTrainingReport,
   // Departments
   fetchDepartments, createDepartment, updateDepartment, deleteDepartment,
   // Designations
@@ -2005,5 +3169,15 @@ fetchGroupComponents, setGroupComponents,
   fetchMyAttendance, fetchMyAttendanceStats, clockInSelf, clockOutSelf,
   fetchMyLeaves, fetchMyLeaveBalance, applyMyLeave, cancelMyLeave,
   fetchMyLeaveNotifications, markLeaveNotificationSeen,
-  fetchMyPayroll, fetchMyPayrollItems,
+fetchMyPayroll, fetchMyPayrollItems,
+  fetchMyDocuments, fetchMyEducation, fetchMyTimeline,
+  // Employee Education/Experience/Documents/Skills (Phase 2)
+  fetchEmployeeEducation, createEmployeeEducation, updateEmployeeEducation, deleteEmployeeEducation,
+  fetchEmployeeExperience, createEmployeeExperience, updateEmployeeExperience, deleteEmployeeExperience,
+  fetchEmployeeDocuments, createEmployeeDocument, deleteEmployeeDocument,
+fetchEmployeeSkills, createEmployeeSkill, deleteEmployeeSkill,
+// Employee Timeline (Phase 3)
+  fetchEmployeeTimeline, logTimeline,
+  // Attendance Automation (Phase 4)
+  autoMarkAbsentees,
 };

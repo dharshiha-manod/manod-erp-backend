@@ -35,6 +35,18 @@ router.post('/import', authenticateToken, requireAnyPermission(ADD_CONTACTS), ct
 // ── CRUD ──
 router.get('/', authenticateToken, requireAnyPermission(VIEW_CONTACTS), ctrl.getAllContacts);
 router.get('/:id/pricing-info', authenticateToken, requireAnyPermission(VIEW_CONTACTS), ctrl.getCustomerPricingInfo);
+
+// ── Customer/Supplier financial flow (Opening Balance, Credit Limit,
+//    Outstanding, Statement, Payments) — real transactions, single source
+//    of truth in accountingService, mirrored into Cash & Bank. ─────────────
+router.get('/:id/outstanding', authenticateToken, requireAnyPermission(VIEW_CONTACTS), ctrl.getOutstanding);
+router.get('/:id/statement', authenticateToken, requireAnyPermission(VIEW_CONTACTS), ctrl.getStatement);
+router.get('/:id/ledger', authenticateToken, requireAnyPermission(VIEW_CONTACTS), ctrl.getLedger);
+router.post('/:id/payments', authenticateToken, requireAnyPermission(EDIT_CONTACTS), ctrl.recordPayment);
+
+// ── Sales-side standalone customer payment (FIFO invoice allocation) ──────
+router.post('/:id/sales-payments', authenticateToken, requireAnyPermission(EDIT_CONTACTS), ctrl.recordSalesPayment);
+
 router.get('/:id', authenticateToken, requireAnyPermission(VIEW_CONTACTS), ctrl.getContactById);
 router.post('/', authenticateToken, requireAnyPermission(ADD_CONTACTS), ctrl.createContact);
 router.put('/:id', authenticateToken, requireAnyPermission(EDIT_CONTACTS), ctrl.updateContact);

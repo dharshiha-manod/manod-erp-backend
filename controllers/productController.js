@@ -10,9 +10,8 @@ const {
   fetchAllVariations, fetchVariationById, createVariation, updateVariation, deleteVariation,
   fetchAllCategories, fetchCategoryById, createCategory, updateCategory, deleteCategory,
   fetchAllProducts, fetchProductById, createProduct, updateProduct, deleteProduct, updateProductStatus,
-  fetchComponentEligibleProducts, fetchFinishedProducts,
   bulkImportProducts,
-  getStockByLocationForProduct,
+  fetchStockByLocation,
 } = require('../services/productService');
 const { logActivity } = require('../services/activityLogService');
 const getUserName = (req) => req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
@@ -25,7 +24,7 @@ const getAllBrands = async (req, res) => {
   try {
     const { page = 1, limit = 25, search = '' } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
-    const { brands, total } = await fetchAllBrands({ search, limit: parseInt(limit), offset });
+    const { brands, total } = await fetchAllBrands(req.industryId, { search, limit: parseInt(limit), offset });
 
     res.status(200).json({
       success: true,
@@ -43,7 +42,7 @@ const getAllBrands = async (req, res) => {
 
 const getBrandById = async (req, res) => {
   try {
-    const brand = await fetchBrandById(req.params.id);
+    const brand = await fetchBrandById(req.industryId, req.params.id);
     if (!brand) return res.status(404).json({ success: false, error: 'Brand not found' });
     res.status(200).json({ success: true, brand });
   } catch (err) {
@@ -56,7 +55,7 @@ const addBrand = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = getUserName(req);
-    const brand = await createBrand(req.body, userId, userName);
+    const brand = await createBrand(req.industryId, req.body, userId, userName);
     console.log('✅ Brand created:', brand.name);
     res.status(201).json({ success: true, message: 'Brand created successfully', brand });
   } catch (err) {
@@ -65,12 +64,11 @@ const addBrand = async (req, res) => {
     res.status(status).json({ success: false, error: err.message });
   }
 };
-
 const editBrand = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = getUserName(req);
-    const brand = await updateBrand(req.params.id, req.body, userId, userName);
+    const brand = await updateBrand(req.industryId, req.params.id, req.body, userId, userName);
     console.log('✅ Brand updated:', brand.name);
     res.status(200).json({ success: true, message: 'Brand updated successfully', brand });
   } catch (err) {
@@ -84,7 +82,7 @@ const removeBrand = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = getUserName(req);
-    const brand = await deleteBrand(req.params.id, userId, userName);
+    const brand = await deleteBrand(req.industryId, req.params.id, userId, userName);
     console.log('✅ Brand deleted:', brand.name);
     res.status(200).json({ success: true, message: 'Brand deleted successfully', brand });
   } catch (err) {
@@ -97,12 +95,11 @@ const removeBrand = async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 // UNITS
 // ─────────────────────────────────────────────────────────────
-
 const getAllUnits = async (req, res) => {
   try {
     const { page = 1, limit = 25, search = '' } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
-    const { units, total } = await fetchAllUnits({ search, limit: parseInt(limit), offset });
+    const { units, total } = await fetchAllUnits(req.industryId, { search, limit: parseInt(limit), offset });
 
     res.status(200).json({
       success: true,
@@ -120,7 +117,7 @@ const getAllUnits = async (req, res) => {
 
 const getUnitById = async (req, res) => {
   try {
-    const unit = await fetchUnitById(req.params.id);
+    const unit = await fetchUnitById(req.industryId, req.params.id);
     if (!unit) return res.status(404).json({ success: false, error: 'Unit not found' });
     res.status(200).json({ success: true, unit });
   } catch (err) {
@@ -128,12 +125,11 @@ const getUnitById = async (req, res) => {
     res.status(500).json({ success: false, error: 'Failed to fetch unit' });
   }
 };
-
 const addUnit = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = getUserName(req);
-    const unit = await createUnit(req.body, userId, userName);
+    const unit = await createUnit(req.industryId, req.body, userId, userName);
     console.log('✅ Unit created:', unit.name);
     res.status(201).json({ success: true, message: 'Unit created successfully', unit });
   } catch (err) {
@@ -147,7 +143,7 @@ const editUnit = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = getUserName(req);
-    const unit = await updateUnit(req.params.id, req.body, userId, userName);
+    const unit = await updateUnit(req.industryId, req.params.id, req.body, userId, userName);
     console.log('✅ Unit updated:', unit.name);
     res.status(200).json({ success: true, message: 'Unit updated successfully', unit });
   } catch (err) {
@@ -161,7 +157,7 @@ const removeUnit = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = getUserName(req);
-    const unit = await deleteUnit(req.params.id, userId, userName);
+    const unit = await deleteUnit(req.industryId, req.params.id, userId, userName);
     console.log('✅ Unit deleted:', unit.name);
     res.status(200).json({ success: true, message: 'Unit deleted successfully', unit });
   } catch (err) {
@@ -179,7 +175,7 @@ const getAllVariations = async (req, res) => {
   try {
     const { page = 1, limit = 25, search = '' } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
-    const { variations, total } = await fetchAllVariations({ search, limit: parseInt(limit), offset });
+    const { variations, total } = await fetchAllVariations(req.industryId, { search, limit: parseInt(limit), offset });
 
     res.status(200).json({
       success: true,
@@ -197,7 +193,7 @@ const getAllVariations = async (req, res) => {
 
 const getVariationById = async (req, res) => {
   try {
-    const variation = await fetchVariationById(req.params.id);
+    const variation = await fetchVariationById(req.industryId, req.params.id);
     if (!variation) return res.status(404).json({ success: false, error: 'Variation not found' });
     res.status(200).json({ success: true, variation });
   } catch (err) {
@@ -210,7 +206,7 @@ const addVariation = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = getUserName(req);
-    const variation = await createVariation(req.body, userId, userName);
+    const variation = await createVariation(req.industryId, req.body, userId, userName);
     console.log('✅ Variation created:', variation.name);
     res.status(201).json({ success: true, message: 'Variation created successfully', variation });
   } catch (err) {
@@ -224,7 +220,7 @@ const editVariation = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = getUserName(req);
-    const variation = await updateVariation(req.params.id, req.body, userId, userName);
+    const variation = await updateVariation(req.industryId, req.params.id, req.body, userId, userName);
     console.log('✅ Variation updated:', variation.name);
     res.status(200).json({ success: true, message: 'Variation updated successfully', variation });
   } catch (err) {
@@ -237,7 +233,7 @@ const removeVariation = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = getUserName(req);
-    const variation = await deleteVariation(req.params.id, userId, userName);
+    const variation = await deleteVariation(req.industryId, req.params.id, userId, userName);
     console.log('✅ Variation deleted:', variation.name);
     res.status(200).json({ success: true, message: 'Variation deleted successfully', variation });
   } catch (err) {
@@ -255,7 +251,7 @@ const getAllCategories = async (req, res) => {
   try {
     const { page = 1, limit = 25, search = '' } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
-    const { categories, total } = await fetchAllCategories({ search, limit: parseInt(limit), offset });
+    const { categories, total } = await fetchAllCategories(req.industryId, { search, limit: parseInt(limit), offset });
 
     res.status(200).json({
       success: true,
@@ -273,7 +269,7 @@ const getAllCategories = async (req, res) => {
 
 const getCategoryById = async (req, res) => {
   try {
-    const category = await fetchCategoryById(req.params.id);
+    const category = await fetchCategoryById(req.industryId, req.params.id);
     if (!category) return res.status(404).json({ success: false, error: 'Category not found' });
     res.status(200).json({ success: true, category });
   } catch (err) {
@@ -286,7 +282,7 @@ const addCategory = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = getUserName(req);
-    const category = await createCategory(req.body, userId, userName);
+    const category = await createCategory(req.industryId, req.body, userId, userName);
     console.log('✅ Category created:', category.name);
     res.status(201).json({ success: true, message: 'Category created successfully', category });
   } catch (err) {
@@ -300,7 +296,7 @@ const editCategory = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = getUserName(req);
-    const category = await updateCategory(req.params.id, req.body, userId, userName);
+    const category = await updateCategory(req.industryId, req.params.id, req.body, userId, userName);
     console.log('✅ Category updated:', category.name);
     res.status(200).json({ success: true, message: 'Category updated successfully', category });
   } catch (err) {
@@ -313,7 +309,7 @@ const removeCategory = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = getUserName(req);
-    const category = await deleteCategory(req.params.id, userId, userName);
+    const category = await deleteCategory(req.industryId, req.params.id, userId, userName);
     console.log('✅ Category deleted:', category.name);
     res.status(200).json({ success: true, message: 'Category deleted successfully', category });
   } catch (err) {
@@ -336,7 +332,7 @@ const getAllProducts = async (req, res) => {
     } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
-    const { products, total } = await fetchAllProducts({
+    const { products, total } = await fetchAllProducts(req.industryId, {
       search, status, category_id, brand_id,
       limit: parseInt(limit), offset
     });
@@ -357,7 +353,7 @@ const getAllProducts = async (req, res) => {
 
 const getProductById = async (req, res) => {
   try {
-    const product = await fetchProductById(req.params.id);
+    const product = await fetchProductById(req.industryId, req.params.id);
     if (!product) return res.status(404).json({ success: false, error: 'Product not found' });
     res.status(200).json({ success: true, product });
   } catch (err) {
@@ -366,20 +362,11 @@ const getProductById = async (req, res) => {
   }
 };
 
-const getStockByLocation = async (req, res) => {
-  try {
-    const rows = await getStockByLocationForProduct(req.params.id);
-    res.status(200).json({ success: true, locations: rows });
-  } catch (err) {
-    console.error('❌ Get Stock By Location Error:', err.message);
-    res.status(500).json({ success: false, error: 'Failed to fetch stock by location' });
-  }
-};
 const addProduct = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = getUserName(req);
-    const product = await createProduct(req.body, userId, userName);
+    const product = await createProduct(req.industryId, req.body, userId, userName);
     console.log('✅ Product created:', product.name);
     logActivity({ userId, module: 'Products', action: `Created Product ${product.name}`, detail: `SKU: ${product.sku || product.sub_sku || ''}`, req });
     res.status(201).json({ success: true, message: 'Product created successfully', product });
@@ -393,7 +380,7 @@ const editProduct = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = getUserName(req);
-  const product = await updateProduct(req.params.id, req.body, userId, userName);
+  const product = await updateProduct(req.industryId, req.params.id, req.body, userId, userName);
     console.log('✅ Product updated:', product.name);
     logActivity({ userId, module: 'Products', action: `Updated Product ${product.name}`, req });
     res.status(200).json({ success: true, message: 'Product updated successfully', product });
@@ -408,7 +395,7 @@ const removeProduct = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = getUserName(req);
-const product = await deleteProduct(req.params.id, userId, userName);
+const product = await deleteProduct(req.industryId, req.params.id, userId, userName);
     console.log('✅ Product deleted:', product.name);
     logActivity({ userId, module: 'Products', action: `Deleted Product ${product.name}`, req });
     res.status(200).json({ success: true, message: 'Product deleted successfully', product });
@@ -424,7 +411,7 @@ const product = await deleteProduct(req.params.id, userId, userName);
 const toggleProductStatus = async (req, res) => {
   try {
     const { status } = req.body;
-    const product = await updateProductStatus(req.params.id, status);
+    const product = await updateProductStatus(req.industryId, req.params.id, status);
     console.log('✅ Product status updated:', product.name, '->', product.status);
     res.status(200).json({ success: true, message: 'Product status updated', product });
   } catch (err) {
@@ -462,6 +449,17 @@ const requestReorder = async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 };
+// ── STOCK BY LOCATION (per-product stock breakdown across locations) ─────────
+const getStockByLocation = async (req, res) => {
+  try {
+    const stock = await fetchStockByLocation(req.industryId, req.params.id);
+    if (stock === null) return res.status(404).json({ success: false, error: 'Product not found' });
+    res.status(200).json({ success: true, product_id: req.params.id, stock });
+  } catch (err) {
+    console.error('❌ Get Stock By Location Error:', err.message);
+    res.status(500).json({ success: false, error: 'Failed to fetch stock by location' });
+  }
+};
 
 // ── BULK IMPORT PRODUCTS (Excel/CSV via Import Products page) ────────────────
 const importProducts = async (req, res) => {
@@ -472,7 +470,7 @@ const importProducts = async (req, res) => {
     }
     const userId = req.user?.id || req.user?.userId || null;
     const userName = getUserName(req);
-    const result = await bulkImportProducts(rows, userId, userName);
+    const result = await bulkImportProducts(req.industryId, rows, userId, userName);
     console.log(`✅ Product import: ${result.created} created, ${result.failed} failed`);
     logActivity({ userId, module: 'Products', action: `Imported ${result.created} product(s)`, req });
     res.status(200).json({ success: true, ...result });

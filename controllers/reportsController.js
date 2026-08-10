@@ -3,6 +3,15 @@
    * controllers/reportsController.js
    * Thin HTTP layer over services/reportService.js
    * Mirrors the style of stockAdjustmentController.js
+   *
+   * UPDATED: Industry Workspace Isolation — every report
+   * now passes req.industryId through to reportService,
+   * same pattern as expenseController.js / stockAdjustmentController.js.
+   * NOTE: activityLogReport and registerReport are intentionally
+   * NOT scoped — activity_logs and register_sessions have no
+   * industry_id column anywhere in the codebase (see reportService.js
+   * header comment). Left business-wide until that schema decision
+   * is made; not an oversight.
    * ====================================================
    */
 
@@ -14,7 +23,7 @@ const reportService = require('../services/reportService');
   // ── NET PROFIT (DASHBOARD) ──────────────────────────────────────────────
   const netProfitSummary = async (req, res) => {
     try {
-      const data = await reportService.getNetProfitSummary(req.query);
+      const data = await reportService.getNetProfitSummary(req.industryId, req.query);
       res.json({ success: true, data });
     } catch (err) {
       console.error('❌ [reportsController.netProfitSummary]', err.message);
@@ -25,7 +34,7 @@ const reportService = require('../services/reportService');
   // ── STOCK REPORT ──────────────────────────────────────────────────────────
   const stockReport = async (req, res) => {
     try {
-      const { rows, total, summary } = await reportService.getStockReport(req.query);
+      const { rows, total, summary } = await reportService.getStockReport(req.industryId, req.query);
       res.json({ success: true, data: rows, total, summary });
     } catch (err) {
       console.error('❌ [reportsController.stockReport]', err.message);
@@ -36,7 +45,7 @@ const reportService = require('../services/reportService');
   // ── LOCATION-WISE STOCK REPORT ─────────────────────────────────────────────
   const locationWiseStockReport = async (req, res) => {
     try {
-      const { rows, total, summary } = await reportService.getLocationWiseStockReport(req.query);
+      const { rows, total, summary } = await reportService.getLocationWiseStockReport(req.industryId, req.query);
       res.json({ success: true, data: rows, total, summary });
     } catch (err) {
       console.error('❌ [reportsController.locationWiseStockReport]', err.message);
@@ -47,7 +56,7 @@ const reportService = require('../services/reportService');
   // ── STOCK ADJUSTMENT REPORT ───────────────────────────────────────────────
   const stockAdjustmentReport = async (req, res) => {
     try {
-      const { rows, total, summary } = await reportService.getStockAdjustmentReport(req.query);
+      const { rows, total, summary } = await reportService.getStockAdjustmentReport(req.industryId, req.query);
       res.json({ success: true, data: rows, total, summary });
     } catch (err) {
       console.error('❌ [reportsController.stockAdjustmentReport]', err.message);
@@ -58,7 +67,7 @@ const reportService = require('../services/reportService');
   // ── ITEMS REPORT ──────────────────────────────────────────────────────────
   const itemsReport = async (req, res) => {
     try {
-      const { rows, total, summary } = await reportService.getItemsReport(req.query);
+      const { rows, total, summary } = await reportService.getItemsReport(req.industryId, req.query);
       res.json({ success: true, data: rows, total, summary });
     } catch (err) {
       console.error('❌ [reportsController.itemsReport]', err.message);
@@ -69,7 +78,7 @@ const reportService = require('../services/reportService');
   // ── PRODUCT PURCHASE REPORT ───────────────────────────────────────────────
   const productPurchaseReport = async (req, res) => {
     try {
-      const { rows, total, summary } = await reportService.getProductPurchaseReport(req.query);
+      const { rows, total, summary } = await reportService.getProductPurchaseReport(req.industryId, req.query);
       res.json({ success: true, data: rows, total, summary });
     } catch (err) {
       console.error('❌ [reportsController.productPurchaseReport]', err.message);
@@ -80,7 +89,7 @@ const reportService = require('../services/reportService');
   // ── PRODUCT SELL REPORT ───────────────────────────────────────────────────
   const productSellReport = async (req, res) => {
     try {
-      const { rows, total, summary } = await reportService.getProductSellReport(req.query);
+      const { rows, total, summary } = await reportService.getProductSellReport(req.industryId, req.query);
       res.json({ success: true, data: rows, total, summary });
     } catch (err) {
       console.error('❌ [reportsController.productSellReport]', err.message);
@@ -91,7 +100,7 @@ const reportService = require('../services/reportService');
   // ── EXPENSE REPORT ─────────────────────────────────────────────────────────
   const expenseReport = async (req, res) => {
     try {
-      const { rows, total, summary } = await reportService.getExpenseReport(req.query);
+      const { rows, total, summary } = await reportService.getExpenseReport(req.industryId, req.query);
       res.json({ success: true, data: rows, total, summary });
     } catch (err) {
       console.error('❌ [reportsController.expenseReport]', err.message);
@@ -102,7 +111,7 @@ const reportService = require('../services/reportService');
   // ── SALES REPRESENTATIVE REPORT ───────────────────────────────────────────
   const salesRepresentativeReport = async (req, res) => {
     try {
-      const { rows, total, summary } = await reportService.getSalesRepresentativeReport(req.query);
+      const { rows, total, summary } = await reportService.getSalesRepresentativeReport(req.industryId, req.query);
       res.json({ success: true, data: rows, total, summary });
     } catch (err) {
       console.error('❌ [reportsController.salesRepresentativeReport]', err.message);
@@ -113,7 +122,7 @@ const reportService = require('../services/reportService');
   // ── PURCHASE PAYMENT REPORT ────────────────────────────────────────────────
   const purchasePaymentReport = async (req, res) => {
     try {
-      const { rows, total, summary } = await reportService.getPurchasePaymentReport(req.query);
+      const { rows, total, summary } = await reportService.getPurchasePaymentReport(req.industryId, req.query);
       res.json({ success: true, data: rows, total, summary });
     } catch (err) {
       console.error('❌ [reportsController.purchasePaymentReport]', err.message);
@@ -124,7 +133,7 @@ const reportService = require('../services/reportService');
   // ── SELL PAYMENT REPORT ────────────────────────────────────────────────────
   const sellPaymentReport = async (req, res) => {
     try {
-      const { rows, total, summary } = await reportService.getSellPaymentReport(req.query);
+      const { rows, total, summary } = await reportService.getSellPaymentReport(req.industryId, req.query);
       res.json({ success: true, data: rows, total, summary });
     } catch (err) {
       console.error('❌ [reportsController.sellPaymentReport]', err.message);
@@ -135,7 +144,7 @@ const reportService = require('../services/reportService');
   // ── PROFIT / LOSS REPORT ───────────────────────────────────────────────────
   const profitLossReport = async (req, res) => {
     try {
-      const { rows, total, summary } = await reportService.getProfitLossReport(req.query);
+      const { rows, total, summary } = await reportService.getProfitLossReport(req.industryId, req.query);
       res.json({ success: true, data: rows, total, summary });
     } catch (err) {
       console.error('❌ [reportsController.profitLossReport]', err.message);
@@ -145,7 +154,7 @@ const reportService = require('../services/reportService');
   // ── TAX REPORT ──────────────────────────────────────────────────────────────
   const taxReport = async (req, res) => {
   try {
-    const { rows, total, summary, byProduct } = await reportService.getTaxReport(req.query);
+    const { rows, total, summary, byProduct } = await reportService.getTaxReport(req.industryId, req.query);
     res.json({ success: true, data: rows, total, summary, byProduct });
   } catch (err) {
     console.error('❌ [reportsController.taxReport]', err.message);
@@ -156,7 +165,7 @@ const reportService = require('../services/reportService');
   // ── TAX BY PRODUCT REPORT ────────────────────────────────────────────────────
   const taxByProductReport = async (req, res) => {
     try {
-      const { rows, total, summary } = await reportService.getTaxByProductReport(req.query);
+      const { rows, total, summary } = await reportService.getTaxByProductReport(req.industryId, req.query);
       res.json({ success: true, data: rows, total, summary });
     } catch (err) {
       console.error('❌ [reportsController.taxByProductReport]', err.message);
@@ -167,7 +176,7 @@ const reportService = require('../services/reportService');
   // ── TRENDING PRODUCTS REPORT ────────────────────────────────────────────────
   const trendingProductsReport = async (req, res) => {
     try {
-      const { rows, total, summary } = await reportService.getTrendingProductsReport(req.query);
+      const { rows, total, summary } = await reportService.getTrendingProductsReport(req.industryId, req.query);
       res.json({ success: true, data: rows, total, summary });
     } catch (err) {
       console.error('❌ [reportsController.trendingProductsReport]', err.message);
@@ -178,7 +187,7 @@ const reportService = require('../services/reportService');
   // ── SUPPLIER & CUSTOMER REPORT ─────────────────────────────────────────────
   const supplierCustomerReport = async (req, res) => {
     try {
-      const { rows, total, summary } = await reportService.getSupplierCustomerReport(req.query);
+      const { rows, total, summary } = await reportService.getSupplierCustomerReport(req.industryId, req.query);
       res.json({ success: true, data: rows, total, summary });
     } catch (err) {
       console.error('❌ [reportsController.supplierCustomerReport]', err.message);
@@ -222,7 +231,7 @@ const reportService = require('../services/reportService');
   const sendLedger = async (req, res) => {
     try {
       const { contactId } = req.params;
-      const ledger = await reportService.getContactLedger(contactId);
+      const ledger = await reportService.getContactLedger(req.industryId, contactId);
 
       if (!ledger) {
         return res.status(404).json({ success: false, error: 'Contact not found' });
@@ -255,7 +264,7 @@ const reportService = require('../services/reportService');
   };
   const customerGroupsReport = async (req, res) => {
     try {
-      const { rows, total, summary } = await reportService.getCustomerGroupsReport(req.query);
+      const { rows, total, summary } = await reportService.getCustomerGroupsReport(req.industryId, req.query);
       res.json({ success: true, data: rows, total, summary });
     } catch (err) {
       console.error('❌ [reportsController.customerGroupsReport]', err.message);
@@ -265,7 +274,7 @@ const reportService = require('../services/reportService');
   // ── PURCHASE & SALE REPORT ──────────────────────────────────────────────────
   const purchaseSaleReport = async (req, res) => {
     try {
-      const { rows, total, summary } = await reportService.getPurchaseSaleReport(req.query);
+      const { rows, total, summary } = await reportService.getPurchaseSaleReport(req.industryId, req.query);
       res.json({ success: true, data: rows, total, summary });
     } catch (err) {
       console.error('❌ [reportsController.purchaseSaleReport]', err.message);
@@ -276,7 +285,7 @@ const reportService = require('../services/reportService');
 // ── SALES BY CATEGORY REPORT ───────────────────────────────────────────────
   const salesByCategoryReport = async (req, res) => {
     try {
-      const { data } = await reportService.getSalesByCategoryReport(req.query);
+      const { data } = await reportService.getSalesByCategoryReport(req.industryId, req.query);
       res.json({ success: true, data });
     } catch (err) {
       console.error('❌ [reportsController.salesByCategoryReport]', err.message);
@@ -284,10 +293,11 @@ const reportService = require('../services/reportService');
     }
   };
 
-  // ── ACTIVITY LOG REPORT ───────────────────────────────────────────────────
+// ── ACTIVITY LOG REPORT ───────────────────────────────────────────────────
+  // Industry-scoped as of the Reports isolation audit — see reportService.js.
   const activityLogReport = async (req, res) => {
     try {
-      const { rows, total, summary } = await reportService.getActivityLogReport(req.query);
+      const { rows, total, summary } = await reportService.getActivityLogReport(req.industryId, req.query);
       res.json({ success: true, data: rows, total, summary });
     } catch (err) {
       console.error('❌ [reportsController.activityLogReport]', err.message);
@@ -295,9 +305,10 @@ const reportService = require('../services/reportService');
     }
   };
   // ── REGISTER REPORT ────────────────────────────────────────────────────────
+  // Industry-scoped as of the Reports isolation audit — see reportService.js.
   const registerReport = async (req, res) => {
     try {
-      const { rows, total, summary } = await reportService.getRegisterReport(req.query);
+      const { rows, total, summary } = await reportService.getRegisterReport(req.industryId, req.query);
       res.json({ success: true, data: rows, total, summary });
     } catch (err) {
       console.error('❌ [reportsController.registerReport]', err.message);

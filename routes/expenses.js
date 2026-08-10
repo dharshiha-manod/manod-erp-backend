@@ -9,6 +9,7 @@ const express = require('express');
 const router  = express.Router();
 
 const authenticateToken        = require('../middleware/auth');
+const requireIndustry          = require('../middleware/industry');
 const { requireAnyPermission } = require('../middleware/permission');
 const ctrl                     = require('../controllers/expenseController');
 
@@ -22,32 +23,32 @@ const DELETE_EXP = [['Expense', 'Access all expenses'], ['Expense', 'Delete expe
 
 // ── Categories (must come before /:id) ──────────────────────────────────────
 router.get('/categories',
-  authenticateToken, requireAnyPermission(VIEW_EXP), ctrl.getAllCategories);
+  authenticateToken, requireIndustry, requireAnyPermission(VIEW_EXP), ctrl.getAllCategories);
 
 router.post('/categories',
-  authenticateToken, requireAnyPermission(ADD_EXP), ctrl.createCategory);
+  authenticateToken, requireIndustry, requireAnyPermission(ADD_EXP), ctrl.createCategory);
 
 router.put('/categories/:id',
-  authenticateToken, requireAnyPermission(EDIT_EXP), ctrl.updateCategory);
+  authenticateToken, requireIndustry, requireAnyPermission(EDIT_EXP), ctrl.updateCategory);
 
 router.delete('/categories/:id',
-  authenticateToken, requireAnyPermission(DELETE_EXP), ctrl.deleteCategory);
+  authenticateToken, requireIndustry, requireAnyPermission(DELETE_EXP), ctrl.deleteCategory);
 
 // ── CRUD ─────────────────────────────────────────────────────────────────────
 // GET /api/expenses?page=&limit=&search=&category_id=&payment_status=&date_from=&date_to=
 router.get('/',
-  authenticateToken, requireAnyPermission(VIEW_EXP), ctrl.getAllExpenses);
+  authenticateToken, requireIndustry, requireAnyPermission(VIEW_EXP), ctrl.getAllExpenses);
 
 router.get('/:id',
-  authenticateToken, requireAnyPermission(VIEW_EXP), ctrl.getExpenseById);
+  authenticateToken, requireIndustry, requireAnyPermission(VIEW_EXP), ctrl.getExpenseById);
 
 router.post('/',
-  authenticateToken, requireAnyPermission(ADD_EXP), ctrl.createExpense);
+  authenticateToken, requireIndustry, requireAnyPermission(ADD_EXP), ctrl.createExpense);
 
 router.put('/:id',
-  authenticateToken, requireAnyPermission(EDIT_EXP), ctrl.updateExpense);
+  authenticateToken, requireIndustry, requireAnyPermission(EDIT_EXP), ctrl.updateExpense);
 
 router.delete('/:id',
-  authenticateToken, requireAnyPermission(DELETE_EXP), ctrl.deleteExpense);
+  authenticateToken, requireIndustry, requireAnyPermission(DELETE_EXP), ctrl.deleteExpense);
 
 module.exports = router;

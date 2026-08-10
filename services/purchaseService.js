@@ -61,11 +61,12 @@ await stockLocationService.adjustStockAtLocation(client, item.product_id, locati
 /**
  * Auto-generate the next reference number: PO-0001, PO-0002, …
  */
-const generateReferenceNo = async () => {
+const generateReferenceNo = async (industryId) => {
   const result = await pool.query(
     `SELECT reference_no FROM purchases
-     WHERE reference_no LIKE 'PO-%'
-     ORDER BY id DESC LIMIT 1`
+     WHERE reference_no LIKE 'PO-%' AND industry_id = $1
+     ORDER BY id DESC LIMIT 1`,
+    [industryId]
   );
   let next = 1;
   if (result.rows.length > 0) {
@@ -151,7 +152,7 @@ const calcFinancials = (body, items) => {
 };
 
 // ── FETCH ALL PURCHASES (paginated + filtered) ───────────────────────────────
-const fetchAllPurchases = async (filters = {}) => {
+const fetchAllPurchases = async (industryId, filters = {}) => {
   const {
     page = 1, limit = 25, search = '',
     supplier_id = '', purchase_status = '', payment_status = '',
@@ -173,11 +174,11 @@ const fetchAllPurchases = async (filters = {}) => {
     FROM purchases p
     LEFT JOIN users u ON u.id::text = p.added_by::text
     LEFT JOIN contacts c ON c.id = p.supplier_id
-    WHERE 1=1
+    WHERE p.industry_id = $1
   `;
-  const params = [];
+  const params = [industryId];
 
-  if (search) {
+  if (search) { 
     params.push(`%${search}%`);
     const n = params.length;
     q += ` AND (
@@ -212,12 +213,12 @@ const fetchAllPurchases = async (filters = {}) => {
     q += ` AND DATE(p.purchase_date AT TIME ZONE 'Asia/Kolkata') <= $${params.length}::date`;
   }
 
-  // Count before pagination
+// Count before pagination
   const countQ = q.replace(
     /SELECT[\s\S]*?FROM purchases/,
     'SELECT COUNT(*) FROM purchases'
   );
-  const countResult = await pool.query(countQ, params);
+  const countResult = await pool.query(countQ, params.slice());
   const total = parseInt(countResult.rows[0].count, 10);
 
   q += ` ORDER BY p.purchase_date DESC, p.id DESC`;
@@ -231,13 +232,13 @@ const fetchAllPurchases = async (filters = {}) => {
 };
 
 // ── FETCH ONE PURCHASE (full detail with items + payments) ───────────────────
-const fetchPurchaseById = async (id) => {
+const fetchPurchaseById = async (industryId, id) => {
   const purchaseResult = await pool.query(
     `SELECT p.*, COALESCE(p.supplier_name, c.name) AS supplier_name
      FROM purchases p
      LEFT JOIN contacts c ON c.id = p.supplier_id
-     WHERE p.id = $1`,
-    [id]
+     WHERE p.id = $1 AND p.industry_id = $2`,
+    [id, industryId]
   );
   if (purchaseResult.rows.length === 0) return null;
 
@@ -260,7 +261,7 @@ const fetchPurchaseById = async (id) => {
 };
 
 // ── CREATE PURCHASE ──────────────────────────────────────────────────────────
-const createPurchase = async (body, userId, userName) => {
+const createPurchase = async (industryId, body, userId, userName) => {
   await ensureSchema();
   const client = await pool.connect();
   try {
@@ -271,11 +272,11 @@ const createPurchase = async (body, userId, userName) => {
 
     const referenceNo = body.reference_no?.trim()
       ? body.reference_no.trim()
-      : await generateReferenceNo();
+      : await generateReferenceNo(industryId);
 
-    // Check reference uniqueness
+    // Check reference uniqueness (per industry — same PO number can exist in different industries)
     const dupCheck = await client.query(
-      `SELECT id FROM purchases WHERE reference_no = $1`, [referenceNo]
+      `SELECT id FROM purchases WHERE reference_no = $1 AND industry_id = $2`, [referenceNo, industryId]
     );
     if (dupCheck.rows.length > 0) throw new Error(`Reference number "${referenceNo}" already exists`);
 
@@ -291,12 +292,29 @@ const createPurchase = async (body, userId, userName) => {
       if (sup.rows.length > 0) supplierName = sup.rows[0].name;
     }
 
+    // Resolve location_id. The frontend only sends `location` (the display
+    // name from the dropdown, e.g. "Accenture") and never sends
+    // `location_id` directly — so relying on body.location_id alone always
+    // fell through to the default location, silently crediting stock-in to
+    // the wrong warehouse. Look the id up by name (scoped to this industry)
+    // before falling back to the default.
+    let resolvedLocationId = body.location_id || null;
+    if (!resolvedLocationId && body.location) {
+      const locRow = await client.query(
+        `SELECT id FROM business_locations WHERE location_name = $1 AND industry_id = $2 LIMIT 1`,
+        [body.location, industryId]
+      );
+      if (locRow.rows.length > 0) resolvedLocationId = locRow.rows[0].id;
+    }
+    if (!resolvedLocationId) {
+      resolvedLocationId = await stockLocationService.getDefaultLocationId(pool);
+    }
+
  const purchaseStatus = (() => {
       const s = body.purchase_status || 'Ordered';
       return ['Received', 'Ordered', 'Pending', 'Cancelled'].includes(s) ? s : 'Ordered';
     })();
-
-    const purchaseResult = await client.query(
+const purchaseResult = await client.query(
       `INSERT INTO purchases (
         reference_no, invoice_no, purchase_date,
 supplier_id, supplier_name, location, location_id,
@@ -305,10 +323,10 @@ supplier_id, supplier_name, location, location_id,
         tax_label, tax_amount, shipping_charges,
         grand_total, amount_paid, payment_due,
         notes, shipping_details, document_path,
-        pay_term, added_by
+        pay_term, added_by, industry_id
    ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
-        $12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23
+        $12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24
       ) RETURNING *`, 
       [
         referenceNo,
@@ -317,7 +335,7 @@ supplier_id, supplier_name, location, location_id,
         body.supplier_id       || null,
         supplierName,
   body.location          || null,
-        body.location_id       || await stockLocationService.getDefaultLocationId(pool),
+        resolvedLocationId,
         purchaseStatus,
         fin.payment_status,
         fin.subtotal,
@@ -334,6 +352,7 @@ supplier_id, supplier_name, location, location_id,
         body.document_path     || null,
         body.pay_term          || null,
         userId                 || null,
+        industryId,
       ]
     );
 
@@ -501,13 +520,13 @@ await client.query('COMMIT');
 };
 
 // ── UPDATE PURCHASE ──────────────────────────────────────────────────────────
-const updatePurchase = async (id, body, userId, userName) => {
+const updatePurchase = async (industryId, id, body, userId, userName) => {
   await ensureSchema();
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    const existing = await client.query(`SELECT * FROM purchases WHERE id = $1`, [id]);
+    const existing = await client.query(`SELECT * FROM purchases WHERE id = $1 AND industry_id = $2`, [id, industryId]);
     if (existing.rows.length === 0) throw new Error('Purchase not found');
     const prevStatus = existing.rows[0].purchase_status;
     const oldData = existing.rows[0];
@@ -689,12 +708,12 @@ setField('pay_term',         body.pay_term);
 };
 
 // ── DELETE PURCHASE ──────────────────────────────────────────────────────────
-const deletePurchase = async (id, userId, userName) => {
+const deletePurchase = async (industryId, id, userId, userName) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    const existing = await client.query(`SELECT * FROM purchases WHERE id = $1`, [id]);
+    const existing = await client.query(`SELECT * FROM purchases WHERE id = $1 AND industry_id = $2`, [id, industryId]);
     if (existing.rows.length === 0) throw new Error('Purchase not found');
     const oldData = existing.rows[0];
 
@@ -704,8 +723,8 @@ const deletePurchase = async (id, userId, userName) => {
     }
 
     const result = await client.query(
-      `DELETE FROM purchases WHERE id = $1 RETURNING id, reference_no`,
-      [id]
+      `DELETE FROM purchases WHERE id = $1 AND industry_id = $2 RETURNING id, reference_no`,
+      [id, industryId]
     );
 
    await client.query('COMMIT');
@@ -730,12 +749,12 @@ const deletePurchase = async (id, userId, userName) => {
   }
 };
 // ── ADD PAYMENT ──────────────────────────────────────────────────────────────
-const addPayment = async (purchaseId, body, userId) => {
+const addPayment = async (industryId, purchaseId, body, userId) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    const purchase = await client.query(`SELECT id, grand_total FROM purchases WHERE id = $1`, [purchaseId]);
+    const purchase = await client.query(`SELECT id, grand_total FROM purchases WHERE id = $1 AND industry_id = $2`, [purchaseId, industryId]);
     if (purchase.rows.length === 0) throw new Error('Purchase not found');
 
     const amount = parseFloat(body.amount);
@@ -782,10 +801,13 @@ const addPayment = async (purchaseId, body, userId) => {
 };
 
 // ── DELETE PAYMENT ───────────────────────────────────────────────────────────
-const deletePayment = async (purchaseId, paymentId) => {
+const deletePayment = async (industryId, purchaseId, paymentId) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    const ownerCheck = await client.query(`SELECT id FROM purchases WHERE id = $1 AND industry_id = $2`, [purchaseId, industryId]);
+    if (ownerCheck.rows.length === 0) throw new Error('Purchase not found');
 
     const result = await client.query(
       `DELETE FROM purchase_payments WHERE id = $1 AND purchase_id = $2 RETURNING *`,
@@ -805,7 +827,7 @@ const deletePayment = async (purchaseId, paymentId) => {
 };
 
 // ── DASHBOARD STATS ──────────────────────────────────────────────────────────
-const getPurchaseStats = async () => {
+const getPurchaseStats = async (industryId) => {
   const result = await pool.query(`
     SELECT
       COUNT(*)                                              AS total_purchases,
@@ -820,7 +842,8 @@ const getPurchaseStats = async () => {
       COUNT(*) FILTER (WHERE purchase_status = 'Pending')  AS pending_count,
       COUNT(*) FILTER (WHERE purchase_status = 'Cancelled') AS cancelled_count
     FROM purchases
-  `);
+    WHERE industry_id = $1
+  `, [industryId]);
   return result.rows[0];
 };
 
@@ -836,14 +859,14 @@ const getSuppliersList = async () => {
 };
 
 // ── PRODUCT SEARCH (for Add Purchase product dropdown) ───────────────────────
-const searchProducts = async (query = '') => {
+const searchProducts = async (industryId, query = '') => {
   try {
-    const params = [];
+    const params = [industryId];
     let q = `
       SELECT p.*, sup.name AS default_supplier_name
       FROM products p
       LEFT JOIN contacts sup ON sup.id = p.default_supplier_id
-      WHERE 1=1
+      WHERE p.industry_id = $1
     `;
     if (query.trim()) {
       params.push(`%${query.trim()}%`);

@@ -29,6 +29,29 @@ const ensureProductSchema = async () => {
     await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS batch_number VARCHAR(100);`);
     await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS serial_number VARCHAR(100);`);
     await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS custom_fields JSONB DEFAULT '{}'::jsonb;`);
+
+    // ── Pre-industry unique indexes were global (name only). Now that
+    // Units/Brands/Variations are industry-scoped, "kilogram" must be
+    // allowed to exist once PER industry, not once for the whole business.
+    // Drop the old global index and replace it with a composite one keyed
+    // on (industry_id, name) — matching what unitNameExists/brandNameExists/
+    // variationNameExists already check at the application level.
+const rescopeUniqueIndex = async (table, oldIndexName, newIndexName, extraCols = []) => {
+      await pool.query(`DROP INDEX IF EXISTS ${oldIndexName};`);
+      const cols = ['industry_id', 'LOWER(name)', ...extraCols].join(', ');
+      await pool.query(
+        `CREATE UNIQUE INDEX IF NOT EXISTS ${newIndexName}
+         ON ${table} (${cols});`
+      );
+    };
+    await rescopeUniqueIndex('product_units',      'idx_product_units_name',      'idx_product_units_industry_name');
+    await rescopeUniqueIndex('product_brands',      'idx_product_brands_name',      'idx_product_brands_industry_name');
+    await rescopeUniqueIndex('product_variations',  'idx_product_variations_name',  'idx_product_variations_industry_name');
+    // product_categories' old index was (name, parent_id) — parent_id must stay
+    // in the composite key too, otherwise "Electronics" as a top-level category
+    // would collide with "Electronics" as a child category within the same industry.
+    await rescopeUniqueIndex('product_categories', 'idx_product_categories_name_parent', 'idx_product_categories_industry_name_parent', ['parent_id']);
+
     productSchemaReady = true;
   } catch (err) {
     console.error('products schema migration warning:', err.message);
@@ -40,15 +63,15 @@ const ensureProductSchema = async () => {
 // BRANDS
 // ─────────────────────────────────────────────────────────────
 
-const fetchAllBrands = async (filters = {}) => {
+const fetchAllBrands = async (industryId, filters = {}) => {
   const { search = '', limit = 25, offset = 0 } = filters;
 
   let query = `
     SELECT id, name, description, created_at, updated_at
     FROM product_brands
-    WHERE 1=1
+    WHERE industry_id = $1
   `;
-  const params = [];
+  const params = [industryId];
 
   if (search) {
     params.push(`%${search}%`);
@@ -59,12 +82,13 @@ const fetchAllBrands = async (filters = {}) => {
   }
 
   // Count before pagination
-  const countResult = await pool.query(
-    `SELECT COUNT(*) FROM product_brands WHERE 1=1${
-      search ? ` AND (LOWER(name) LIKE LOWER($1) OR LOWER(description) LIKE LOWER($1))` : ''
-    }`,
-    search ? [`%${search}%`] : []
-  );
+  let countQuery = `SELECT COUNT(*) FROM product_brands WHERE industry_id = $1`;
+  const countParams = [industryId];
+  if (search) {
+    countParams.push(`%${search}%`);
+    countQuery += ` AND (LOWER(name) LIKE LOWER($2) OR LOWER(description) LIKE LOWER($2))`;
+  }
+  const countResult = await pool.query(countQuery, countParams);
   const total = parseInt(countResult.rows[0].count);
 
   query += ` ORDER BY name ASC`;
@@ -75,63 +99,63 @@ const fetchAllBrands = async (filters = {}) => {
   return { brands: result.rows, total };
 };
 
-const fetchBrandById = async (id) => {
+const fetchBrandById = async (industryId, id) => {
   const result = await pool.query(
-    'SELECT id, name, description, created_at, updated_at FROM product_brands WHERE id = $1',
-    [id]
+    'SELECT id, name, description, created_at, updated_at FROM product_brands WHERE id = $1 AND industry_id = $2',
+    [id, industryId]
   );
   return result.rows[0] || null;
 };
 
-const brandNameExists = async (name, excludeId = null) => {
-  let q = 'SELECT id FROM product_brands WHERE LOWER(name) = LOWER($1)';
-  const p = [name];
-  if (excludeId) { q += ' AND id != $2'; p.push(excludeId); }
+const brandNameExists = async (industryId, name, excludeId = null) => {
+  let q = 'SELECT id FROM product_brands WHERE LOWER(name) = LOWER($1) AND industry_id = $2';
+  const p = [name, industryId];
+  if (excludeId) { q += ' AND id != $3'; p.push(excludeId); }
   const result = await pool.query(q, p);
   return result.rows.length > 0;
 };
 
-const createBrand = async ({ name, description }, userId, userName) => {
+const createBrand = async (industryId, { name, description }, userId, userName) => {
   if (!name || !name.trim()) throw new Error('Brand name is required');
-  if (await brandNameExists(name)) throw new Error('Brand name already exists');
+  if (await brandNameExists(industryId, name)) throw new Error('Brand name already exists');
 
   const result = await pool.query(
-    `INSERT INTO product_brands (name, description)
-     VALUES ($1, $2)
+    `INSERT INTO product_brands (name, description, industry_id)
+     VALUES ($1, $2, $3)
      RETURNING id, name, description, created_at, updated_at`,
-    [name.trim(), description?.trim() || null]
+    [name.trim(), description?.trim() || null, industryId]
   );
   const brand = result.rows[0];
   logAudit({ userId, userName, module: 'Products - Brands', action: 'CREATE', recordId: brand.id, recordLabel: brand.name, oldData: null, newData: brand }).catch(() => {});
   return brand;
 };
 
-const updateBrand = async (id, { name, description }, userId, userName) => {
-  const existing = await fetchBrandById(id);
+const updateBrand = async (industryId, id, { name, description }, userId, userName) => {
+  const existing = await fetchBrandById(industryId, id);
   if (!existing) throw new Error('Brand not found');
-  if (name && await brandNameExists(name, id)) throw new Error('Brand name already in use');
+  if (name && await brandNameExists(industryId, name, id)) throw new Error('Brand name already in use');
 
   const result = await pool.query(
     `UPDATE product_brands
      SET name = COALESCE($1, name),
          description = COALESCE($2, description),
          updated_at = CURRENT_TIMESTAMP
-     WHERE id = $3
+     WHERE id = $3 AND industry_id = $4
      RETURNING id, name, description, updated_at`,
-    [name?.trim() || null, description !== undefined ? (description?.trim() || null) : undefined, id]
+    [name?.trim() || null, description !== undefined ? (description?.trim() || null) : undefined, id, industryId]
   );
   const brand = result.rows[0];
   logAudit({ userId, userName, module: 'Products - Brands', action: 'UPDATE', recordId: id, recordLabel: brand.name, oldData: existing, newData: brand }).catch(() => {});
   return brand;
 };
 
-const deleteBrand = async (id, userId, userName) => {
-  const existing = await fetchBrandById(id);
+const deleteBrand = async (industryId, id, userId, userName) => {
+  const existing = await fetchBrandById(industryId, id);
   if (!existing) throw new Error('Brand not found');
 
   const result = await pool.query(
-    'DELETE FROM product_brands WHERE id = $1 RETURNING id, name',
-    [id]
+    'DELETE FROM product_brands WHERE id = $1 AND industry_id = $2 RETURNING id, name',
+    [id, industryId]
   );
   if (result.rows.length === 0) throw new Error('Brand not found');
   logAudit({ userId, userName, module: 'Products - Brands', action: 'DELETE', recordId: id, recordLabel: result.rows[0].name, oldData: existing, newData: null }).catch(() => {});
@@ -141,11 +165,11 @@ const deleteBrand = async (id, userId, userName) => {
 // UNITS
 // ─────────────────────────────────────────────────────────────
 
-const fetchAllUnits = async (filters = {}) => {
+const fetchAllUnits = async (industryId, filters = {}) => {
   const { search = '', limit = 25, offset = 0 } = filters;
 
-  let where = 'WHERE 1=1';
-  const params = [];
+  let where = 'WHERE industry_id = $1';
+  const params = [industryId];
 
   if (search) {
     params.push(`%${search}%`);
@@ -175,41 +199,41 @@ const fetchAllUnits = async (filters = {}) => {
   return { units: result.rows, total };
 };
 
-const fetchUnitById = async (id) => {
+const fetchUnitById = async (industryId, id) => {
   const result = await pool.query(
-    'SELECT id, name, short_name, allow_decimal, created_at, updated_at FROM product_units WHERE id = $1',
-    [id]
+    'SELECT id, name, short_name, allow_decimal, created_at, updated_at FROM product_units WHERE id = $1 AND industry_id = $2',
+    [id, industryId]
   );
   return result.rows[0] || null;
 };
 
-const unitNameExists = async (name, excludeId = null) => {
-  let q = 'SELECT id FROM product_units WHERE LOWER(name) = LOWER($1)';
-  const p = [name];
-  if (excludeId) { q += ' AND id != $2'; p.push(excludeId); }
+const unitNameExists = async (industryId, name, excludeId = null) => {
+  let q = 'SELECT id FROM product_units WHERE LOWER(name) = LOWER($1) AND industry_id = $2';
+  const p = [name, industryId];
+  if (excludeId) { q += ' AND id != $3'; p.push(excludeId); }
   const result = await pool.query(q, p);
   return result.rows.length > 0;
 };
-const createUnit = async ({ name, short_name, allow_decimal }, userId, userName) => {
+const createUnit = async (industryId, { name, short_name, allow_decimal }, userId, userName) => {
   if (!name?.trim())       throw new Error('Unit name is required');
   if (!short_name?.trim()) throw new Error('Short name is required');
-  if (await unitNameExists(name)) throw new Error('Unit name already exists');
+  if (await unitNameExists(industryId, name)) throw new Error('Unit name already exists');
 
   const result = await pool.query(
-    `INSERT INTO product_units (name, short_name, allow_decimal)
-     VALUES ($1, $2, $3)
+    `INSERT INTO product_units (name, short_name, allow_decimal, industry_id)
+     VALUES ($1, $2, $3, $4)
      RETURNING id, name, short_name, allow_decimal, created_at, updated_at`,
-    [name.trim(), short_name.trim(), allow_decimal === true || allow_decimal === 'true' || allow_decimal === 'Yes']
+    [name.trim(), short_name.trim(), allow_decimal === true || allow_decimal === 'true' || allow_decimal === 'Yes', industryId]
   );
   const unit = result.rows[0];
   logAudit({ userId, userName, module: 'Products - Units', action: 'CREATE', recordId: unit.id, recordLabel: unit.name, oldData: null, newData: unit }).catch(() => {});
   return unit;
 };
 
-const updateUnit = async (id, { name, short_name, allow_decimal }, userId, userName) => {
-  const existing = await fetchUnitById(id);
+const updateUnit = async (industryId, id, { name, short_name, allow_decimal }, userId, userName) => {
+  const existing = await fetchUnitById(industryId, id);
   if (!existing) throw new Error('Unit not found');
-  if (name && await unitNameExists(name, id)) throw new Error('Unit name already in use');
+  if (name && await unitNameExists(industryId, name, id)) throw new Error('Unit name already in use');
 
   const result = await pool.query(
     `UPDATE product_units
@@ -217,7 +241,7 @@ const updateUnit = async (id, { name, short_name, allow_decimal }, userId, userN
          short_name    = COALESCE($2, short_name),
          allow_decimal = COALESCE($3, allow_decimal),
          updated_at    = CURRENT_TIMESTAMP
-     WHERE id = $4
+     WHERE id = $4 AND industry_id = $5
      RETURNING id, name, short_name, allow_decimal, updated_at`,
     [
       name?.trim() || null,
@@ -225,7 +249,8 @@ const updateUnit = async (id, { name, short_name, allow_decimal }, userId, userN
       allow_decimal !== undefined
         ? (allow_decimal === true || allow_decimal === 'true' || allow_decimal === 'Yes')
         : null,
-      id
+      id,
+      industryId
     ]
   );
   const unit = result.rows[0];
@@ -233,17 +258,17 @@ const updateUnit = async (id, { name, short_name, allow_decimal }, userId, userN
   return unit;
 };
 
-const deleteUnit = async (id, userId, userName) => {
-  // Check if unit is in use
-  const inUse = await pool.query('SELECT id FROM products WHERE unit_id = $1 LIMIT 1', [id]);
+const deleteUnit = async (industryId, id, userId, userName) => {
+  // Check if unit is in use (scoped — a unit in another industry being "in use" there is irrelevant here)
+  const inUse = await pool.query('SELECT id FROM products WHERE unit_id = $1 AND industry_id = $2 LIMIT 1', [id, industryId]);
   if (inUse.rows.length > 0) throw new Error('Cannot delete: unit is assigned to products');
 
-  const existing = await fetchUnitById(id);
+  const existing = await fetchUnitById(industryId, id);
   if (!existing) throw new Error('Unit not found');
 
   const result = await pool.query(
-    'DELETE FROM product_units WHERE id = $1 RETURNING id, name',
-    [id]
+    'DELETE FROM product_units WHERE id = $1 AND industry_id = $2 RETURNING id, name',
+    [id, industryId]
   );
   if (result.rows.length === 0) throw new Error('Unit not found');
   logAudit({ userId, userName, module: 'Products - Units', action: 'DELETE', recordId: id, recordLabel: result.rows[0].name, oldData: existing, newData: null }).catch(() => {});
@@ -254,105 +279,106 @@ const deleteUnit = async (id, userId, userName) => {
 // VARIATIONS
 // ─────────────────────────────────────────────────────────────
 
-const fetchAllVariations = async (filters = {}) => {
-  const { search = '', limit = 25, offset = 0 } = filters;
+const fetchAllVariations = async (industryId, filters = {}) => {
+    const { search = '', limit = 25, offset = 0 } = filters;
 
-  let where = 'WHERE 1=1';
-  const params = [];
+    let where = 'WHERE pv.industry_id = $1';
+    const params = [industryId];
 
-  if (search) {
-    params.push(`%${search}%`);
-    where += ` AND LOWER(pv.name) LIKE LOWER($${params.length})`;
-  }
+    if (search) {
+      params.push(`%${search}%`);
+      where += ` AND LOWER(pv.name) LIKE LOWER($${params.length})`;
+    }
 
-  const countResult = await pool.query(
-    `SELECT COUNT(*) FROM product_variations pv ${where}`,
-    params
-  );
-  const total = parseInt(countResult.rows[0].count);
-
-  const dataParams = [...params];
-  dataParams.push(limit);  const limitIdx = dataParams.length;
-  dataParams.push(offset); const offsetIdx = dataParams.length;
-
-  const result = await pool.query(
-    `SELECT
-       pv.id,
-       pv.name,
-       pv.created_at,
-       pv.updated_at,
-       COALESCE(
-         JSON_AGG(
-           JSON_BUILD_OBJECT('id', pvv.id, 'value', pvv.value)
-           ORDER BY pvv.value
-         ) FILTER (WHERE pvv.id IS NOT NULL),
-         '[]'
-       ) AS values
-     FROM product_variations pv
-     LEFT JOIN product_variation_values pvv ON pvv.variation_id = pv.id
-     ${where}
-     GROUP BY pv.id, pv.name, pv.created_at, pv.updated_at
-     ORDER BY pv.name ASC
-     LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
-    dataParams
-  );
-  return { variations: result.rows, total };
-};
-
-const fetchVariationById = async (id) => {
-  const result = await pool.query(
-    `SELECT
-       pv.id, pv.name, pv.created_at, pv.updated_at,
-       COALESCE(
-         JSON_AGG(
-           JSON_BUILD_OBJECT('id', pvv.id, 'value', pvv.value)
-           ORDER BY pvv.value
-         ) FILTER (WHERE pvv.id IS NOT NULL),
-         '[]'
-       ) AS values
-     FROM product_variations pv
-     LEFT JOIN product_variation_values pvv ON pvv.variation_id = pv.id
-     WHERE pv.id = $1
-     GROUP BY pv.id, pv.name, pv.created_at, pv.updated_at`,
-    [id]
-  );
-  return result.rows[0] || null;
-};
-
-const variationNameExists = async (name, excludeId = null) => {
-  let q = 'SELECT id FROM product_variations WHERE LOWER(name) = LOWER($1)';
-  const p = [name];
-  if (excludeId) { q += ' AND id != $2'; p.push(excludeId); }
-  const result = await pool.query(q, p);
-  return result.rows.length > 0;
-};
-
-const createVariation = async ({ name, values = [] }, userId, userName) => {
-  if (!name?.trim()) throw new Error('Variation name is required');
-  if (await variationNameExists(name)) throw new Error('Variation name already exists');
-
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    const varResult = await client.query(
-      'INSERT INTO product_variations (name) VALUES ($1) RETURNING id, name, created_at, updated_at',
-      [name.trim()]
+    const countResult = await pool.query(
+      `SELECT COUNT(*) FROM product_variations pv ${where}`,
+      params
     );
-    const variation = varResult.rows[0];
+    const total = parseInt(countResult.rows[0].count);
 
-    if (values && values.length > 0) {
-      const cleanValues = [...new Set(values.map(v => v.trim()).filter(Boolean))];
-      for (const val of cleanValues) {
-        await client.query(
-          'INSERT INTO product_variation_values (variation_id, value) VALUES ($1, $2)',
-          [variation.id, val]
-        );
+    const dataParams = [...params];
+    dataParams.push(limit);  const limitIdx = dataParams.length;
+    dataParams.push(offset); const offsetIdx = dataParams.length;
+
+    const result = await pool.query(
+      `SELECT
+        pv.id,
+        pv.name,
+        pv.created_at,
+        pv.updated_at,
+        COALESCE(
+          JSON_AGG(
+            JSON_BUILD_OBJECT('id', pvv.id, 'value', pvv.value)
+            ORDER BY pvv.value
+          ) FILTER (WHERE pvv.id IS NOT NULL),
+          '[]'
+        ) AS values
+      FROM product_variations pv
+      LEFT JOIN product_variation_values pvv ON pvv.variation_id = pv.id
+      ${where}
+      GROUP BY pv.id, pv.name, pv.created_at, pv.updated_at
+      ORDER BY pv.name ASC
+      LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+      dataParams
+    );
+    return { variations: result.rows, total };
+  };
+
+ const fetchVariationById = async (industryId, id) => {
+    const result = await pool.query(
+      `SELECT
+        pv.id, pv.name, pv.created_at, pv.updated_at,
+        COALESCE(
+          JSON_AGG(
+            JSON_BUILD_OBJECT('id', pvv.id, 'value', pvv.value)
+            ORDER BY pvv.value
+          ) FILTER (WHERE pvv.id IS NOT NULL),
+          '[]'
+        ) AS values
+      FROM product_variations pv
+      LEFT JOIN product_variation_values pvv ON pvv.variation_id = pv.id
+      WHERE pv.id = $1 AND pv.industry_id = $2
+      GROUP BY pv.id, pv.name, pv.created_at, pv.updated_at`,
+      [id, industryId]
+    );
+    return result.rows[0] || null;
+  };
+
+  const variationNameExists = async (industryId, name, excludeId = null) => {
+    let q = 'SELECT id FROM product_variations WHERE LOWER(name) = LOWER($1) AND industry_id = $2';
+    const p = [name, industryId];
+    if (excludeId) { q += ' AND id != $3'; p.push(excludeId); }
+    const result = await pool.query(q, p);
+    return result.rows.length > 0;
+  };
+
+const createVariation = async (industryId, { name, values = [] }, userId, userName) => {
+    await ensureProductSchema();
+    if (!name?.trim()) throw new Error('Variation name is required');
+    if (await variationNameExists(industryId, name)) throw new Error('Variation name already exists');
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const varResult = await client.query(
+        'INSERT INTO product_variations (name, industry_id) VALUES ($1, $2) RETURNING id, name, created_at, updated_at',
+        [name.trim(), industryId]
+      );
+      const variation = varResult.rows[0];
+
+      if (values && values.length > 0) {
+        const cleanValues = [...new Set(values.map(v => v.trim()).filter(Boolean))];
+        for (const val of cleanValues) {
+          await client.query(
+            'INSERT INTO product_variation_values (variation_id, value, industry_id) VALUES ($1, $2, $3)',
+            [variation.id, val, industryId]
+          );
       }
     }
 
     await client.query('COMMIT');
-    const created = await fetchVariationById(variation.id);
+    const created = await fetchVariationById(industryId, variation.id);
     logAudit({ userId, userName, module: 'Products - Variations', action: 'CREATE', recordId: variation.id, recordLabel: variation.name, oldData: null, newData: created }).catch(() => {});
     return created;
   } catch (err) {
@@ -363,10 +389,10 @@ const createVariation = async ({ name, values = [] }, userId, userName) => {
   }
 };
 
-const updateVariation = async (id, { name, values }, userId, userName) => {
-  const existing = await fetchVariationById(id);
+const updateVariation = async (industryId, id, { name, values }, userId, userName) => {
+  const existing = await fetchVariationById(industryId, id);
   if (!existing) throw new Error('Variation not found');
-  if (name && await variationNameExists(name, id)) throw new Error('Variation name already in use');
+  if (name && await variationNameExists(industryId, name, id)) throw new Error('Variation name already in use');
 
   const client = await pool.connect();
   try {
@@ -374,25 +400,28 @@ const updateVariation = async (id, { name, values }, userId, userName) => {
 
     if (name?.trim()) {
       await client.query(
-        'UPDATE product_variations SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-        [name.trim(), id]
+        'UPDATE product_variations SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND industry_id = $3',
+        [name.trim(), id, industryId]
       );
     }
 
     if (values !== undefined) {
-      // Replace all values
-      await client.query('DELETE FROM product_variation_values WHERE variation_id = $1', [id]);
+      // Replace all values (scoped to this industry's variation)
+      await client.query(
+        'DELETE FROM product_variation_values WHERE variation_id = $1 AND industry_id = $2',
+        [id, industryId]
+      );
       const cleanValues = [...new Set(values.map(v => v.trim()).filter(Boolean))];
       for (const val of cleanValues) {
         await client.query(
-          'INSERT INTO product_variation_values (variation_id, value) VALUES ($1, $2)',
-          [id, val]
+          'INSERT INTO product_variation_values (variation_id, value, industry_id) VALUES ($1, $2, $3)',
+          [id, val, industryId]
         );
       }
     }
 
     await client.query('COMMIT');
-    const updated = await fetchVariationById(id);
+    const updated = await fetchVariationById(industryId, id);
     logAudit({ userId, userName, module: 'Products - Variations', action: 'UPDATE', recordId: id, recordLabel: updated.name, oldData: existing, newData: updated }).catch(() => {});
     return updated;
   } catch (err) {
@@ -403,14 +432,14 @@ const updateVariation = async (id, { name, values }, userId, userName) => {
   }
 };
 
-const deleteVariation = async (id, userId, userName) => {
-  const existing = await fetchVariationById(id);
+const deleteVariation = async (industryId, id, userId, userName) => {
+  const existing = await fetchVariationById(industryId, id);
   if (!existing) throw new Error('Variation not found');
 
   // Cascade will delete values; check if variation exists first
   const result = await pool.query(
-    'DELETE FROM product_variations WHERE id = $1 RETURNING id, name',
-    [id]
+    'DELETE FROM product_variations WHERE id = $1 AND industry_id = $2 RETURNING id, name',
+    [id, industryId]
   );
   if (result.rows.length === 0) throw new Error('Variation not found');
   logAudit({ userId, userName, module: 'Products - Variations', action: 'DELETE', recordId: id, recordLabel: result.rows[0].name, oldData: existing, newData: null }).catch(() => {});
@@ -421,12 +450,12 @@ const deleteVariation = async (id, userId, userName) => {
 // CATEGORIES
 // ─────────────────────────────────────────────────────────────
 
-const fetchAllCategories = async (filters = {}) => {
+const fetchAllCategories = async (industryId, filters = {}) => {
   await ensureProductSchema();
   const { search = '', limit = 25, offset = 0 } = filters;
 
-  let where = 'WHERE 1=1';
-  const params = [];
+  let where = 'WHERE c.industry_id = $1';
+  const params = [industryId];
 
   if (search) {
     params.push(`%${search}%`);
@@ -447,7 +476,7 @@ const fetchAllCategories = async (filters = {}) => {
     `SELECT c.id, c.name, c.parent_id, c.description, c.default_hsn_code, c.created_at, c.updated_at,
             p.name AS parent_name
      FROM product_categories c
-     LEFT JOIN product_categories p ON p.id = c.parent_id
+     LEFT JOIN product_categories p ON p.id = c.parent_id AND p.industry_id = c.industry_id
      ${where}
      ORDER BY p.name NULLS FIRST, c.name ASC
      LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
@@ -456,37 +485,37 @@ const fetchAllCategories = async (filters = {}) => {
   return { categories: result.rows, total };
 };
 
-const fetchCategoryById = async (id) => {
+const fetchCategoryById = async (industryId, id) => {
   await ensureProductSchema();
   const result = await pool.query(
     `SELECT c.id, c.name, c.parent_id, c.description, c.default_hsn_code, c.created_at, c.updated_at,
             p.name AS parent_name
      FROM product_categories c
-     LEFT JOIN product_categories p ON p.id = c.parent_id
-     WHERE c.id = $1`,
-    [id]
+     LEFT JOIN product_categories p ON p.id = c.parent_id AND p.industry_id = c.industry_id
+     WHERE c.id = $1 AND c.industry_id = $2`,
+    [id, industryId]
   );
   return result.rows[0] || null;
 };
 
-const createCategory = async ({ name, parent_id, description, default_hsn_code }, userId, userName) => {
+const createCategory = async (industryId, { name, parent_id, description, default_hsn_code }, userId, userName) => {
   if (!name?.trim()) throw new Error('Category name is required');
   await ensureProductSchema();
 
   const result = await pool.query(
-    `INSERT INTO product_categories (name, parent_id, description, default_hsn_code)
-     VALUES ($1, $2, $3, $4)
-     RETURNING id, name, parent_id, description, default_hsn_code, created_at, updated_at`,
-    [name.trim(), parent_id || null, description?.trim() || null, default_hsn_code?.trim() || null]
+    `INSERT INTO product_categories (name, parent_id, description, default_hsn_code, industry_id)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id, name, parent_id, description, default_hsn_code, created_at, updated_at, industry_id`,
+    [name.trim(), parent_id || null, description?.trim() || null, default_hsn_code?.trim() || null, industryId]
   );
   const category = result.rows[0];
   logAudit({ userId, userName, module: 'Products - Categories', action: 'CREATE', recordId: category.id, recordLabel: category.name, oldData: null, newData: category }).catch(() => {});
   return category;
 };
 
-const updateCategory = async (id, { name, parent_id, description, default_hsn_code }, userId, userName) => {
+const updateCategory = async (industryId, id, { name, parent_id, description, default_hsn_code }, userId, userName) => {
   await ensureProductSchema();
-  const existing = await fetchCategoryById(id);
+  const existing = await fetchCategoryById(industryId, id);
   if (!existing) throw new Error('Category not found');
 
   const result = await pool.query(
@@ -496,27 +525,28 @@ const updateCategory = async (id, { name, parent_id, description, default_hsn_co
          description      = COALESCE($3, description),
          default_hsn_code = $4,
          updated_at       = CURRENT_TIMESTAMP
-     WHERE id = $5
+     WHERE id = $5 AND industry_id = $6
      RETURNING id, name, parent_id, description, default_hsn_code, updated_at`,
     [
       name?.trim() || null,
       parent_id !== undefined ? (parent_id || null) : existing.parent_id,
       description?.trim() || null,
       default_hsn_code !== undefined ? (default_hsn_code?.trim() || null) : existing.default_hsn_code,
-      id
+      id,
+      industryId
     ]
   );
   const category = result.rows[0];
   logAudit({ userId, userName, module: 'Products - Categories', action: 'UPDATE', recordId: id, recordLabel: category.name, oldData: existing, newData: category }).catch(() => {});
   return category;
 };
-const deleteCategory = async (id, userId, userName) => {
-  const existing = await fetchCategoryById(id);
+const deleteCategory = async (industryId, id, userId, userName) => {
+  const existing = await fetchCategoryById(industryId, id);
   if (!existing) throw new Error('Category not found');
 
   const result = await pool.query(
-    'DELETE FROM product_categories WHERE id = $1 RETURNING id, name',
-    [id]
+    'DELETE FROM product_categories WHERE id = $1 AND industry_id = $2 RETURNING id, name',
+    [id, industryId]
   );
   if (result.rows.length === 0) throw new Error('Category not found');
   logAudit({ userId, userName, module: 'Products - Categories', action: 'DELETE', recordId: id, recordLabel: result.rows[0].name, oldData: existing, newData: null }).catch(() => {});
@@ -525,15 +555,14 @@ const deleteCategory = async (id, userId, userName) => {
 // ─────────────────────────────────────────────────────────────
 // PRODUCTS
 // ─────────────────────────────────────────────────────────────
-
-const fetchAllProducts = async (filters = {}) => {
+const fetchAllProducts = async (industryId, filters = {}) => {
   const {
     search = '', status = '', category_id = '',
     brand_id = '', limit = 25, offset = 0
   } = filters;
 
-  const params = [];
-  let where = 'WHERE 1=1';
+  const params = [industryId];
+  let where = 'WHERE p.industry_id = $1';
 
   if (search) {
     params.push(`%${search}%`);
@@ -601,7 +630,7 @@ const result = await pool.query(
   return { products: result.rows, total };
 };
 
-const fetchProductById = async (id) => {
+const fetchProductById = async (industryId, id) => {
   const result = await pool.query(
     `SELECT
        p.id, p.name, p.sku, p.barcode_type,
@@ -630,44 +659,48 @@ const fetchProductById = async (id) => {
      LEFT JOIN product_categories pc  ON pc.id = p.category_id
      LEFT JOIN product_categories sc  ON sc.id = p.sub_category_id
      LEFT JOIN contacts           sup ON sup.id = p.default_supplier_id
-     WHERE p.id = $1`,
-    [id]
+     WHERE p.id = $1 AND p.industry_id = $2`,
+    [id, industryId]
   );
   return result.rows[0] || null;
 };
-const skuExists = async (sku, excludeId = null) => {
+const skuExists = async (industryId, sku, excludeId = null) => {
   if (!sku || !sku.trim()) return false;
-  let q = 'SELECT id FROM products WHERE LOWER(sku) = LOWER($1)';
-  const p = [sku.trim()];
-  if (excludeId) { q += ' AND id != $2'; p.push(excludeId); }
+  let q = 'SELECT id FROM products WHERE LOWER(sku) = LOWER($1) AND industry_id = $2';
+  const p = [sku.trim(), industryId];
+  if (excludeId) { q += ' AND id != $3'; p.push(excludeId); }
   const result = await pool.query(q, p);
   return result.rows.length > 0;
 };
 
-// Resolve unit/brand/category by name → id
-const resolveUnitId = async (unitNameOrId) => {
+// Resolve unit/brand/category by name → id (scoped to the active industry)
+const resolveUnitId = async (industryId, unitNameOrId) => {
   if (!unitNameOrId || !String(unitNameOrId).trim()) return null;
   if (!isNaN(unitNameOrId)) return parseInt(unitNameOrId);
-  const r = await pool.query('SELECT id FROM product_units WHERE LOWER(name) = LOWER($1)', [unitNameOrId]);
+  const r = await pool.query(
+    'SELECT id FROM product_units WHERE (LOWER(name) = LOWER($1) OR LOWER(short_name) = LOWER($1)) AND industry_id = $2',
+    [String(unitNameOrId).trim(), industryId]
+  );
   return r.rows[0]?.id || null;
 };
-
-const resolveBrandId = async (brandNameOrId) => {
+const resolveBrandId = async (industryId, brandNameOrId) => {
   if (!brandNameOrId || !String(brandNameOrId).trim()) return null;
   if (!isNaN(brandNameOrId)) return parseInt(brandNameOrId);
-  const r = await pool.query('SELECT id FROM product_brands WHERE LOWER(name) = LOWER($1)', [brandNameOrId]);
+  const r = await pool.query('SELECT id FROM product_brands WHERE LOWER(name) = LOWER($1) AND industry_id = $2', [brandNameOrId, industryId]);
   return r.rows[0]?.id || null;
 };
 
-const resolveCategoryId = async (catNameOrId) => {
+const resolveCategoryId = async (industryId, catNameOrId) => {
   if (!catNameOrId || !String(catNameOrId).trim()) return null;
   if (!isNaN(catNameOrId)) return parseInt(catNameOrId);
-  const r = await pool.query('SELECT id FROM product_categories WHERE LOWER(name) = LOWER($1)', [catNameOrId]);
+  const r = await pool.query('SELECT id FROM product_categories WHERE LOWER(name) = LOWER($1) AND industry_id = $2', [catNameOrId, industryId]);
   return r.rows[0]?.id || null;
 };
 
 // Resolve default_supplier by name/code or numeric id — supports both a
 // direct supplier_id and a supplier name/code coming from Product Import.
+// NOTE: contacts (suppliers) are NOT in ISOLATED_TABLES / do not carry industry_id,
+// so this intentionally stays business-wide — unchanged from before.
 const resolveSupplierId = async (supplierNameOrId) => {
   if (!supplierNameOrId || !String(supplierNameOrId).trim()) return null;
   if (!isNaN(supplierNameOrId)) return parseInt(supplierNameOrId);
@@ -683,26 +716,27 @@ const resolveSupplierId = async (supplierNameOrId) => {
 
 // Find an existing product by exact SKU, or by exact name match if SKU is
 // absent — used by Product Import to decide "create" vs "update" per row.
-const findExistingProductForImport = async ({ name, sku }) => {
+const findExistingProductForImport = async (industryId, { name, sku }) => {
   if (sku && String(sku).trim()) {
-    const bySku = await pool.query('SELECT id FROM products WHERE LOWER(sku) = LOWER($1)', [String(sku).trim()]);
+    const bySku = await pool.query('SELECT id FROM products WHERE LOWER(sku) = LOWER($1) AND industry_id = $2', [String(sku).trim(), industryId]);
     if (bySku.rows[0]) return bySku.rows[0].id;
   }
   if (name && String(name).trim()) {
-    const byName = await pool.query('SELECT id FROM products WHERE LOWER(name) = LOWER($1)', [String(name).trim()]);
+    const byName = await pool.query('SELECT id FROM products WHERE LOWER(name) = LOWER($1) AND industry_id = $2', [String(name).trim(), industryId]);
     if (byName.rows[0]) return byName.rows[0].id;
   }
   return null;
 };
 
-const validateProductData = (data) => {
+const validateProductData = (productData) => {
   const errors = [];
-  if (!data.name?.trim()) errors.push('Product name is required');
-  if (!data.unit && !data.unit_id) errors.push('Unit is required');
+  const { name, unit, unit_id } = productData || {};
+  if (!name || !String(name).trim()) errors.push('Product name is required');
+  if (!unit_id && (!unit || !String(unit).trim())) errors.push('Unit is required');
   return { isValid: errors.length === 0, errors };
 };
 
-const createProduct = async (productData, userId, userName) => {
+const createProduct = async (industryId, productData, userId, userName) => {
   await ensureProductSchema();
   const { isValid, errors } = validateProductData(productData);
   if (!isValid) throw new Error(errors.join(', '));
@@ -724,13 +758,13 @@ const {
     barcode_value, batch_number, serial_number, custom_fields
   } = productData;
 
-  if (sku && await skuExists(sku)) throw new Error('SKU already exists');
+  if (sku && await skuExists(industryId, sku)) throw new Error('SKU already exists');
 
-  // Resolve FK ids (support both name-string and numeric id)
-  const resolvedUnitId     = unit_id     || await resolveUnitId(unit);
-  const resolvedBrandId    = brand_id    || await resolveBrandId(brand);
-  const resolvedCategoryId = category_id || await resolveCategoryId(category);
-  const resolvedSubCatId   = sub_category_id || await resolveCategoryId(sub_category);
+  // Resolve FK ids (support both name-string and numeric id), scoped to this industry
+  const resolvedUnitId     = unit_id     || await resolveUnitId(industryId, unit);
+  const resolvedBrandId    = brand_id    || await resolveBrandId(industryId, brand);
+  const resolvedCategoryId = category_id || await resolveCategoryId(industryId, category);
+  const resolvedSubCatId   = sub_category_id || await resolveCategoryId(industryId, sub_category);
  const resolvedSupplierId = default_supplier_id || await resolveSupplierId(default_supplier);
 const resolvedLocationId = business_location_id || await stockLocationService.getDefaultLocationId(pool);
 const result = await pool.query(
@@ -743,10 +777,10 @@ const result = await pool.query(
       tax, selling_price_tax_type, product_type, item_type, warranty,
        purchase_price_exc_tax, purchase_price_inc_tax, margin, selling_price_exc_tax,
        current_stock, image_url, status, default_supplier_id, hsn_code,
-       barcode_value, batch_number, serial_number, custom_fields
+       barcode_value, batch_number, serial_number, custom_fields, industry_id
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-       $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32
+       $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33
      )
      RETURNING id`,
     [
@@ -781,7 +815,8 @@ status || 'Active',
       barcode_value?.trim() || null,
       batch_number?.trim() || null,
       serial_number?.trim() || null,
-      custom_fields ? JSON.stringify(custom_fields) : '{}'
+      custom_fields ? JSON.stringify(custom_fields) : '{}',
+      industryId
     ]
   );
 
@@ -796,7 +831,7 @@ status || 'Active',
 } catch (seedErr) {
     console.error('[createProduct] stock-by-location seed warning:', seedErr.message);
   }
-  const created = await fetchProductById(result.rows[0].id);
+  const created = await fetchProductById(industryId, result.rows[0].id);
 
   logAudit({
     userId, userName,
@@ -810,9 +845,9 @@ status || 'Active',
 
   return created;
 };
-const updateProduct = async (id, productData, userId, userName) => {
+const updateProduct = async (industryId, id, productData, userId, userName) => {
   await ensureProductSchema();
-  const existing = await fetchProductById(id);
+  const existing = await fetchProductById(industryId, id);
   if (!existing) throw new Error('Product not found');
   const oldData = existing;
 const {
@@ -833,12 +868,12 @@ const {
     barcode_value, batch_number, serial_number, custom_fields
   } = productData;
 
-  if (sku && await skuExists(sku, id)) throw new Error('SKU already in use');
+  if (sku && await skuExists(industryId, sku, id)) throw new Error('SKU already in use');
 
-  const resolvedUnitId     = unit_id !== undefined     ? unit_id     : (unit     ? await resolveUnitId(unit)     : undefined);
-  const resolvedBrandId    = brand_id !== undefined    ? brand_id    : (brand    ? await resolveBrandId(brand)    : undefined);
-  const resolvedCategoryId = category_id !== undefined ? category_id : (category ? await resolveCategoryId(category) : undefined);
-  const resolvedSubCatId   = sub_category_id !== undefined ? sub_category_id : (sub_category ? await resolveCategoryId(sub_category) : undefined);
+  const resolvedUnitId     = unit_id !== undefined     ? unit_id     : (unit     ? await resolveUnitId(industryId, unit)     : undefined);
+  const resolvedBrandId    = brand_id !== undefined    ? brand_id    : (brand    ? await resolveBrandId(industryId, brand)    : undefined);
+  const resolvedCategoryId = category_id !== undefined ? category_id : (category ? await resolveCategoryId(industryId, category) : undefined);
+  const resolvedSubCatId   = sub_category_id !== undefined ? sub_category_id : (sub_category ? await resolveCategoryId(industryId, sub_category) : undefined);
   const resolvedSupplierId = default_supplier_id !== undefined ? default_supplier_id : (default_supplier ? await resolveSupplierId(default_supplier) : undefined);
 const result = await pool.query(
     `UPDATE products SET
@@ -875,7 +910,7 @@ const result = await pool.query(
        serial_number           = COALESCE($31, serial_number),
        custom_fields           = COALESCE($32, custom_fields),
        updated_at              = CURRENT_TIMESTAMP
-     WHERE id = $33
+     WHERE id = $33 AND industry_id = $34
      RETURNING id`,
     [
       name?.trim()                  || null,
@@ -910,11 +945,12 @@ const result = await pool.query(
       batch_number !== undefined ? (batch_number?.trim() || null) : null,
       serial_number !== undefined ? (serial_number?.trim() || null) : null,
       custom_fields !== undefined ? JSON.stringify(custom_fields || {}) : null,
-id
+id,
+      industryId
     ]
   );
 
-  const updated = await fetchProductById(result.rows[0].id);
+  const updated = await fetchProductById(industryId, result.rows[0].id);
 
   logAudit({
     userId, userName,
@@ -928,15 +964,15 @@ id
 
   return updated;
 };
-const deleteProduct = async (id, userId, userName) => {
+const deleteProduct = async (industryId, id, userId, userName) => {
   try {
-    const existing = await pool.query('SELECT * FROM products WHERE id = $1', [id]);
+    const existing = await pool.query('SELECT * FROM products WHERE id = $1 AND industry_id = $2', [id, industryId]);
     if (existing.rows.length === 0) throw new Error('Product not found');
     const oldData = existing.rows[0];
 
     const result = await pool.query(
-      'DELETE FROM products WHERE id = $1 RETURNING id, name, sku',
-      [id]
+      'DELETE FROM products WHERE id = $1 AND industry_id = $2 RETURNING id, name, sku',
+      [id, industryId]
     );
     if (result.rows.length === 0) throw new Error('Product not found');
 
@@ -958,16 +994,15 @@ const deleteProduct = async (id, userId, userName) => {
     throw err;
   }
 };
-const updateProductStatus = async (id, status) => {
+const updateProductStatus = async (industryId, id, status) => {
   if (!['Active', 'Inactive'].includes(status)) throw new Error('Invalid status');
   const result = await pool.query(
-    'UPDATE products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING id, name, status',
-    [status, id]
+    'UPDATE products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND industry_id = $3 RETURNING id, name, status',
+    [status, id, industryId]
   );
   if (result.rows.length === 0) throw new Error('Product not found');
   return result.rows[0];
-};
-
+};  
 // ─────────────────────────────────────────────────────────────
 // BULK IMPORT PRODUCTS (from Excel/CSV via Import Products page)
 // ─────────────────────────────────────────────────────────────
@@ -980,7 +1015,7 @@ const updateProductStatus = async (id, status) => {
 //      the Purchase List and stock-from-purchases invariant intact.
 // Runs row-by-row (not one big transaction) so a single bad row doesn't
 // block the rest of the file — mirrors bulkImportContacts' error style.
-const bulkImportProducts = async (rows, userId, userName) => {
+const bulkImportProducts = async (industryId, rows, userId, userName) => {
   await ensureProductSchema();
   const purchaseService = require('./purchaseService'); // lazy require avoids circular import at module load
 
@@ -1003,16 +1038,16 @@ const bulkImportProducts = async (rows, userId, userName) => {
         supplierId = await contactService.findOrCreateSupplierByName(supplierRef, client);
       }
 
-      // ── Find existing product (by SKU, else name) or create it ──
-      let productId = await findExistingProductForImport({ name: r.name, sku: r.sku });
+      // ── Find existing product (by SKU, else name) or create it, scoped to this industry ──
+      let productId = await findExistingProductForImport(industryId, { name: r.name, sku: r.sku });
 const openingStockQty = parseFloat(r.openingStock ?? r.opening_stock) || 0;
       const purchasePrice   = parseFloat(r.purchasePrice ?? r.purchase_price ?? r.exc_tax) || 0;
       const sellingPrice    = parseFloat(r.sellingPrice  ?? r.selling_price  ?? r.exc_tax_sell) || 0;
     const paidAmount      = parseFloat(r.paidAmount ?? r.paid_amount ?? r['Paid Amount']) || 0;
 
-      const resolvedUnitId     = await resolveUnitId(r.unit);
-      const resolvedBrandId    = await resolveBrandId(r.brand);
-      const resolvedCategoryId = await resolveCategoryId(r.category);
+      const resolvedUnitId     = await resolveUnitId(industryId, r.unit);
+      const resolvedBrandId    = await resolveBrandId(industryId, r.brand);
+      const resolvedCategoryId = await resolveCategoryId(industryId, r.category);
 
       if (!resolvedUnitId) throw new Error(`Unit "${r.unit}" not found`);
 
@@ -1021,8 +1056,8 @@ const openingStockQty = parseFloat(r.openingStock ?? r.opening_stock) || 0;
           `INSERT INTO products (
              name, sku, unit_id, brand_id, category_id,
              purchase_price_exc_tax, selling_price_exc_tax,
-             current_stock, status, default_supplier_id
-           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'Active',$9)
+             current_stock, status, default_supplier_id, industry_id
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'Active',$9,$10)
            RETURNING id`,
           [
             r.name.trim(),
@@ -1034,14 +1069,15 @@ const openingStockQty = parseFloat(r.openingStock ?? r.opening_stock) || 0;
             sellingPrice,
             0, // stock is applied via the Purchase transaction below, not written directly
             supplierId,
+            industryId,
           ]
         );
         productId = insertRes.rows[0].id;
       } else if (supplierId) {
         // Existing product — link/refresh its default supplier if the sheet provided one
         await client.query(
-          `UPDATE products SET default_supplier_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
-          [supplierId, productId]
+          `UPDATE products SET default_supplier_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND industry_id = $3`,
+          [supplierId, productId, industryId]
         );
       }
 
@@ -1049,39 +1085,55 @@ const openingStockQty = parseFloat(r.openingStock ?? r.opening_stock) || 0;
 
       // ── Opening stock → real Purchase transaction (outside the row txn;
       // purchaseService manages its own transaction/stock-impact logic) ──
-    if (openingStockQty > 0) {
-        await purchaseService.createPurchase(
-          {
-            supplier_id: supplierId,
-            purchase_status: 'Received',
-            location: r.openingStockLocation || r.opening_stock_location || undefined,
-            notes: 'Auto-created from Product Import (opening stock)',
-            items: [{
-              product_id: productId,
-              product_name: r.name.trim(),
-              product_sku: r.sku || null,
-              quantity: openingStockQty,
-              unit_cost: purchasePrice,
-              discount_pct: 0,
-              margin_pct: 0,
-            }],
-       amount_paid: paidAmount,
-          },
-          userId,
-          userName
-        );
+if (openingStockQty > 0) {
+        try {
+          await purchaseService.createPurchase(
+            {
+              supplier_id: supplierId,
+              purchase_status: 'Received',
+              location: r.openingStockLocation || r.opening_stock_location || undefined,
+              notes: 'Auto-created from Product Import (opening stock)',
+              items: [{
+                product_id: productId,
+                product_name: r.name.trim(),
+                product_sku: r.sku || null,
+                quantity: openingStockQty,
+                unit_cost: purchasePrice,
+                discount_pct: 0,
+                margin_pct: 0,
+              }],
+         amount_paid: paidAmount,
+            },
+            userId,
+            userName
+          );
+        } catch (stockErr) {
+          errors.push({ row: i + 1, product: r.name, error: `Product created but opening stock failed: ${stockErr.message}` });
+        }
       }
 
       created.push({ id: productId, name: r.name });
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
-      errors.push({ row: i + 1, error: err.message });
+      errors.push({ row: i + 1, product: r.name, error: err.message });
     } finally {
       client.release();
     }
   }
 
   return { created: created.length, failed: errors.length, errors };
+};
+
+// Stock-by-location for a single product — scoped to this industry.
+// Verifies the product belongs to this industry first (so a product_id
+// from another industry can't be probed), then delegates to the existing
+// shared stockLocationService.stockByAllLocations (unchanged — used by
+// Stock Transfer / Purchase / Purchase Return too).
+const fetchStockByLocation = async (industryId, productId) => {
+  const product = await fetchProductById(industryId, productId);
+  if (!product) return null;
+  const rows = await stockLocationService.stockByAllLocations(pool, productId);
+  return rows;
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -1099,4 +1151,5 @@ module.exports = {
   // Products
   fetchAllProducts, fetchProductById, createProduct, updateProduct, deleteProduct, updateProductStatus,
   bulkImportProducts,
+  fetchStockByLocation,
 };

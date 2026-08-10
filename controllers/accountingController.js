@@ -3,6 +3,11 @@
  * controllers/accountingController.js
  * Thin HTTP layer over services/accountingService.js
  * Mirrors the style of controllers/reportsController.js
+ *
+ * Every handler forwards req.industryId (set by the
+ * requireIndustry middleware) as the first argument to
+ * the corresponding service function, so every query is
+ * scoped to the caller's active Industry Workspace.
  * ====================================================
  */
 
@@ -22,83 +27,83 @@ const wrap = (fn, label) => async (req, res) => {
 
 module.exports = {
   // Dashboard
-  dashboard: wrap(async () => ({
-    data: await svc.getDashboardSummary(),
-    trend: await svc.getRevenueExpenseTrend(),
-    aging: await svc.getARAging(),
+  dashboard: wrap(async (req) => ({
+    data: await svc.getDashboardSummary(req.industryId),
+    trend: await svc.getRevenueExpenseTrend(req.industryId),
+    aging: await svc.getARAging(req.industryId),
   }), 'dashboard'),
 
   // Receivables / Payables
   receivables: wrap(async (req) => {
-    const { rows, summary, aging } = await svc.getReceivables(req.query);
+    const { rows, summary, aging } = await svc.getReceivables(req.industryId, req.query);
     return { data: rows, summary, aging };
   }, 'receivables'),
 
   payables: wrap(async (req) => {
-    const { rows, summary } = await svc.getPayables(req.query);
+    const { rows, summary } = await svc.getPayables(req.industryId, req.query);
     return { data: rows, summary };
   }, 'payables'),
 
   // Cash & Bank
-  listBankAccounts: wrap(async () => ({ data: await svc.listBankAccounts() }), 'listBankAccounts'),
-  createBankAccount: wrap(async (req) => ({ data: await svc.createBankAccount(req.body) }), 'createBankAccount'),
-  
-listBankTransactions: wrap(async (req) => ({ data: await svc.listBankTransactions(req.query) }), 'listBankTransactions'),
-  createBankTransaction: wrap(async (req) => ({ data: await svc.createBankTransaction(req.body, req.user?.id) }), 'createBankTransaction'),
-  updateBankTransaction: wrap(async (req) => ({ data: await svc.updateBankTransaction(req.params.id, req.body) }), 'updateBankTransaction'),
-  deleteBankTransaction: wrap(async (req) => ({ data: await svc.deleteBankTransaction(req.params.id) }), 'deleteBankTransaction'),
-  reconcileBankTransaction: wrap(async (req) => ({ data: await svc.reconcileBankTransaction(req.params.id) }), 'reconcileBankTransaction'),
-  bankAccountLedger: wrap(async (req) => ({ data: await svc.getBankAccountLedger(req.params.id, req.query) }), 'bankAccountLedger'),
-  bankStatement: wrap(async (req) => ({ data: await svc.getBankStatement(req.params.id, req.query) }), 'bankStatement'),
-  cashBankSummary: wrap(async () => ({ data: await svc.getCashBankSummary() }), 'cashBankSummary'),
+  listBankAccounts: wrap(async (req) => ({ data: await svc.listBankAccounts(req.industryId) }), 'listBankAccounts'),
+  createBankAccount: wrap(async (req) => ({ data: await svc.createBankAccount(req.industryId, req.body) }), 'createBankAccount'),
+
+  listBankTransactions: wrap(async (req) => ({ data: await svc.listBankTransactions(req.industryId, req.query) }), 'listBankTransactions'),
+  createBankTransaction: wrap(async (req) => ({ data: await svc.createBankTransaction(req.industryId, req.body, req.user?.id) }), 'createBankTransaction'),
+  updateBankTransaction: wrap(async (req) => ({ data: await svc.updateBankTransaction(req.industryId, req.params.id, req.body) }), 'updateBankTransaction'),
+  deleteBankTransaction: wrap(async (req) => ({ data: await svc.deleteBankTransaction(req.industryId, req.params.id) }), 'deleteBankTransaction'),
+  reconcileBankTransaction: wrap(async (req) => ({ data: await svc.reconcileBankTransaction(req.industryId, req.params.id) }), 'reconcileBankTransaction'),
+  bankAccountLedger: wrap(async (req) => ({ data: await svc.getBankAccountLedger(req.industryId, req.params.id, req.query) }), 'bankAccountLedger'),
+  bankStatement: wrap(async (req) => ({ data: await svc.getBankStatement(req.industryId, req.params.id, req.query) }), 'bankStatement'),
+  cashBankSummary: wrap(async (req) => ({ data: await svc.getCashBankSummary(req.industryId) }), 'cashBankSummary'),
 // GST & Tax
-  gstSummary: wrap(async () => ({
-    data: await svc.getGSTSummary(),
-    taxRates: await svc.getTaxRateMaster(),
-    returns: await svc.getGSTQuarterly(),
+  gstSummary: wrap(async (req) => ({
+    data: await svc.getGSTSummary(req.industryId),
+    taxRates: await svc.getTaxRateMaster(req.industryId),
+    returns: await svc.getGSTQuarterly(req.industryId),
   }), 'gstSummary'),
-  gstLedger: wrap(async () => ({ data: await svc.getGSTLedger() }), 'gstLedger'),
-  gstTrend: wrap(async () => ({ data: await svc.getGSTMonthlyTrend() }), 'gstTrend'),
- gstSettings: wrap(async () => ({ data: await svc.getGSTSettings() }), 'gstSettings'),
-  updateGSTSettings: wrap(async (req) => ({ data: await svc.updateGSTSettings(req.body) }), 'updateGSTSettings'),
- gstHsnSummary: wrap(async () => ({ data: await svc.getHSNSummary() }), 'gstHsnSummary'),
-  gstByState: wrap(async () => ({ data: await svc.getGSTByState() }), 'gstByState'),
+  gstLedger: wrap(async (req) => ({ data: await svc.getGSTLedger(req.industryId) }), 'gstLedger'),
+  gstTrend: wrap(async (req) => ({ data: await svc.getGSTMonthlyTrend(req.industryId) }), 'gstTrend'),
+ gstSettings: wrap(async (req) => ({ data: await svc.getGSTSettings(req.industryId) }), 'gstSettings'),
+  updateGSTSettings: wrap(async (req) => ({ data: await svc.updateGSTSettings(req.industryId, req.body) }), 'updateGSTSettings'),
+ gstHsnSummary: wrap(async (req) => ({ data: await svc.getHSNSummary(req.industryId) }), 'gstHsnSummary'),
+  gstByState: wrap(async (req) => ({ data: await svc.getGSTByState(req.industryId) }), 'gstByState'),
 
   // Fixed Assets
- listFixedAssets: wrap(async () => ({ data: await svc.listFixedAssets() }), 'listFixedAssets'),
-  createFixedAsset: wrap(async (req) => ({ data: await svc.createFixedAsset(req.body) }), 'createFixedAsset'),
-  updateFixedAsset: wrap(async (req) => ({ data: await svc.updateFixedAsset(req.params.id, req.body) }), 'updateFixedAsset'),
-disposeFixedAsset: wrap(async (req) => ({ data: await svc.disposeFixedAsset(req.params.id) }), 'disposeFixedAsset'),
-  deleteFixedAsset: wrap(async (req) => ({ data: await svc.deleteFixedAsset(req.params.id) }), 'deleteFixedAsset'),
-  getAssetDepreciationLog: wrap(async (req) => ({ data: await svc.getAssetDepreciationLog(req.params.id) }), 'getAssetDepreciationLog'),
-  postMonthlyDepreciation: wrap(async () => ({ data: await svc.postMonthlyDepreciation() }), 'postMonthlyDepreciation'),
+ listFixedAssets: wrap(async (req) => ({ data: await svc.listFixedAssets(req.industryId) }), 'listFixedAssets'),
+  createFixedAsset: wrap(async (req) => ({ data: await svc.createFixedAsset(req.industryId, req.body) }), 'createFixedAsset'),
+  updateFixedAsset: wrap(async (req) => ({ data: await svc.updateFixedAsset(req.industryId, req.params.id, req.body) }), 'updateFixedAsset'),
+disposeFixedAsset: wrap(async (req) => ({ data: await svc.disposeFixedAsset(req.industryId, req.params.id) }), 'disposeFixedAsset'),
+  deleteFixedAsset: wrap(async (req) => ({ data: await svc.deleteFixedAsset(req.industryId, req.params.id) }), 'deleteFixedAsset'),
+  getAssetDepreciationLog: wrap(async (req) => ({ data: await svc.getAssetDepreciationLog(req.industryId, req.params.id) }), 'getAssetDepreciationLog'),
+  postMonthlyDepreciation: wrap(async (req) => ({ data: await svc.postMonthlyDepreciation(req.industryId) }), 'postMonthlyDepreciation'),
 
 // Cost Centers & Costing
-  listCostCenters: wrap(async () => ({ data: await svc.listCostCenters() }), 'listCostCenters'),
-  createCostCenter: wrap(async (req) => ({ data: await svc.createCostCenter(req.body) }), 'createCostCenter'),
-  updateCostCenter: wrap(async (req) => ({ data: await svc.updateCostCenter(req.params.id, req.body) }), 'updateCostCenter'),
-  deleteCostCenter: wrap(async (req) => ({ data: await svc.deleteCostCenter(req.params.id) }), 'deleteCostCenter'),
-  expenseLocations: wrap(async () => ({ data: await svc.getExpenseLocations() }), 'expenseLocations'),
-  productCosting: wrap(async () => ({ data: await svc.getProductCosting() }), 'productCosting'),
+  listCostCenters: wrap(async (req) => ({ data: await svc.listCostCenters(req.industryId) }), 'listCostCenters'),
+  createCostCenter: wrap(async (req) => ({ data: await svc.createCostCenter(req.industryId, req.body) }), 'createCostCenter'),
+  updateCostCenter: wrap(async (req) => ({ data: await svc.updateCostCenter(req.industryId, req.params.id, req.body) }), 'updateCostCenter'),
+  deleteCostCenter: wrap(async (req) => ({ data: await svc.deleteCostCenter(req.industryId, req.params.id) }), 'deleteCostCenter'),
+  expenseLocations: wrap(async (req) => ({ data: await svc.getExpenseLocations(req.industryId) }), 'expenseLocations'),
+  productCosting: wrap(async (req) => ({ data: await svc.getProductCosting(req.industryId) }), 'productCosting'),
 
   // Budgets
-  listBudgets: wrap(async () => ({ data: await svc.listBudgets() }), 'listBudgets'),
-  createBudget: wrap(async (req) => ({ data: await svc.createBudget(req.body) }), 'createBudget'),
-  listExpenseRequests: wrap(async () => ({ data: await svc.listExpenseRequests() }), 'listExpenseRequests'),
+  listBudgets: wrap(async (req) => ({ data: await svc.listBudgets(req.industryId) }), 'listBudgets'),
+  createBudget: wrap(async (req) => ({ data: await svc.createBudget(req.industryId, req.body) }), 'createBudget'),
+  listExpenseRequests: wrap(async (req) => ({ data: await svc.listExpenseRequests(req.industryId) }), 'listExpenseRequests'),
 
   // Chart of Accounts & General Ledger
-  chartOfAccounts: wrap(async () => ({ data: await svc.getChartOfAccounts() }), 'chartOfAccounts'),
+  chartOfAccounts: wrap(async (req) => ({ data: await svc.getChartOfAccounts(req.industryId) }), 'chartOfAccounts'),
   journalEntries: wrap(async (req) => ({
-    data: await svc.listManualJournalEntries(req.query.limit),
-    derived: await svc.listDerivedJournal(req.query.limit),
+    data: await svc.listManualJournalEntries(req.industryId, req.query.limit),
+    derived: await svc.listDerivedJournal(req.industryId, req.query.limit),
   }), 'journalEntries'),
-  createJournalEntry: wrap(async (req) => ({ data: await svc.createManualJournalEntry(req.body, req.user?.id) }), 'createJournalEntry'),
-  deleteJournalEntry: wrap(async (req) => ({ data: await svc.deleteManualJournalEntry(req.params.id) }), 'deleteJournalEntry'), 
+  createJournalEntry: wrap(async (req) => ({ data: await svc.createManualJournalEntry(req.industryId, req.body, req.user?.id) }), 'createJournalEntry'),
+  deleteJournalEntry: wrap(async (req) => ({ data: await svc.deleteManualJournalEntry(req.industryId, req.params.id) }), 'deleteJournalEntry'),
   // Trial Balance
-  trialBalance: wrap(async () => ({ data: await svc.getTrialBalance() }), 'trialBalance'),
+  trialBalance: wrap(async (req) => ({ data: await svc.getTrialBalance(req.industryId) }), 'trialBalance'),
 
   // Financial Statements
-  profitAndLoss: wrap(async (req) => ({ data: await svc.getProfitAndLoss(req.query) }), 'profitAndLoss'),
-  balanceSheet: wrap(async () => ({ data: await svc.getBalanceSheet() }), 'balanceSheet'),
-  cashFlow: wrap(async () => ({ data: await svc.getCashFlow() }), 'cashFlow'),
+  profitAndLoss: wrap(async (req) => ({ data: await svc.getProfitAndLoss(req.industryId, req.query) }), 'profitAndLoss'),
+  balanceSheet: wrap(async (req) => ({ data: await svc.getBalanceSheet(req.industryId) }), 'balanceSheet'),
+  cashFlow: wrap(async (req) => ({ data: await svc.getCashFlow(req.industryId) }), 'cashFlow'),
 };

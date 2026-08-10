@@ -34,14 +34,14 @@ const getAllInvoices = async (req, res) => {
       limit:    Number(req.query.limit)  || 100,
       offset:   Number(req.query.offset) || 0,
     };
-    const data = await sellService.getAllInvoices(filters);
+const data = await sellService.getAllInvoices(req.industryId, filters);
     ok(res, data, { total: data.length });
   } catch (e) { err(res, e, "Failed to get invoices"); }
 };
 
 const getInvoiceById = async (req, res) => {
   try {
-    const data = await sellService.getInvoiceById(req.params.id);
+ const data = await sellService.getInvoiceById(req.industryId, req.params.id);
     if (!data) return notFound(res, "Invoice not found");
     ok(res, data);
   } catch (e) { err(res, e, "Failed to get invoice"); }
@@ -51,7 +51,7 @@ const createInvoice = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
-    const data = await sellService.createInvoice(req.body, userId, userName);
+const data = await sellService.createInvoice(req.industryId, req.body, userId, userName);
     logActivity({ userId: req.user?.id || null, module: 'Sales', action: `Created Invoice ${data.invoiceNo || data.id}`, detail: `${data.customer || ''} – ₹${data.grandTotal || 0}`, req });
 
     (async () => {
@@ -93,7 +93,7 @@ const updateInvoice = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
-    const data = await sellService.updateInvoice(req.params.id, req.body, userId, userName);
+   const data = await sellService.updateInvoice(req.industryId, req.params.id, req.body, userId, userName);
     ok(res, data);
   } catch (e) { err(res, e, "Failed to update invoice"); }
 };
@@ -102,7 +102,7 @@ const deleteInvoice = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
-    await sellService.deleteInvoice(req.params.id, userId, userName);
+await sellService.deleteInvoice(req.industryId, req.params.id, userId, userName);
     ok(res, { deleted: true });
   } catch (e) { err(res, e, "Failed to delete invoice"); }
 };
@@ -113,7 +113,7 @@ const deleteInvoice = async (req, res) => {
 
 const getAllPOSSales = async (req, res) => {
   try {
-    const data = await sellService.getAllPOSSales({
+const data = await sellService.getAllPOSSales(req.industryId, {
       customer: req.query.customer,
       search:   req.query.search,
       limit:    Number(req.query.limit)  || 100,
@@ -124,8 +124,8 @@ const getAllPOSSales = async (req, res) => {
 };
 
 const getPOSSaleById = async (req, res) => {
-  try {
-    const data = await sellService.getPOSSaleById(req.params.id);
+  try {const data = await sellService.getPOSSaleById(req.industryId, req.params.id);
+
     if (!data) return notFound(res, "POS sale not found");
     ok(res, data);
   } catch (e) { err(res, e, "Failed to get POS sale"); }
@@ -134,7 +134,8 @@ const createPOSSale = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
-   const data = await sellService.createPOSSale(req.body, userId, userName);
+  
+   const data = await sellService.createPOSSale(req.industryId, req.body, userId, userName);
     logActivity({ userId: req.user?.id || null, module: 'POS', action: `Completed Sale ${data.refNo || data.id}`, detail: `${data.customer || 'Walk-In'} – ₹${data.grandTotal || 0}`, req });
     created(res, data);
   } catch (e) {
@@ -148,7 +149,7 @@ const updatePOSSale = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
-    const data = await sellService.updatePOSSale(req.params.id, req.body, userId, userName);
+ const data = await sellService.updatePOSSale(req.industryId, req.params.id, req.body, userId, userName);
     ok(res, data);
   } catch (e) { err(res, e, "Failed to update POS sale"); }
 };
@@ -157,7 +158,7 @@ const deletePOSSale = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
-    await sellService.deletePOSSale(req.params.id, userId, userName);
+await sellService.deletePOSSale(req.industryId, req.params.id, userId, userName);
     ok(res, { deleted: true });
   } catch (e) { err(res, e, "Failed to delete POS sale"); }
 };
@@ -168,7 +169,7 @@ const deletePOSSale = async (req, res) => {
 
 const getAllQuotations = async (req, res) => {
   try {
-    const data = await sellService.getAllQuotations({
+const data = await sellService.getAllQuotations(req.industryId, {
       status: req.query.status,
       search: req.query.search,
       limit:  Number(req.query.limit)  || 100,
@@ -180,7 +181,7 @@ const getAllQuotations = async (req, res) => {
 
 const getQuotationById = async (req, res) => {
   try {
-    const data = await sellService.getQuotationById(req.params.id);
+const data = await sellService.getQuotationById(req.industryId, req.params.id);
     if (!data) return notFound(res, "Quotation not found");
     ok(res, data);
   } catch (e) { err(res, e, "Failed to get quotation"); }
@@ -188,7 +189,7 @@ const getQuotationById = async (req, res) => {
 
 const createQuotation = async (req, res) => {
   try {
-    const data = await sellService.createQuotation(req.body);
+   const data = await sellService.createQuotation(req.industryId, req.body);
     created(res, data);
   } catch (e) {
     if (e.code === "23505")
@@ -199,14 +200,14 @@ const createQuotation = async (req, res) => {
 
 const updateQuotation = async (req, res) => {
   try {
-    const data = await sellService.updateQuotation(req.params.id, req.body);
+const data = await sellService.updateQuotation(req.industryId, req.params.id, req.body);
     ok(res, data);
   } catch (e) { err(res, e, "Failed to update quotation"); }
 };
 
 const deleteQuotation = async (req, res) => {
   try {
-    await sellService.deleteQuotation(req.params.id);
+  await sellService.deleteQuotation(req.industryId, req.params.id); 
     ok(res, { deleted: true });
   } catch (e) { err(res, e, "Failed to delete quotation"); }
 };
@@ -217,7 +218,7 @@ const deleteQuotation = async (req, res) => {
 
 const getAllReturns = async (req, res) => {
   try {
-    const data = await sellService.getAllReturns({
+  const data = await sellService.getAllReturns(req.industryId, {
       limit:  Number(req.query.limit)  || 100,
       offset: Number(req.query.offset) || 0,
     });
@@ -227,7 +228,7 @@ const getAllReturns = async (req, res) => {
 
 const getReturnById = async (req, res) => {
   try {
-    const data = await sellService.getReturnById(req.params.id);
+const data = await sellService.getReturnById(req.industryId, req.params.id);
     if (!data) return notFound(res, "Return not found");
     ok(res, data);
   } catch (e) { err(res, e, "Failed to get return"); }
@@ -237,7 +238,7 @@ const createReturn = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
-   const data = await sellService.createReturn(req.body, userId, userName);
+ const data = await sellService.createReturn(req.industryId, req.body, userId, userName);
     logActivity({ userId: req.user?.id || null, module: 'Sales', action: `Created Sales Return ${data.returnNo || data.id}`, detail: `${data.customer || ''} – ₹${data.grandTotal || 0}`, req });
     created(res, data);
   } catch (e) {
@@ -250,7 +251,7 @@ const updateReturn = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
-    const data = await sellService.updateReturn(req.params.id, req.body, userId, userName);
+const data = await sellService.updateReturn(req.industryId, req.params.id, req.body, userId, userName);
     ok(res, data);
   } catch (e) { err(res, e, "Failed to update return"); }
 };
@@ -259,7 +260,7 @@ const deleteReturn = async (req, res) => {
   try {
     const userId = req.user?.id || null;
     const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
-    await sellService.deleteReturn(req.params.id, userId, userName);
+   await sellService.deleteReturn(req.industryId, req.params.id, userId, userName);
     ok(res, { deleted: true });
   } catch (e) { err(res, e, "Failed to delete return"); }
 };
@@ -269,7 +270,7 @@ const deleteReturn = async (req, res) => {
 
 const getAllDrafts = async (req, res) => {
   try {
-    const data = await sellService.getAllDrafts({
+  const data = await sellService.getAllDrafts(req.industryId, {
       search: req.query.search,
       limit:  Number(req.query.limit)  || 100,
       offset: Number(req.query.offset) || 0,
@@ -280,7 +281,7 @@ const getAllDrafts = async (req, res) => {
 
 const getDraftById = async (req, res) => {
   try {
-    const data = await sellService.getDraftById(req.params.id);
+const data = await sellService.getDraftById(req.industryId, req.params.id);
     if (!data) return notFound(res, "Draft not found");
     ok(res, data);
   } catch (e) { err(res, e, "Failed to get draft"); }
@@ -288,21 +289,21 @@ const getDraftById = async (req, res) => {
 
 const createDraft = async (req, res) => {
   try {
-    const data = await sellService.createDraft(req.body);
+const data = await sellService.createDraft(req.industryId, req.body);
     created(res, data);
   } catch (e) { err(res, e, "Failed to create draft"); }
 };
 
 const updateDraft = async (req, res) => {
   try {
-    const data = await sellService.updateDraft(req.params.id, req.body);
+const data = await sellService.updateDraft(req.industryId, req.params.id, req.body);
     ok(res, data);
   } catch (e) { err(res, e, "Failed to update draft"); }
 };
 
 const deleteDraft = async (req, res) => {
   try {
-    await sellService.deleteDraft(req.params.id);
+await sellService.deleteDraft(req.industryId, req.params.id);
     ok(res, { deleted: true });
   } catch (e) { err(res, e, "Failed to delete draft"); }
 };
@@ -312,7 +313,7 @@ const deleteDraft = async (req, res) => {
 
 const getAllShipments = async (req, res) => {
   try {
-    const data = await sellService.getAllShipments({
+const data = await sellService.getAllShipments(req.industryId, {
       status: req.query.status,
       search: req.query.search,
       limit:  Number(req.query.limit)  || 100,
@@ -324,7 +325,7 @@ const getAllShipments = async (req, res) => {
 
 const getShipmentById = async (req, res) => {
   try {
-    const data = await sellService.getShipmentById(req.params.id);
+ const data = await sellService.getShipmentById(req.industryId, req.params.id);
     if (!data) return notFound(res, "Shipment not found");
     ok(res, data);
   } catch (e) { err(res, e, "Failed to get shipment"); }
@@ -332,7 +333,7 @@ const getShipmentById = async (req, res) => {
 
 const createShipment = async (req, res) => {
   try {
-    const data = await sellService.createShipment(req.body);
+const data = await sellService.createShipment(req.industryId, req.body);
     created(res, data);
   } catch (e) {
     if (e.code === "23505")
@@ -343,14 +344,15 @@ const createShipment = async (req, res) => {
 
 const updateShipment = async (req, res) => {
   try {
-    const data = await sellService.updateShipment(req.params.id, req.body);
+ const data = await sellService.updateShipment(req.industryId, req.params.id, req.body);
     ok(res, data);
   } catch (e) { err(res, e, "Failed to update shipment"); }
 };
 
 const deleteShipment = async (req, res) => {
   try {
-    await sellService.deleteShipment(req.params.id);
+
+    await sellService.deleteShipment(req.industryId, req.params.id);
     ok(res, { deleted: true });
   } catch (e) { err(res, e, "Failed to delete shipment"); }
 };
@@ -361,7 +363,7 @@ const deleteShipment = async (req, res) => {
 
 const getAllDiscounts = async (req, res) => {
   try {
-    const data = await sellService.getAllDiscounts({
+const data = await sellService.getAllDiscounts(req.industryId, {
       status: req.query.status,
       limit:  Number(req.query.limit)  || 100,
       offset: Number(req.query.offset) || 0,
@@ -372,7 +374,7 @@ const getAllDiscounts = async (req, res) => {
 
 const getDiscountById = async (req, res) => {
   try {
-    const data = await sellService.getDiscountById(req.params.id);
+const data = await sellService.getDiscountById(req.industryId, req.params.id);
     if (!data) return notFound(res, "Discount not found");
     ok(res, data);
   } catch (e) { err(res, e, "Failed to get discount"); }
@@ -381,7 +383,7 @@ const getDiscountById = async (req, res) => {
 const validateDiscountCode = async (req, res) => {
   try {
     const { code } = req.params;
-    const data = await sellService.getDiscountByCode(code);
+const data = await sellService.getDiscountByCode(req.industryId, code); 
     if (!data) return notFound(res, "Discount code not found or inactive");
     ok(res, data);
   } catch (e) { err(res, e, "Failed to validate discount"); }
@@ -389,7 +391,7 @@ const validateDiscountCode = async (req, res) => {
 
 const createDiscount = async (req, res) => {
   try {
-    const data = await sellService.createDiscount(req.body);
+const data = await sellService.createDiscount(req.industryId, req.body);
     created(res, data);
   } catch (e) {
     if (e.code === "23505")
@@ -400,14 +402,14 @@ const createDiscount = async (req, res) => {
 
 const updateDiscount = async (req, res) => {
   try {
-    const data = await sellService.updateDiscount(req.params.id, req.body);
+  const data = await sellService.updateDiscount(req.industryId, req.params.id, req.body); 
     ok(res, data);
   } catch (e) { err(res, e, "Failed to update discount"); }
 };
 
 const deleteDiscount = async (req, res) => {
   try {
-    await sellService.deleteDiscount(req.params.id);
+await sellService.deleteDiscount(req.industryId, req.params.id);
     ok(res, { deleted: true });
   } catch (e) { err(res, e, "Failed to delete discount"); }
 };
@@ -433,7 +435,7 @@ const importSales = [
       if (!rows || rows.length === 0)
         return res.status(400).json({ success: false, message: "CSV file is empty or has no data rows" });
 
-     const result = await sellService.importSalesFromCSV(rows, req.file.originalname, req.user?.id || null);
+  const result = await sellService.importSalesFromCSV(req.industryId, rows, req.file.originalname, req.user?.id || null);
       ok(res, result, {
         message: `Import complete: ${result.imported} records imported${result.errors.length ? `, ${result.errors.length} skipped` : ""}`,
         imported: result.imported,

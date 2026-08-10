@@ -10,9 +10,9 @@ const express = require('express');
 const router  = express.Router();
 
 const auth  = require('../middleware/auth');
+const requireIndustry = require('../middleware/industry');
 const { requireAnyPermission } = require('../middleware/permission');
 const ctrl  = require('../controllers/hrmController');
-
 // ── Permission shorthand ─────────────────────────────────────
 const VIEW_HRM     = [['Essentials','Add/Edit/View/Delete all leave'],['Essentials','View all Payroll'],['Essentials','Add/Edit/View/Delete all attendance']];
 const MANAGE_HRM   = [['Essentials','Add/Edit/View/Delete all leave'],['Essentials','View all Payroll']];
@@ -21,16 +21,16 @@ const MANAGE_HRM   = [['Essentials','Add/Edit/View/Delete all leave'],['Essentia
 router.get('/dashboard',               auth, requireAnyPermission(VIEW_HRM),   ctrl.getDashboardStats);
 
 // ── DEPARTMENTS ──────────────────────────────────────────────
-router.get   ('/departments',          auth, requireAnyPermission(VIEW_HRM),   ctrl.getDepartments);
-router.post  ('/departments',          auth, requireAnyPermission(MANAGE_HRM), ctrl.createDepartment);
-router.put   ('/departments/:id',      auth, requireAnyPermission(MANAGE_HRM), ctrl.updateDepartment);
-router.delete('/departments/:id',      auth, requireAnyPermission(MANAGE_HRM), ctrl.deleteDepartment);
+router.get   ('/departments',          auth, requireIndustry, requireAnyPermission(VIEW_HRM),   ctrl.getDepartments);
+router.post  ('/departments',          auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.createDepartment);
+router.put   ('/departments/:id',      auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.updateDepartment);
+router.delete('/departments/:id',      auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.deleteDepartment);
 
 // ── DESIGNATIONS ─────────────────────────────────────────────
-router.get   ('/designations',         auth, requireAnyPermission(VIEW_HRM),   ctrl.getDesignations);
-router.post  ('/designations',         auth, requireAnyPermission(MANAGE_HRM), ctrl.createDesignation);
-router.put   ('/designations/:id',     auth, requireAnyPermission(MANAGE_HRM), ctrl.updateDesignation);
-router.delete('/designations/:id',     auth, requireAnyPermission(MANAGE_HRM), ctrl.deleteDesignation);
+router.get   ('/designations',         auth, requireIndustry, requireAnyPermission(VIEW_HRM),   ctrl.getDesignations);
+router.post  ('/designations',         auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.createDesignation);
+router.put   ('/designations/:id',     auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.updateDesignation);
+router.delete('/designations/:id',     auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.deleteDesignation);    
 
 // ── LEAVE TYPES ──────────────────────────────────────────────
 router.get   ('/leave-types',          auth, requireAnyPermission(VIEW_HRM),   ctrl.getLeaveTypes);
@@ -62,37 +62,80 @@ router.put   ('/attendance/:id',       auth, requireAnyPermission(MANAGE_HRM), c
 router.delete('/attendance/:id',       auth, requireAnyPermission(MANAGE_HRM), ctrl.deleteAttendance);
 
 // ── PAYROLL ──────────────────────────────────────────────────
-router.get   ('/payroll',              auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.getPayrolls);
-router.post  ('/payroll',              auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.createPayroll);
-router.put   ('/payroll/:id',          auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.updatePayroll);
-router.delete('/payroll/:id',          auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.deletePayroll);
-router.get   ('/payroll-run/eligible', auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.getEligibleForRun);
-router.get   ('/payroll-run/preview/:employeeId', auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.previewPayroll);
-router.post  ('/payroll-run',          auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.runPayroll);
-router.get   ('/payroll/:id/items',    auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.getPayrollItems);
+router.get   ('/payroll',              auth, requireIndustry, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.getPayrolls);
+router.post  ('/payroll',              auth, requireIndustry, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.createPayroll);
+router.put   ('/payroll/:id',          auth, requireIndustry, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.updatePayroll);
+router.delete('/payroll/:id',          auth, requireIndustry, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.deletePayroll);
+router.get   ('/payroll-run/eligible', auth, requireIndustry, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.getEligibleForRun);
+router.get   ('/payroll-run/preview/:employeeId', auth, requireIndustry, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.previewPayroll);
+router.post  ('/payroll-run',          auth, requireIndustry, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.runPayroll);
+router.get   ('/payroll/:id/items',    auth, requireIndustry, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.getPayrollItems);
 
 // ── PAY COMPONENTS ───────────────────────────────────────────
-router.get   ('/pay-components',       auth, requireAnyPermission(MANAGE_HRM), ctrl.getPayComponents);
-router.post  ('/pay-components',       auth, requireAnyPermission(MANAGE_HRM), ctrl.createPayComponent);
-router.put   ('/pay-components/:id',   auth, requireAnyPermission(MANAGE_HRM), ctrl.updatePayComponent);
-router.delete('/pay-components/:id',   auth, requireAnyPermission(MANAGE_HRM), ctrl.deletePayComponent);
+// NEW
+router.get   ('/pay-components',       auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.getPayComponents);
+router.post  ('/pay-components',       auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.createPayComponent);
+router.put   ('/pay-components/:id',   auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.updatePayComponent);
+router.delete('/pay-components/:id',   auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.deletePayComponent); 
 
-// ── PAYROLL GROUPS ───────────────────────────────────────────
-router.get   ('/payroll-groups',       auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.getPayrollGroups);
-router.post  ('/payroll-groups',       auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.createPayrollGroup);
-router.put   ('/payroll-groups/:id',   auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.updatePayrollGroup);
-router.delete('/payroll-groups/:id',   auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.deletePayrollGroup);
-router.get   ('/payroll-groups/:id/components', auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.getGroupComponents);
-router.put   ('/payroll-groups/:id/components', auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.updateGroupComponents);
-router.get   ('/employees',            auth, requireAnyPermission(VIEW_HRM), ctrl.getEmployeesWithGroups);
-router.put   ('/employees/:id/payroll-group', auth, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.assignPayrollGroup);
+router.get   ('/payroll-groups',       auth, requireIndustry, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.getPayrollGroups);
+router.post  ('/payroll-groups',       auth, requireIndustry, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.createPayrollGroup);
+router.put   ('/payroll-groups/:id',   auth, requireIndustry, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.updatePayrollGroup);
+router.delete('/payroll-groups/:id',   auth, requireIndustry, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.deletePayrollGroup);
+router.get   ('/payroll-groups/:id/components', auth, requireIndustry, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.getGroupComponents);
+router.put   ('/payroll-groups/:id/components', auth, requireIndustry, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.updateGroupComponents);
+router.get   ('/employees',            auth, requireIndustry, requireAnyPermission(VIEW_HRM), ctrl.getEmployeesWithGroups);
+router.put   ('/employees/:id/payroll-group', auth, requireIndustry, requireAnyPermission([['Essentials','View all Payroll']]), ctrl.assignPayrollGroup);
 
-// ── HRM EMPLOYEES (non-login staff CRUD) ─────────────────────
-router.get   ('/hrm-employees',        auth, requireAnyPermission(MANAGE_HRM), ctrl.getEmployees);
-router.post  ('/hrm-employees',        auth, requireAnyPermission(MANAGE_HRM), ctrl.createEmployee);
-router.put   ('/hrm-employees/:id',    auth, requireAnyPermission(MANAGE_HRM), ctrl.updateEmployee);
-router.delete('/hrm-employees/:id',    auth, requireAnyPermission(MANAGE_HRM), ctrl.deleteEmployee);
-router.post('/hrm-employees/:id/enable-login', auth, requireAnyPermission(MANAGE_HRM), ctrl.enableEmployeeLogin);
+router.get   ('/hrm-employees',        auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.getEmployees);
+router.post  ('/hrm-employees',        auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.createEmployee);
+router.put   ('/hrm-employees/:id',    auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.updateEmployee);
+router.delete('/hrm-employees/:id',    auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.deleteEmployee);
+router.post('/hrm-employees/:id/enable-login', auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.enableEmployeeLogin);
+
+// ── EMPLOYEE EDUCATION / EXPERIENCE / DOCUMENTS / SKILLS (Phase 2) ──
+const path = require('path');
+const fs = require('fs');
+const multer = require('multer');
+const DOC_UPLOAD_DIR = path.join(__dirname, '..', 'uploads', 'hrm-documents');
+fs.mkdirSync(DOC_UPLOAD_DIR, { recursive: true });
+const docStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, DOC_UPLOAD_DIR),
+  filename: (req, file, cb) => {
+    const safe = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+    cb(null, `${Date.now()}-${safe}`);
+  },
+});
+const uploadDoc = multer({
+  storage: docStorage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB cap
+  fileFilter: (req, file, cb) => {
+    const allowed = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'];
+    if (!allowed.includes(file.mimetype)) return cb(new Error('Only PDF, JPG, PNG files are allowed'));
+    cb(null, true);
+  },
+});
+
+router.get   ('/hrm-employees/:employeeId/education',      auth, requireIndustry, requireAnyPermission(VIEW_HRM),   ctrl.getEmployeeEducation);
+router.post  ('/hrm-employees/:employeeId/education',      auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.createEmployeeEducation);
+router.put   ('/hrm-employees/education/:id',               auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.updateEmployeeEducation);
+router.delete('/hrm-employees/education/:id',               auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.deleteEmployeeEducation);
+
+router.get   ('/hrm-employees/:employeeId/experience',      auth, requireIndustry, requireAnyPermission(VIEW_HRM),   ctrl.getEmployeeExperience);
+router.post  ('/hrm-employees/:employeeId/experience',      auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.createEmployeeExperience);
+router.put   ('/hrm-employees/experience/:id',               auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.updateEmployeeExperience);
+router.delete('/hrm-employees/experience/:id',               auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.deleteEmployeeExperience);
+
+router.get   ('/hrm-employees/:employeeId/documents',        auth, requireIndustry, requireAnyPermission(VIEW_HRM),   ctrl.getEmployeeDocuments);
+router.post  ('/hrm-employees/:employeeId/documents',        auth, requireIndustry, requireAnyPermission(MANAGE_HRM), uploadDoc.single('file'), ctrl.uploadEmployeeDocument);
+router.delete('/hrm-employees/documents/:id',                 auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.deleteEmployeeDocument);
+
+router.get   ('/hrm-employees/:employeeId/skills',            auth, requireIndustry, requireAnyPermission(VIEW_HRM),   ctrl.getEmployeeSkills);
+router.post  ('/hrm-employees/:employeeId/skills',            auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.createEmployeeSkill);
+router.delete('/hrm-employees/skills/:id',                     auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.deleteEmployeeSkill);
+
+// ── EMPLOYEE TIMELINE (Phase 3) ─────────────────────────────
+router.get('/hrm-employees/:employeeId/timeline', auth, requireIndustry, requireAnyPermission(VIEW_HRM), ctrl.getEmployeeTimeline);
 
 // ── HOLIDAYS ─────────────────────────────────────────────────
 router.get   ('/holidays',             auth, requireAnyPermission(VIEW_HRM),   ctrl.getHolidays);
@@ -109,7 +152,20 @@ router.put   ('/sales-targets/:id',    auth, requireAnyPermission(MANAGE_HRM), c
 router.delete('/sales-targets/:id',    auth, requireAnyPermission(MANAGE_HRM), ctrl.deleteSalesTarget);
 
 // ── SETTINGS ─────────────────────────────────────────────────
-router.get   ('/settings',             auth, requireAnyPermission(VIEW_HRM),   ctrl.getSettings);
-router.put   ('/settings',             auth, requireAnyPermission(MANAGE_HRM), ctrl.updateSettings);
+router.get   ('/settings',             auth, requireIndustry, requireAnyPermission(VIEW_HRM),   ctrl.getSettings);
+router.put   ('/settings',             auth, requireIndustry, requireAnyPermission(MANAGE_HRM), ctrl.updateSettings);
+router.get   ('/hrm-employees/search', auth, requireIndustry, requireAnyPermission(VIEW_HRM),   ctrl.searchEmployees);
 
+router.get   ('/reports/attendance',          auth, requireIndustry, requireAnyPermission(VIEW_HRM), ctrl.attendanceReport);
+router.get   ('/reports/leave',               auth, requireIndustry, requireAnyPermission(VIEW_HRM), ctrl.leaveReport);
+router.get   ('/reports/late',                auth, requireIndustry, requireAnyPermission(VIEW_HRM), ctrl.lateReport);
+router.get   ('/reports/overtime',            auth, requireIndustry, requireAnyPermission(VIEW_HRM), ctrl.overtimeReport);
+router.get   ('/reports/employee-directory',  auth, requireIndustry, requireAnyPermission(VIEW_HRM), ctrl.employeeDirectory);
+router.get   ('/reports/payroll',             auth, requireIndustry, requireAnyPermission(VIEW_HRM), ctrl.payrollReport);
+router.get   ('/reports/joining',             auth, requireIndustry, requireAnyPermission(VIEW_HRM), ctrl.joiningReport);
+router.get   ('/reports/exit',                auth, requireIndustry, requireAnyPermission(VIEW_HRM), ctrl.exitReport);
+router.get   ('/reports/department',          auth, requireIndustry, requireAnyPermission(VIEW_HRM), ctrl.departmentReport);
+router.get   ('/reports/branch',              auth, requireIndustry, requireAnyPermission(VIEW_HRM), ctrl.branchReport);
+router.get   ('/reports/salary',              auth, requireIndustry, requireAnyPermission(VIEW_HRM), ctrl.salaryReport);
+router.get   ('/reports/training',            auth, requireIndustry, requireAnyPermission(VIEW_HRM), ctrl.trainingReport);
 module.exports = router;

@@ -1,14 +1,16 @@
 const express = require('express');
 const router  = express.Router();
+const authenticateToken = require('../middleware/auth');
+const requireIndustry = require('../middleware/industry');
 const roleController = require('../controllers/roleController');
 
 // Permissions route MUST come before /:id
-router.get('/permissions', roleController.getAllPermissions);
+router.get('/permissions', authenticateToken, requireIndustry, roleController.getAllPermissions);
 
-router.get('/',       roleController.getAllRoles);
-router.get('/:id',    roleController.getRoleById);
-router.post('/',      roleController.createRole);
-router.put('/:id',    roleController.updateRole);
-router.delete('/:id', roleController.deleteRole);
+router.get('/',       authenticateToken, requireIndustry, roleController.getAllRoles);
+router.get('/:id',    authenticateToken, requireIndustry, roleController.getRoleById);
+router.post('/',      authenticateToken, requireIndustry, roleController.createRole);
+router.put('/:id',    authenticateToken, requireIndustry, roleController.updateRole);
+router.delete('/:id', authenticateToken, requireIndustry, roleController.deleteRole);
 
 module.exports = router;

@@ -19,7 +19,7 @@ const getAllStockTransfers = async (req, res) => {
       date_from = '', date_to = '',
     } = req.query;
 
-    const { rows, total } = await stockTransferService.fetchAllStockTransfers({
+    const { rows, total } = await stockTransferService.fetchAllStockTransfers(req.industryId, {
       page, limit, search,
       status, location_from, location_to,
       date_from, date_to,
@@ -42,7 +42,7 @@ const getAllStockTransfers = async (req, res) => {
 // ── GET SINGLE STOCK TRANSFER (with items) ────────────────────────────────────
 const getStockTransferById = async (req, res) => {
   try {
-    const stockTransfer = await stockTransferService.fetchStockTransferById(req.params.id);
+    const stockTransfer = await stockTransferService.fetchStockTransferById(req.params.id, req.industryId);
     if (!stockTransfer) {
       return res.status(404).json({ success: false, error: 'Stock Transfer not found' });
     }
@@ -68,8 +68,7 @@ const createStockTransfer = async (req, res) => {
     if (req.body.items.some((it) => !it.product_id && !it.id)) {
       return res.status(400).json({ success: false, error: 'Each item must reference a valid product' });
     }
-
-const stockTransfer = await stockTransferService.createStockTransfer(req.body, userId, userName);
+const stockTransfer = await stockTransferService.createStockTransfer(req.industryId, req.body, userId, userName);
     console.log(`✅ Stock Transfer created: ${stockTransfer.reference_no}`);
     logActivity({ userId, module: 'Stock Transfers', action: `Created Transfer ${stockTransfer.reference_no}`, detail: `${req.body.location_from} → ${req.body.location_to}`, req });
     res.status(201).json({
@@ -89,7 +88,7 @@ const updateStockTransfer = async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId || null;
     const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
-   const stockTransfer = await stockTransferService.updateStockTransfer(req.params.id, req.body, userId, userName);
+const stockTransfer = await stockTransferService.updateStockTransfer(req.industryId, req.params.id, req.body, userId, userName);
     console.log(`✅ Stock Transfer updated: id ${req.params.id}`);
     logActivity({ userId, module: 'Stock Transfers', action: `Updated Transfer ${stockTransfer.reference_no || req.params.id}`, req });
     res.status(200).json({
@@ -109,7 +108,7 @@ const deleteStockTransfer = async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId || null;
     const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
-    const result = await stockTransferService.deleteStockTransfer(req.params.id, userId, userName);
+const result = await stockTransferService.deleteStockTransfer(req.industryId, req.params.id, userId, userName);
     res.status(200).json({
       success: true,
       message: 'Stock Transfer deleted successfully',
@@ -125,7 +124,7 @@ const deleteStockTransfer = async (req, res) => {
 // ── DASHBOARD STATS ───────────────────────────────────────────────────────────
 const getStats = async (req, res) => {
   try {
-    const stats = await stockTransferService.getStockTransferStats();
+    const stats = await stockTransferService.getStockTransferStats(req.industryId);
     res.status(200).json({ success: true, stats });
   } catch (err) {
     console.error('❌ Get Stock Transfer Stats Error:', err.message);
@@ -136,7 +135,7 @@ const getStats = async (req, res) => {
 // ── PRODUCTS DROPDOWN (for Add/Edit form item search) ─────────────────────────
 const getProducts = async (req, res) => {
   try {
-    const products = await stockTransferService.getProductsList();
+    const products = await stockTransferService.getProductsList(req.industryId);  
     res.status(200).json({ success: true, products });
   } catch (err) {
     console.error('❌ Get Products Error:', err.message);

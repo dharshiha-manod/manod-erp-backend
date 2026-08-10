@@ -12,7 +12,7 @@ const getAllGroups = async (req, res) => {
   try {
     const { page = 1, limit = 25, search = '' } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
-    const { groups, total } = await fetchAllGroups({ search, limit: parseInt(limit), offset });
+    const { groups, total } = await fetchAllGroups(req.industryId, { search, limit: parseInt(limit), offset });
 
     res.status(200).json({
       success: true,
@@ -30,7 +30,7 @@ const getAllGroups = async (req, res) => {
 
 const getGroupById = async (req, res) => {
   try {
-    const group = await fetchGroupById(req.params.id);
+    const group = await fetchGroupById(req.params.id, req.industryId);
     if (!group) return res.status(404).json({ success: false, error: 'Selling price group not found' });
     res.status(200).json({ success: true, group });
   } catch (err) {
@@ -41,7 +41,7 @@ const getGroupById = async (req, res) => {
 
 const addGroup = async (req, res) => {
   try {
-    const group = await createGroup(req.body);
+    const group = await createGroup(req.industryId, req.body);
     console.log('✅ Selling price group created:', group.name);
     res.status(201).json({ success: true, message: 'Selling price group created successfully', group });
   } catch (err) {
@@ -53,7 +53,7 @@ const addGroup = async (req, res) => {
 
 const editGroup = async (req, res) => {
   try {
-    const group = await updateGroup(req.params.id, req.body);
+    const group = await updateGroup(req.params.id, req.industryId, req.body);
     console.log('✅ Selling price group updated:', group.name);
     res.status(200).json({ success: true, message: 'Selling price group updated successfully', group });
   } catch (err) {
@@ -65,7 +65,7 @@ const editGroup = async (req, res) => {
 
 const removeGroup = async (req, res) => {
   try {
-    const group = await deleteGroup(req.params.id);
+    const group = await deleteGroup(req.params.id, req.industryId);
     console.log('✅ Selling price group deleted:', group.name);
     res.status(200).json({ success: true, message: 'Selling price group deleted successfully', group });
   } catch (err) {

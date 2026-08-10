@@ -10,8 +10,8 @@ const { logActivity } = require('../services/activityLogService');
 const getAllExpenses = async (req, res) => {
   try {
     const { page = 1, limit = 25, search = '', category_id = '', payment_status = '', date_from = '', date_to = '' } = req.query;
-    const { rows, total } = await svc.fetchAllExpenses({ page, limit, search, category_id, payment_status, date_from, date_to });
-    const totals = await svc.getTotals({ search, category_id, payment_status, date_from, date_to });
+    const { rows, total } = await svc.fetchAllExpenses(req.industryId, { page, limit, search, category_id, payment_status, date_from, date_to });
+    const totals = await svc.getTotals(req.industryId, { search, category_id, payment_status, date_from, date_to });
     res.json({
       success: true,
       total,
@@ -29,7 +29,7 @@ const getAllExpenses = async (req, res) => {
 
 const getExpenseById = async (req, res) => {
   try {
-    const expense = await svc.fetchExpenseById(req.params.id);
+    const expense = await svc.fetchExpenseById(req.params.id, req.industryId);
     if (!expense) return res.status(404).json({ success: false, error: 'Expense not found' });
     res.json({ success: true, expense });
   } catch (err) {
@@ -45,7 +45,7 @@ const createExpense = async (req, res) => {
     if (!req.body.amount && !req.body.total_amount) {
       return res.status(400).json({ success: false, error: 'Total amount is required' });
     }
-  const expense = await svc.createExpense(req.body, userId, userName);
+  const expense = await svc.createExpense(req.industryId, req.body, userId, userName);
     logActivity({ userId, module: 'Expenses', action: `Added Expense ${expense.reference_no || expense.id}`, detail: `Amount: ${expense.amount || expense.total_amount || ''}`, req });
     res.status(201).json({ success: true, message: 'Expense saved successfully', expense });
   } catch (err) {
@@ -57,7 +57,7 @@ const createExpense = async (req, res) => {
 const updateExpense = async (req, res) => {
   try {
     const userId = req.user?.userId || req.user?.id || null;
-  const expense = await svc.updateExpense(req.params.id, req.body, userId);
+  const expense = await svc.updateExpense(req.industryId, req.params.id, req.body, userId);
     logActivity({ userId, module: 'Expenses', action: `Updated Expense ${expense.reference_no || req.params.id}`, req });
     res.json({ success: true, message: 'Expense updated successfully', expense });
   } catch (err) {
@@ -70,7 +70,7 @@ const deleteExpense = async (req, res) => {
   try {
     const userId = req.user?.userId || req.user?.id || null;
     const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
-    const result = await svc.deleteExpense(req.params.id, userId, userName);
+    const result = await svc.deleteExpense(req.industryId, req.params.id, userId, userName);
     res.json({ success: true, message: 'Expense deleted successfully', deleted: result });
   } catch (err) {
     console.error('deleteExpense:', err.message);
@@ -81,7 +81,7 @@ const deleteExpense = async (req, res) => {
 // ── Categories ────────────────────────────────────────────────────────────
 const getAllCategories = async (req, res) => {
   try {
-    const categories = await svc.fetchAllCategories();
+    const categories = await svc.fetchAllCategories(req.industryId);
     res.json({ success: true, categories });
   } catch (err) {
     console.error('getAllCategories:', err.message);
@@ -94,7 +94,7 @@ const createCategory = async (req, res) => {
     if (!req.body.name || !req.body.name.trim()) {
       return res.status(400).json({ success: false, error: 'Category name is required' });
     }
-    const category = await svc.createCategory(req.body);
+    const category = await svc.createCategory(req.industryId, req.body);
     res.status(201).json({ success: true, message: 'Category created successfully', category });
   } catch (err) {
     console.error('createCategory:', err.message);
@@ -107,7 +107,7 @@ const updateCategory = async (req, res) => {
     if (!req.body.name || !req.body.name.trim()) {
       return res.status(400).json({ success: false, error: 'Category name is required' });
     }
-    const category = await svc.updateCategory(req.params.id, req.body);
+    const category = await svc.updateCategory(req.industryId, req.params.id, req.body);
     res.json({ success: true, message: 'Category updated successfully', category });
   } catch (err) {
     console.error('updateCategory:', err.message);
@@ -117,7 +117,7 @@ const updateCategory = async (req, res) => {
 
 const deleteCategory = async (req, res) => {
   try {
-    const result = await svc.deleteCategory(req.params.id);
+    const result = await svc.deleteCategory(req.industryId, req.params.id);
     res.json({ success: true, message: 'Category deleted successfully', deleted: result });
   } catch (err) {
     console.error('deleteCategory:', err.message);

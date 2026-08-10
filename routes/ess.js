@@ -18,6 +18,7 @@ const express = require('express');
 const router  = express.Router();
 
 const auth = require('../middleware/auth');
+const requireIndustry = require('../middleware/industry');
 const ctrl = require('../controllers/essController');
 
 // ── MY PROFILE ────────────────────────────────────────────────
@@ -35,7 +36,7 @@ router.get  ('/shifts',                auth, ctrl.getMyShifts);
 
 // ── MY LEAVE ─────────────────────────────────────────────────
 router.get   ('/leaves',         auth, ctrl.getMyLeaves);
-router.get   ('/leaves/balance', auth, ctrl.getMyLeaveBalance);
+router.get   ('/leaves/balance', auth, requireIndustry, ctrl.getMyLeaveBalance);
 router.post  ('/leaves',         auth, ctrl.applyMyLeave);
 router.patch ('/leaves/:id/cancel', auth, ctrl.cancelMyLeave);
 
@@ -57,6 +58,11 @@ router.get ('/sales-target', auth, ctrl.getMySalesTarget);
 // ── MY PAYROLL / PAYSLIPS ───────────────────────────────────
 router.get ('/payroll',            auth, ctrl.getMyPayroll);
 router.get ('/payroll/:id/items',  auth, ctrl.getMyPayrollItems);
+
+// ── MY DOCUMENTS / EDUCATION / TIMELINE (Phase 6) ────────────
+router.get ('/documents', auth, ctrl.getMyDocuments);
+router.get ('/education', auth, ctrl.getMyEducation);
+router.get ('/timeline',  auth, ctrl.getMyTimeline);
 
 // ── MY NOTIFICATIONS (shared bell — Leave, Holiday, Sales Target, etc) ──
 router.get   ('/notifications',          auth, ctrl.getMyNotifications);

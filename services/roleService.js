@@ -6,23 +6,24 @@
  */
 
 const pool = require('../config/database');
-
 // ── Get all roles ──────────────────────────────────────────
-const getAllRoles = async () => {
+const getAllRoles = async (industryId) => {
   const result = await pool.query(
     `SELECT id, role_name AS name, description, deletable, created_at
      FROM roles
-     ORDER BY id ASC`
+     WHERE industry_id = $1
+     ORDER BY id ASC`,
+    [industryId]
   );
   return result.rows;
 };
 
 // ── Get single role with its permissions ──────────────────
-const getRoleById = async (id) => {
+const getRoleById = async (id, industryId) => {
   const roleResult = await pool.query(
     `SELECT id, role_name AS name, description, deletable
-     FROM roles WHERE id = $1`,
-    [id]
+     FROM roles WHERE id = $1 AND industry_id = $2`,
+    [id, industryId]
   );
 
   if (roleResult.rows.length === 0) return null;
@@ -47,11 +48,11 @@ const getRoleById = async (id) => {
 };
 
 // ── Create a new role ──────────────────────────────────────
-const createRole = async (name, permissionKeys) => {
-  // Check for duplicate role_name
+const createRole = async (name, permissionKeys, industryId) => {
+  // Check for duplicate role_name within this industry only
   const existing = await pool.query(
-    `SELECT id FROM roles WHERE LOWER(role_name) = LOWER($1)`,
-    [name]
+    `SELECT id FROM roles WHERE LOWER(role_name) = LOWER($1) AND industry_id = $2`,
+    [name, industryId]
   );
   if (existing.rows.length > 0) {
     throw new Error('Role name already exists');
@@ -62,9 +63,9 @@ const createRole = async (name, permissionKeys) => {
     await client.query('BEGIN');
 
     const roleResult = await client.query(
-      `INSERT INTO roles (role_name, deletable, created_at, updated_at)
-       VALUES ($1, TRUE, NOW(), NOW()) RETURNING id, role_name AS name, deletable`,
-      [name]
+      `INSERT INTO roles (role_name, deletable, created_at, updated_at, industry_id)
+       VALUES ($1, TRUE, NOW(), NOW(), $2) RETURNING id, role_name AS name, deletable`,
+      [name, industryId]
     );
     const roleId = roleResult.rows[0].id;
 
@@ -83,11 +84,11 @@ const createRole = async (name, permissionKeys) => {
 };
 
 // ── Update an existing role ────────────────────────────────
-const updateRole = async (id, name, permissionKeys) => {
-  // Check duplicate name (exclude current role)
+const updateRole = async (id, name, permissionKeys, industryId) => {
+  // Check duplicate name (exclude current role, scoped to this industry)
   const existing = await pool.query(
-    `SELECT id FROM roles WHERE LOWER(role_name) = LOWER($1) AND id != $2`,
-    [name, id]
+    `SELECT id FROM roles WHERE LOWER(role_name) = LOWER($1) AND id != $2 AND industry_id = $3`,
+    [name, id, industryId]
   );
   if (existing.rows.length > 0) {
     throw new Error('Role name already exists');
@@ -100,9 +101,9 @@ const updateRole = async (id, name, permissionKeys) => {
     const roleResult = await client.query(
       `UPDATE roles
        SET role_name = $1, updated_at = NOW()
-       WHERE id = $2
+       WHERE id = $2 AND industry_id = $3
        RETURNING id, role_name AS name, deletable`,
-      [name, id]
+      [name, id, industryId]
     );
 
     if (roleResult.rows.length === 0) throw new Error('Role not found');
@@ -127,19 +128,18 @@ const updateRole = async (id, name, permissionKeys) => {
 };
 
 // ── Delete a role ──────────────────────────────────────────
-const deleteRole = async (id) => {
+const deleteRole = async (id, industryId) => {
   const roleResult = await pool.query(
-    `SELECT deletable FROM roles WHERE id = $1`, [id]
+    `SELECT deletable FROM roles WHERE id = $1 AND industry_id = $2`, [id, industryId]
   );
 
   if (roleResult.rows.length === 0) throw new Error('Role not found');
   if (!roleResult.rows[0].deletable)  throw new Error('This role cannot be deleted');
 
   // ON DELETE CASCADE handles role_permissions automatically
-  await pool.query(`DELETE FROM roles WHERE id = $1`, [id]);
+  await pool.query(`DELETE FROM roles WHERE id = $1 AND industry_id = $2`, [id, industryId]);
   return true;
 };
-
 // ── Get all permissions grouped ────────────────────────────
 const getAllPermissions = async () => {
   const result = await pool.query(

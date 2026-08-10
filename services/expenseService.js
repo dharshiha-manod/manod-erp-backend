@@ -8,11 +8,11 @@ const bankIntegrationService = require('./bankIntegrationService');
 const { logAudit } = require('./auditLogService');
 
 // ── Reference number ─────────────────────────────────────────────────────
-const generateReferenceNo = async (client = pool) => {
+const generateReferenceNo = async (industryId, client = pool) => {
   const year = new Date().getFullYear();
   const result = await client.query(
-    `SELECT expense_number FROM expenses WHERE expense_number LIKE $1 ORDER BY id DESC LIMIT 1`,
-    [`EP-${year}-%`]
+    `SELECT expense_number FROM expenses WHERE expense_number LIKE $1 AND industry_id = $2 ORDER BY id DESC LIMIT 1`,
+    [`EP-${year}-%`, industryId]
   );
   let next = 1;
   if (result.rows.length > 0) {
@@ -34,11 +34,11 @@ const cleanVal = (f, v) => {
 };
 
 // ── FETCH ALL (with filters + pagination) ────────────────────────────────
-const fetchAllExpenses = async (filters = {}) => {
+const fetchAllExpenses = async (industryId, filters = {}) => {
   const { page = 1, limit = 25, search = '', category_id = '', payment_status = '', date_from = '', date_to = '' } = filters;
   const offset = (parseInt(page) - 1) * parseInt(limit);
-  const params = [];
-  const where = [];
+  const params = [industryId];
+  const where = ['e.industry_id = $1'];
 
   if (search) { params.push(`%${search}%`); where.push(`(e.expense_number ILIKE $${params.length} OR e.description ILIKE $${params.length})`); }
   if (category_id) { params.push(category_id); where.push(`e.category_id = $${params.length}`); }
@@ -46,7 +46,7 @@ const fetchAllExpenses = async (filters = {}) => {
   if (date_from) { params.push(date_from); where.push(`e.expense_date >= $${params.length}`); }
   if (date_to) { params.push(date_to); where.push(`e.expense_date <= $${params.length}`); }
 
-  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const whereSql = `WHERE ${where.join(' AND ')}`;
   const countResult = await pool.query(`SELECT COUNT(*) FROM expenses e ${whereSql}`, params);
   params.push(limit, offset);
   const rowsResult = await pool.query(
@@ -60,18 +60,18 @@ const fetchAllExpenses = async (filters = {}) => {
   return { rows: rowsResult.rows, total: parseInt(countResult.rows[0].count) };
 };
 
-const fetchExpenseById = async (id) => {
+const fetchExpenseById = async (id, industryId) => {
   const result = await pool.query(
     `SELECT e.*, c.name AS category_name, s.name AS sub_category_name
      FROM expenses e
      LEFT JOIN expense_categories c ON c.id = e.category_id
      LEFT JOIN expense_categories s ON s.id = e.sub_category_id
-     WHERE e.id = $1`, [id]
+     WHERE e.id = $1 AND e.industry_id = $2`, [id, industryId]
   );
   return result.rows[0] || null;
 };
 
-const createExpense = async (data, userId, userName) => {
+const createExpense = async (industryId, data, userId, userName) => {
   const {
     location, category_id, sub_category_id, expense_number,
     expense_date, expense_for, tax_amount = 0,
@@ -97,7 +97,7 @@ if (!amount && !total_amount) throw new Error('Total amount is required');
   }
 
   const refNo = expense_number && expense_number.trim()
-    ? expense_number.trim() : await generateReferenceNo();
+    ? expense_number.trim() : await generateReferenceNo(industryId);
 
   // payment_due is ALWAYS derived server-side from net_expense (total minus
   // any refund) — never trust a client-sent payment_due, or a refunded
@@ -117,8 +117,8 @@ if (!amount && !total_amount) throw new Error('Total amount is required');
         amount_paid, payment_method, expense_for,
         is_refund, refund_amount, refund_date, refund_reason, refund_method,
         is_recurring, recurring_interval, recurring_interval_unit, recurring_repetitions,
-        attachment_url, net_expense, added_by, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,NOW(),NOW())
+        attachment_url, net_expense, added_by, industry_id, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,NOW(),NOW())
      RETURNING *`,
     [
       refNo, expense_date || new Date(), location, category_id || null, sub_category_id || null,
@@ -128,7 +128,7 @@ if (!amount && !total_amount) throw new Error('Total amount is required');
       expense_for || null,
       is_refund, cleanRefundAmount, cleanRefundDate, refund_reason || null, refund_method || null,
       is_recurring, recurring_interval || null, recurring_interval_unit || 'Days', recurring_repetitions || null,
-   attachment_url || null, netExpense, userId,
+   attachment_url || null, netExpense, userId, industryId,
     ]
   );
 const expense = result.rows[0];
@@ -179,8 +179,8 @@ const expense = result.rows[0];
   return expense;
 };
 
-const updateExpense = async (id, data, userId, userName) => { 
-  const existing = await fetchExpenseById(id);
+const updateExpense = async (industryId, id, data, userId, userName) => { 
+  const existing = await fetchExpenseById(id, industryId);
   if (!existing) throw new Error('Expense not found');
   const oldData = existing;
 
@@ -224,10 +224,10 @@ const updateExpense = async (id, data, userId, userName) => {
   sets.push(`payment_due = $${params.length}`); 
 
   sets.push('updated_at = NOW()');
-  params.push(id);
+  params.push(id, industryId);
 
  const result = await pool.query(
-    `UPDATE expenses SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
+    `UPDATE expenses SET ${sets.join(', ')} WHERE id = $${params.length - 1} AND industry_id = $${params.length} RETURNING *`,
     params
   );
  const updated = result.rows[0];
@@ -287,12 +287,12 @@ const updateExpense = async (id, data, userId, userName) => {
   return updated;
 };
 
-const deleteExpense = async (id, userId, userName) => {
-  const existing = await pool.query(`SELECT * FROM expenses WHERE id = $1`, [id]);
+const deleteExpense = async (industryId, id, userId, userName) => {
+  const existing = await pool.query(`SELECT * FROM expenses WHERE id = $1 AND industry_id = $2`, [id, industryId]);
   if (existing.rows.length === 0) throw new Error('Expense not found');
   const oldData = existing.rows[0];
 
-  const result = await pool.query(`DELETE FROM expenses WHERE id = $1 RETURNING id`, [id]);
+  const result = await pool.query(`DELETE FROM expenses WHERE id = $1 AND industry_id = $2 RETURNING id`, [id, industryId]);
 
   logAudit({
     userId, userName,
@@ -309,9 +309,10 @@ const deleteExpense = async (id, userId, userName) => {
 
 // ── CATEGORIES ───────────────────────────────────────────────────────────
 
-const generateCategoryCode = async () => {
+const generateCategoryCode = async (industryId) => {
   const result = await pool.query(
-    `SELECT code FROM expense_categories WHERE code LIKE 'EXP-%' ORDER BY id DESC LIMIT 1`
+    `SELECT code FROM expense_categories WHERE code LIKE 'EXP-%' AND industry_id = $1 ORDER BY id DESC LIMIT 1`,
+    [industryId]
   );
   let next = 1;
   if (result.rows.length > 0) {
@@ -321,41 +322,43 @@ const generateCategoryCode = async () => {
   return `EXP-${String(next).padStart(3, '0')}`;
 };
 
-const fetchAllCategories = async () => {
+const fetchAllCategories = async (industryId) => {
   const result = await pool.query(
     `SELECT c.*, p.name AS parent_name FROM expense_categories c
-     LEFT JOIN expense_categories p ON p.id = c.parent_id ORDER BY c.name`
+     LEFT JOIN expense_categories p ON p.id = c.parent_id
+     WHERE c.industry_id = $1 ORDER BY c.name`,
+    [industryId]
   );
   return result.rows;
 };
 
-const createCategory = async ({ name, parent_id }) => {
-  const code = await generateCategoryCode();
+const createCategory = async (industryId, { name, parent_id }) => {
+  const code = await generateCategoryCode(industryId);
   const result = await pool.query(
-    `INSERT INTO expense_categories (name, code, parent_id, created_at, updated_at)
-     VALUES ($1,$2,$3,NOW(),NOW()) RETURNING *`,
-    [name, code, parent_id || null]
+    `INSERT INTO expense_categories (name, code, parent_id, industry_id, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,NOW(),NOW()) RETURNING *`,
+    [name, code, parent_id || null, industryId]
   );
   return result.rows[0];
 };
 
-const updateCategory = async (id, { name, parent_id }) => {
+const updateCategory = async (industryId, id, { name, parent_id }) => {
   const result = await pool.query(
-    `UPDATE expense_categories SET name=$1, parent_id=$2, updated_at=NOW() WHERE id=$3 RETURNING *`,
-    [name, parent_id || null, id]
+    `UPDATE expense_categories SET name=$1, parent_id=$2, updated_at=NOW() WHERE id=$3 AND industry_id=$4 RETURNING *`,
+    [name, parent_id || null, id, industryId]
   );
   if (result.rows.length === 0) throw new Error('Category not found');
   return result.rows[0];
 };
 
-const deleteCategory = async (id) => {
-  const result = await pool.query(`DELETE FROM expense_categories WHERE id=$1 RETURNING id`, [id]);
+const deleteCategory = async (industryId, id) => {
+  const result = await pool.query(`DELETE FROM expense_categories WHERE id=$1 AND industry_id=$2 RETURNING id`, [id, industryId]);
   if (result.rows.length === 0) throw new Error('Category not found');
   return result.rows[0];
 };
 
-const getTotals = async (filters = {}) => {
-  const { rows } = await fetchAllExpenses({ ...filters, limit: 100000, page: 1 });
+const getTotals = async (industryId, filters = {}) => {
+  const { rows } = await fetchAllExpenses(industryId, { ...filters, limit: 100000, page: 1 });
   const total = rows.reduce((s, r) => s + parseFloat(r.total_amount || 0), 0);
   const due   = rows.reduce((s, r) => s + parseFloat(r.payment_due || 0), 0);
   return { total, due };
@@ -365,4 +368,4 @@ module.exports = {
   generateReferenceNo, fetchAllExpenses, fetchExpenseById,
   createExpense, updateExpense, deleteExpense,
   fetchAllCategories, createCategory, updateCategory, deleteCategory, getTotals,
-};
+};  

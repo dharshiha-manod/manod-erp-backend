@@ -4,9 +4,51 @@
  * Database operations for Business Settings
  * ====================================================
  */
-
 const pool = require('../config/database');
+const industryService = require('./industryService');
 
+// Mirrors INDUSTRY_PRESETS in GeneralSettings.jsx — used as a server-side
+// fallback so industry-specific defaults are available everywhere (Add
+// Product, etc.) even before the admin has ever clicked "Update Settings"
+// for a given workspace.
+const INDUSTRY_FIELD_DEFAULTS = {
+  jewellery_manufacturing: {
+    default_unit: "Gram",
+    default_category: "Jewellery",
+    industry_fields: {
+      gold_purity: true, gross_weight: true, net_weight: true,
+      stone_weight: true, wastage_percentage: true, making_charge: true, hallmark: true,
+    },
+  },
+  automobile_manufacturing: {
+    default_unit: "Piece",
+    default_category: "Automobile",
+    industry_fields: {
+      vin: true, engine_number: true, chassis_number: true, model_year: true, variant: true,
+    },
+  },
+  furniture_manufacturing: {
+    default_unit: "Piece",
+    default_category: "Furniture",
+    industry_fields: {
+      wood_type: true, material: true, dimensions: true, finish: true,
+    },
+  },
+  textile_manufacturing: {
+    default_unit: "Meter",
+    default_category: "Textile",
+    industry_fields: {
+      fabric_type: true, gsm: true, roll_length: true, pattern: true, color: true,
+    },
+  },
+  garments_manufacturing: {
+    default_unit: "Piece",
+    default_category: "Garments",
+    industry_fields: {
+      size: true, color: true, fabric_type: true, season: true, gender: true,
+    },
+  },
+};
 // ── BUSINESS SETTINGS ──────────────────────────────────────────
 // NEW
 const getBusinessSettings = async (businessId) => {
@@ -24,18 +66,19 @@ const getBusinessSettings = async (businessId) => {
 };
 
 // ── GENERAL SETTINGS ───────────────────────────────────────────
-// NEW
-const getGeneralSettings = async (businessId) => {
+
+const getGeneralSettings = async (businessId, industryId) => {
   const result = await pool.query(
-    `SELECT * FROM general_settings WHERE business_id = $1::integer`,
-    [businessId]
+    `SELECT * FROM general_settings WHERE business_id = $1::integer AND industry_id = $2::integer`,
+    [businessId, industryId]
   );
   return result.rows[0] || null;
 };
-
-const updateGeneralSettings = async (businessId, data) => {
+// industry_type is intentionally NOT accepted here — it is owned by the
+// industries table (set once at workspace creation) and derived on every
+// read in getMergedGeneralSettings(), never stored per-save in this table.
+const updateGeneralSettings = async (businessId, industryId, data) => {
   const {
-    company_name, industry_type, currency, financial_year, timezone, date_format,
     default_unit, default_tax, default_category,
     auto_sku_generation, barcode_enabled, batch_tracking_enabled, serial_tracking_enabled,
     product_images_enabled, manufacturing_date_enabled, expiry_date_enabled, product_variants_enabled,
@@ -46,9 +89,9 @@ const updateGeneralSettings = async (businessId, data) => {
     quality_check_enabled, scrap_management_enabled, machine_tracking_enabled, auto_production_number,
   } = data;
 
-const result = await pool.query(
+  const result = await pool.query(
     `INSERT INTO general_settings (
-       business_id, company_name, industry_type, currency, financial_year, timezone, date_format,
+       business_id, industry_id,
        default_unit, default_tax, default_category,
        auto_sku_generation, barcode_enabled, batch_tracking_enabled, serial_tracking_enabled,
        product_images_enabled, manufacturing_date_enabled, expiry_date_enabled, product_variants_enabled,
@@ -58,17 +101,11 @@ const result = await pool.query(
        bom_required, production_planning_enabled, work_orders_enabled,
        quality_check_enabled, scrap_management_enabled, machine_tracking_enabled, auto_production_number,
        created_at, updated_at
-     ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,
+   ) VALUES (
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,
        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
      )
-     ON CONFLICT (business_id) DO UPDATE SET
-       company_name = EXCLUDED.company_name,
-       industry_type = EXCLUDED.industry_type,
-       currency = EXCLUDED.currency,
-       financial_year = EXCLUDED.financial_year,
-       timezone = EXCLUDED.timezone,
-       date_format = EXCLUDED.date_format,
+     ON CONFLICT (business_id, industry_id) DO UPDATE SET
        default_unit = EXCLUDED.default_unit,
        default_tax = EXCLUDED.default_tax,
        default_category = EXCLUDED.default_category,
@@ -97,7 +134,7 @@ const result = await pool.query(
        updated_at = CURRENT_TIMESTAMP
      RETURNING *`,
     [
-      businessId, company_name, industry_type, currency, financial_year, timezone, date_format,
+      businessId, industryId,
       default_unit, default_tax, default_category,
       auto_sku_generation, barcode_enabled, batch_tracking_enabled, serial_tracking_enabled,
       product_images_enabled, manufacturing_date_enabled, expiry_date_enabled, product_variants_enabled,
@@ -108,11 +145,45 @@ const result = await pool.query(
       quality_check_enabled, scrap_management_enabled, machine_tracking_enabled, auto_production_number,
     ]
   );
-return result.rows[0];
+  return result.rows[0];
 };
 
+// NEW — merge helper the controller calls; keeps company-wide fields
+// (business_settings) and industry-specific fields (general_settings) separate
+// in storage but combined in the API response, per your GENERAL SETTINGS DECISION.
+// NEW
+// NEW
+const getMergedGeneralSettings = async (businessId, industryId) => {
+  const business = await getBusinessSettings(businessId);
+  const industrySettings = await getGeneralSettings(businessId, industryId);
+  const industryRow = await industryService.getIndustryById(businessId, industryId);
+  const industryType = industryRow?.industry_type || "general_manufacturing";
+  const preset = INDUSTRY_FIELD_DEFAULTS[industryType];
+
+  const merged = {
+    company_name: business?.business_name || "",
+    currency: business?.currency || "INR",
+    financial_year: business?.financial_year_start_month || "",
+    timezone: business?.timezone || "Asia/Kolkata",
+    date_format: business?.date_format || "mm/dd/yyyy",
+    ...(industrySettings || {}),
+    // Fall back to the industry preset only when nothing has been saved yet
+    // for this workspace — an explicit saved value always wins.
+    default_unit: industrySettings?.default_unit || preset?.default_unit || "",
+    default_category: industrySettings?.default_category || preset?.default_category || "",
+    industry_fields:
+      industrySettings?.industry_fields && Object.keys(industrySettings.industry_fields).length > 0
+        ? industrySettings.industry_fields
+        : preset ? { ...preset.industry_fields } : {},
+    // industry_type is owned by the header workspace selector (industries table),
+    // never by a saved general_settings value — always wins, no fallback-only logic.
+    industry_type: industryType,
+  };
+
+  return merged;
+};
 // ── BUSINESS LOCATIONS ────────────────────────────────────────
-const getBusinessLocations = async (businessId) => {
+const getBusinessLocations = async (businessId, industryId) => {
   const result = await pool.query(
     `SELECT id, location_id, business_id, location_name, address, city, 
             state, country, postal_code, phone, is_default, is_active, 
@@ -121,14 +192,14 @@ const getBusinessLocations = async (businessId) => {
             custom_field_1, custom_field_2, custom_field_3, custom_field_4,
             payment_options, created_at, updated_at
      FROM business_locations 
-     WHERE business_id = $1 AND is_active = true
+     WHERE business_id = $1 AND industry_id = $2 AND is_active = true
      ORDER BY is_default DESC, location_name ASC`,
-    [businessId]
+    [businessId, industryId]
   );
   return result.rows;
 };
 
-const createBusinessLocation = async (businessId, data) => {
+const createBusinessLocation = async (businessId, industryId, data) => {
   const {
     location_name, address, city, state, country, postal_code, phone, is_default,
     email, website, alt_contact, invoice_scheme_pos, invoice_scheme_sale,
@@ -138,42 +209,61 @@ const createBusinessLocation = async (businessId, data) => {
 
   if (!location_name) throw new Error('Location name is required');
 
-  // Generate location ID like BL0001, BL0002, etc.
-  const countResult = await pool.query(
-    `SELECT COUNT(*) as count FROM business_locations WHERE business_id = $1`,
-    [businessId]
-  );
-  const count = parseInt(countResult.rows[0].count) + 1;
-  const locationId = `BL${String(count).padStart(4, '0')}`;
-
-  // If marking as default, unset other defaults
+  // If marking as default, unset other defaults — only within this industry
   if (is_default) {
     await pool.query(
-      `UPDATE business_locations SET is_default = false WHERE business_id = $1`,
-      [businessId]
+      `UPDATE business_locations SET is_default = false WHERE business_id = $1 AND industry_id = $2`,
+      [businessId, industryId]
     );
   }
 
-  const result = await pool.query(
-    `INSERT INTO business_locations 
-     (location_id, business_id, location_name, address, city, state, country, 
-      postal_code, phone, is_default, is_active,
-      email, website, alt_contact, invoice_scheme_pos, invoice_scheme_sale,
-      invoice_layout_pos, invoice_layout_sale, price_group,
-      custom_field_1, custom_field_2, custom_field_3, custom_field_4, payment_options,
-      created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true,
-      $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
-      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-     RETURNING *`,
-    [locationId, businessId, location_name, address, city, state, country, postal_code, phone, is_default || false,
-     email || null, website || null, alt_contact || null, invoice_scheme_pos || null, invoice_scheme_sale || null,
-     invoice_layout_pos || null, invoice_layout_sale || null, price_group || null,
-     custom_field_1 || null, custom_field_2 || null, custom_field_3 || null, custom_field_4 || null,
-     JSON.stringify(payment_options || {})]
-  );
+  // Generate location ID like BL0001, BL0002, etc., scoped per industry.
+  // Derived from MAX(existing numeric suffix) rather than COUNT(*), so
+  // deleted rows don't cause a previously-used id to be reissued. Wrapped
+  // in a retry loop against the unique constraint to stay safe under
+  // concurrent inserts (e.g. an accidental double-click / double request).
+  const maxAttempts = 5;
+  let lastErr;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const maxResult = await pool.query(
+      `SELECT COALESCE(MAX(CAST(SUBSTRING(location_id FROM 3) AS INTEGER)), 0) AS max_num
+       FROM business_locations
+       WHERE business_id = $1 AND industry_id = $2 AND location_id ~ '^BL[0-9]+$'`,
+      [businessId, industryId]
+    );
+    const nextNum = parseInt(maxResult.rows[0].max_num) + 1 + attempt;
+    const locationId = `BL${String(nextNum).padStart(4, '0')}`;
 
-  return result.rows[0];
+    try {
+      const result = await pool.query(
+        `INSERT INTO business_locations 
+         (location_id, business_id, industry_id, location_name, address, city, state, country, 
+          postal_code, phone, is_default, is_active,
+          email, website, alt_contact, invoice_scheme_pos, invoice_scheme_sale,
+          invoice_layout_pos, invoice_layout_sale, price_group,
+          custom_field_1, custom_field_2, custom_field_3, custom_field_4, payment_options,
+          created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, true,
+          $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24,
+          CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+         RETURNING *`,
+        [locationId, businessId, industryId, location_name, address, city, state, country, postal_code, phone, is_default || false,
+         email || null, website || null, alt_contact || null, invoice_scheme_pos || null, invoice_scheme_sale || null,
+         invoice_layout_pos || null, invoice_layout_sale || null, price_group || null,
+         custom_field_1 || null, custom_field_2 || null, custom_field_3 || null, custom_field_4 || null,
+         JSON.stringify(payment_options || {})]
+      );
+      return result.rows[0];
+    } catch (err) {
+      // 23505 = unique_violation. Retry with a fresh id; anything else, bail out.
+      if (err.code === '23505' && err.constraint === 'business_locations_location_id_key') {
+        lastErr = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr || new Error('Failed to generate a unique location ID');
 };
 // NEW
 const updateBusinessSettings = async (businessId, data) => {
@@ -255,76 +345,75 @@ const updateBusinessSettings = async (businessId, data) => {
 };
 
 // NEW
-const deactivateBusinessLocation = async (businessId, locationId) => {
+const deactivateBusinessLocation = async (businessId, industryId, locationId) => {
   const result = await pool.query(
     `UPDATE business_locations 
      SET is_active = false, updated_at = CURRENT_TIMESTAMP
-     WHERE id = $1 AND business_id = $2
+     WHERE id = $1 AND business_id = $2 AND industry_id = $3
      RETURNING *`,
-    [locationId, businessId]
+    [locationId, businessId, industryId]
   );
   return result.rows[0] || null;
 };
 
-const deleteBusinessLocation = async (businessId, locationId) => {
+const deleteBusinessLocation = async (businessId, industryId, locationId) => {
   const result = await pool.query(
     `DELETE FROM business_locations
-     WHERE id = $1 AND business_id = $2
+     WHERE id = $1 AND business_id = $2 AND industry_id = $3
      RETURNING *`,
-    [locationId, businessId]
+    [locationId, businessId, industryId]
   );
   return result.rows[0] || null;
 };
 
 // ── TAX RATES ──────────────────────────────────────────────────
-const getTaxRates = async (businessId) => {
+const getTaxRates = async (businessId, industryId) => {
   const result = await pool.query(
     `SELECT id, tax_id, business_id, tax_name, rate, description, 
             is_default, is_active, created_at, updated_at
      FROM tax_rates 
-     WHERE business_id = $1 AND is_active = true
+     WHERE business_id = $1 AND industry_id = $2 AND is_active = true
      ORDER BY rate DESC, tax_name ASC`,
-    [businessId]
+    [businessId, industryId]
   );
   return result.rows;
 };
 
 // NEW — paste this in its place
-const createTaxRate = async (businessId, data) => {
+const createTaxRate = async (businessId, industryId, data) => {
   const { tax_name, rate, description, is_default } = data;
 
   if (!tax_name || rate === undefined) {
     throw new Error('Tax name and rate are required');
   }
 
-  // Generate tax ID
+  // Generate tax ID — scoped per industry
   const countResult = await pool.query(
-    `SELECT COUNT(*) as count FROM tax_rates WHERE business_id = $1`,
-    [businessId]
+    `SELECT COUNT(*) as count FROM tax_rates WHERE business_id = $1 AND industry_id = $2`,
+    [businessId, industryId]
   );
   const count = parseInt(countResult.rows[0].count) + 1;
   const taxId = `TAX${String(count).padStart(4, '0')}`;
 
-  // If marking as default, unset other defaults
+  // If marking as default, unset other defaults — only within this industry
   if (is_default) {
     await pool.query(
-      `UPDATE tax_rates SET is_default = false WHERE business_id = $1`,
-      [businessId]
+      `UPDATE tax_rates SET is_default = false WHERE business_id = $1 AND industry_id = $2`,
+      [businessId, industryId]
     );
   }
 
   const result = await pool.query(
     `INSERT INTO tax_rates 
-     (tax_id, business_id, tax_name, rate, description, is_default, is_active, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+     (tax_id, business_id, industry_id, tax_name, rate, description, is_default, is_active, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
      RETURNING *`,
-    [taxId, businessId, tax_name, rate, description || null, is_default || false]
+    [taxId, businessId, industryId, tax_name, rate, description || null, is_default || false]
   );
 
   return result.rows[0];
 };
-
-const updateBusinessLocation = async (businessId, locationId, data) => {
+const updateBusinessLocation = async (businessId, industryId, locationId, data) => {
   const {
     location_name, address, city, state, country, postal_code, phone, is_default,
     email, website, alt_contact, invoice_scheme_pos, invoice_scheme_sale,
@@ -334,8 +423,8 @@ const updateBusinessLocation = async (businessId, locationId, data) => {
 
   if (is_default) {
     await pool.query(
-      `UPDATE business_locations SET is_default = false WHERE business_id = $1 AND id != $2`,
-      [businessId, locationId]
+      `UPDATE business_locations SET is_default = false WHERE business_id = $1 AND industry_id = $2 AND id != $3`,
+      [businessId, industryId, locationId]
     );
   }
 
@@ -363,26 +452,26 @@ const updateBusinessLocation = async (businessId, locationId, data) => {
          custom_field_4 = COALESCE($20, custom_field_4),
          payment_options = COALESCE($21, payment_options),
          updated_at = CURRENT_TIMESTAMP
-     WHERE id = $22 AND business_id = $23
+     WHERE id = $22 AND business_id = $23 AND industry_id = $24
      RETURNING *`,
     [location_name, address, city, state, country, postal_code, phone, is_default,
      email, website, alt_contact, invoice_scheme_pos, invoice_scheme_sale,
      invoice_layout_pos, invoice_layout_sale, price_group,
      custom_field_1, custom_field_2, custom_field_3, custom_field_4,
      payment_options ? JSON.stringify(payment_options) : null,
-     locationId, businessId]
+     locationId, businessId, industryId]
   );
 
   return result.rows[0] || null;
 };
 // NEW
-const updateTaxRate = async (businessId, taxId, data) => {
+const updateTaxRate = async (businessId, industryId, taxId, data) => {
   const { tax_name, rate, description, is_default } = data;
 
   if (is_default) {
     await pool.query(
-      `UPDATE tax_rates SET is_default = false WHERE business_id = $1 AND id != $2`,
-      [businessId, taxId]
+      `UPDATE tax_rates SET is_default = false WHERE business_id = $1 AND industry_id = $2 AND id != $3`,
+      [businessId, industryId, taxId]
     );
   }
 
@@ -393,45 +482,46 @@ const updateTaxRate = async (businessId, taxId, data) => {
          description = COALESCE($3, description),
          is_default = COALESCE($4, is_default),
          updated_at = CURRENT_TIMESTAMP
-     WHERE id = $5 AND business_id = $6
+     WHERE id = $5 AND business_id = $6 AND industry_id = $7
      RETURNING *`,
-    [tax_name, rate, description, is_default, taxId, businessId]
+    [tax_name, rate, description, is_default, taxId, businessId, industryId]
   );
 
   return result.rows[0] || null;
 };
 
-const deleteTaxRate = async (businessId, taxId) => {
+const deleteTaxRate = async (businessId, industryId, taxId) => {
   const result = await pool.query(
     `UPDATE tax_rates 
      SET is_active = false, updated_at = CURRENT_TIMESTAMP
-     WHERE id = $1 AND business_id = $2
+     WHERE id = $1 AND business_id = $2 AND industry_id = $3
      RETURNING *`,
-    [taxId, businessId]
+    [taxId, businessId, industryId]
   );
   return result.rows[0] || null;
 };
 
 // ── INVOICE SETTINGS ───────────────────────────────────────────
-const getInvoiceSettings = async (businessId) => {
+// NEW
+const getInvoiceSettings = async (businessId, industryId) => {
   const result = await pool.query(
     `SELECT id, business_id, invoice_prefix, invoice_start_number, number_digits, separator,
             show_tax_id, show_notes, notes_template, created_at, updated_at
      FROM invoice_settings 
-     WHERE business_id = $1`,
-    [businessId]
+     WHERE business_id = $1 AND industry_id = $2`,
+    [businessId, industryId]
   );
   return result.rows[0] || null;
 };
 
-const updateInvoiceSettings = async (businessId, data) => {
+const updateInvoiceSettings = async (businessId, industryId, data) => {
   const { invoice_prefix, invoice_start_number, number_digits, separator, show_tax_id, show_notes, notes_template } = data;
 
   const result = await pool.query(
     `INSERT INTO invoice_settings
-       (business_id, invoice_prefix, invoice_start_number, number_digits, separator, show_tax_id, show_notes, notes_template, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-     ON CONFLICT (business_id)
+       (business_id, industry_id, invoice_prefix, invoice_start_number, number_digits, separator, show_tax_id, show_notes, notes_template, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+     ON CONFLICT (business_id, industry_id)
      DO UPDATE SET
        invoice_prefix = COALESCE(EXCLUDED.invoice_prefix, invoice_settings.invoice_prefix),
        invoice_start_number = COALESCE(EXCLUDED.invoice_start_number, invoice_settings.invoice_start_number),
@@ -442,64 +532,64 @@ const updateInvoiceSettings = async (businessId, data) => {
        notes_template = COALESCE(EXCLUDED.notes_template, invoice_settings.notes_template),
        updated_at = CURRENT_TIMESTAMP
      RETURNING *`,
-    [businessId, invoice_prefix, invoice_start_number, number_digits, separator, show_tax_id, show_notes, notes_template]
+    [businessId, industryId, invoice_prefix, invoice_start_number, number_digits, separator, show_tax_id, show_notes, notes_template]
   );
 
   return result.rows[0] || null;
 };
 
 // ── RECEIPT PRINTERS ───────────────────────────────────────────
-const getReceiptPrinters = async (businessId) => {
+const getReceiptPrinters = async (businessId, industryId) => {
   const result = await pool.query(
     `SELECT id, printer_id, business_id, printer_name, printer_model, 
             ip_address, port, paper_width, is_default, is_active, 
             created_at, updated_at
      FROM receipt_printers 
-     WHERE business_id = $1 AND is_active = true
+     WHERE business_id = $1 AND industry_id = $2 AND is_active = true
      ORDER BY is_default DESC, printer_name ASC`,
-    [businessId]
+    [businessId, industryId]
   );
   return result.rows;
 };
 
-const createReceiptPrinter = async (businessId, data) => {
+const createReceiptPrinter = async (businessId, industryId, data) => {
   const { printer_name, printer_model, ip_address, port, paper_width, is_default } = data;
 
   if (!printer_name) throw new Error('Printer name is required');
 
   const countResult = await pool.query(
-    `SELECT COUNT(*) as count FROM receipt_printers WHERE business_id = $1`,
-    [businessId]
+    `SELECT COUNT(*) as count FROM receipt_printers WHERE business_id = $1 AND industry_id = $2`,
+    [businessId, industryId]
   );
   const count = parseInt(countResult.rows[0].count) + 1;
   const printerId = `PRT${String(count).padStart(4, '0')}`;
 
   if (is_default) {
     await pool.query(
-      `UPDATE receipt_printers SET is_default = false WHERE business_id = $1`,
-      [businessId]
+      `UPDATE receipt_printers SET is_default = false WHERE business_id = $1 AND industry_id = $2`,
+      [businessId, industryId]
     );
   }
 
   const result = await pool.query(
     `INSERT INTO receipt_printers 
-     (printer_id, business_id, printer_name, printer_model, ip_address, port, 
+     (printer_id, business_id, industry_id, printer_name, printer_model, ip_address, port, 
       paper_width, is_default, is_active, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
      RETURNING *`,
-    [printerId, businessId, printer_name, printer_model || null, ip_address || null, port || null, paper_width || 80, is_default || false]
+    [printerId, businessId, industryId, printer_name, printer_model || null, ip_address || null, port || null, paper_width || 80, is_default || false]
   );
 
   return result.rows[0];
 };
 
-const updateReceiptPrinter = async (businessId, printerId, data) => {
+const updateReceiptPrinter = async (businessId, industryId, printerId, data) => {
   const { printer_name, printer_model, ip_address, port, paper_width, is_default } = data;
 
   if (is_default) {
     await pool.query(
-      `UPDATE receipt_printers SET is_default = false WHERE business_id = $1 AND id != $2`,
-      [businessId, printerId]
+      `UPDATE receipt_printers SET is_default = false WHERE business_id = $1 AND industry_id = $2 AND id != $3`,
+      [businessId, industryId, printerId]
     );
   }
 
@@ -512,35 +602,38 @@ const updateReceiptPrinter = async (businessId, printerId, data) => {
          paper_width = COALESCE($5, paper_width),
          is_default = COALESCE($6, is_default),
          updated_at = CURRENT_TIMESTAMP
-     WHERE id = $7 AND business_id = $8
+     WHERE id = $7 AND business_id = $8 AND industry_id = $9
      RETURNING *`,
-    [printer_name, printer_model, ip_address, port, paper_width, is_default, printerId, businessId]
+    [printer_name, printer_model, ip_address, port, paper_width, is_default, printerId, businessId, industryId]
   );
 
   return result.rows[0] || null;
 };
 
-const deleteReceiptPrinter = async (businessId, printerId) => {
+const deleteReceiptPrinter = async (businessId, industryId, printerId) => {
   const result = await pool.query(
     `UPDATE receipt_printers 
      SET is_active = false, updated_at = CURRENT_TIMESTAMP
-     WHERE id = $1 AND business_id = $2
+     WHERE id = $1 AND business_id = $2 AND industry_id = $3
      RETURNING *`,
-    [printerId, businessId]
+    [printerId, businessId, industryId]
   );
   return result.rows[0] || null;
 };
 
 // ── BARCODE SETTINGS ───────────────────────────────────────────
-const getBarcodeSettings = async (businessId) => {
+const getBarcodeSettings = async (businessId, industryId) => {
   const result = await pool.query(
-    `SELECT * FROM barcode_settings WHERE business_id = $1`,
-    [businessId]
+    `SELECT * FROM barcode_settings WHERE business_id = $1 AND industry_id = $2`,
+    [businessId, industryId]
   );
   return result.rows[0] || null;
 };
 
-const updateBarcodeSettings = async (businessId, data) => {
+// NOTE: ON CONFLICT target changed from (business_id) to (business_id, industry_id).
+// Run scripts/fix-barcode-settings-unique-constraint.js once to swap the DB
+// constraint accordingly, or this upsert will fail/collide across industries.
+const updateBarcodeSettings = async (businessId, industryId, data) => {
   const {
     barcode_type, label_width, label_height, font, font_size, copies_per_print,
     show_barcode, show_product_name, show_price, show_sku,
@@ -549,12 +642,12 @@ const updateBarcodeSettings = async (businessId, data) => {
 
   const result = await pool.query(
     `INSERT INTO barcode_settings
-       (business_id, barcode_type, label_width, label_height, font, font_size, copies_per_print,
+       (business_id, industry_id, barcode_type, label_width, label_height, font, font_size, copies_per_print,
         show_barcode, show_product_name, show_price, show_sku,
         paper_size, labels_per_row, top_margin, left_margin, gap_between_labels,
         created_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-     ON CONFLICT (business_id) DO UPDATE SET
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+     ON CONFLICT (business_id, industry_id) DO UPDATE SET
        barcode_type = EXCLUDED.barcode_type,
        label_width = EXCLUDED.label_width,
        label_height = EXCLUDED.label_height,
@@ -572,7 +665,7 @@ const updateBarcodeSettings = async (businessId, data) => {
        gap_between_labels = EXCLUDED.gap_between_labels,
        updated_at = CURRENT_TIMESTAMP
      RETURNING *`,
-    [businessId, barcode_type, label_width, label_height, font, font_size, copies_per_print,
+    [businessId, industryId, barcode_type, label_width, label_height, font, font_size, copies_per_print,
      show_barcode, show_product_name, show_price, show_sku,
      paper_size, labels_per_row, top_margin, left_margin, gap_between_labels]
   );
@@ -581,12 +674,13 @@ const updateBarcodeSettings = async (businessId, data) => {
 };
 
 // ── EXPORT/IMPORT ────────────────────────────────────────────
-const exportAllSettings = async (businessIdInt, businessIdUuid) => {
+const exportAllSettings = async (businessIdInt, businessIdUuid, industryId) => {
+  // business_settings is intentionally global/company-wide — not industry-scoped
   const business = await getBusinessSettings(businessIdInt);
-  const locations = await getBusinessLocations(businessIdInt);
-  const taxRates = await getTaxRates(businessIdUuid);
-  const invoiceSettings = await getInvoiceSettings(businessIdUuid);
-  const printers = await getReceiptPrinters(businessIdUuid);
+  const locations = await getBusinessLocations(businessIdInt, industryId);
+  const taxRates = await getTaxRates(businessIdUuid, industryId);
+  const invoiceSettings = await getInvoiceSettings(businessIdUuid, industryId);
+  const printers = await getReceiptPrinters(businessIdUuid, industryId);
 
   return {
     business,
@@ -598,11 +692,11 @@ const exportAllSettings = async (businessIdInt, businessIdUuid) => {
   };
 };
 
-const importSettings = async (businessIdInt, businessIdUuid, data) => {
+const importSettings = async (businessIdInt, businessIdUuid, industryId, data) => {
   // Import locations
   if (data.locations && Array.isArray(data.locations)) {
     for (const loc of data.locations) {
-      await createBusinessLocation(businessIdInt, {
+      await createBusinessLocation(businessIdInt, industryId, {
         location_name: loc.location_name,
         address: loc.address,
         city: loc.city,
@@ -618,7 +712,7 @@ const importSettings = async (businessIdInt, businessIdUuid, data) => {
   // Import tax rates
   if (data.taxRates && Array.isArray(data.taxRates)) {
     for (const tax of data.taxRates) {
-      await createTaxRate(businessId, {
+      await createTaxRate(businessIdUuid, industryId, {
         tax_name: tax.tax_name,
         rate: tax.rate,
         description: tax.description,
@@ -631,8 +725,8 @@ const importSettings = async (businessIdInt, businessIdUuid, data) => {
 };
 
 module.exports = {
-  getGeneralSettings,
   updateGeneralSettings,
+  getMergedGeneralSettings,
   getBusinessSettings,
   updateBusinessSettings,
   

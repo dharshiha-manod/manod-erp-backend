@@ -8,6 +8,7 @@
 const express = require('express');
 const router = express.Router();
 const authenticateToken = require('../middleware/auth');
+const requireIndustry = require('../middleware/industry');
 const { requirePermission } = require('../middleware/permission');
 const {
   getAllAgents,
@@ -25,7 +26,7 @@ const {
 
 // ── GET /api/sales-commission-agents/stats ──
 // Get dashboard statistics (aggregate data)
-router.get('/stats', authenticateToken, getDashboardStats);
+router.get('/stats', authenticateToken, requireIndustry, getDashboardStats);
 
 // ───────────────────────────────────────────────────
 // PROTECTED ENDPOINTS (with permission checks)
@@ -35,6 +36,7 @@ router.get('/stats', authenticateToken, getDashboardStats);
 // Get all agents with pagination, search, filters
 router.get('/', 
   authenticateToken, 
+  requireIndustry,
   requirePermission('Sales Commission', 'View agents'), 
   getAllAgents
 );
@@ -43,6 +45,7 @@ router.get('/',
 // Get single agent by ID
 router.get('/:id', 
   authenticateToken, 
+  requireIndustry,
   requirePermission('Sales Commission', 'View agents'), 
   getAgentById
 );
@@ -51,6 +54,7 @@ router.get('/:id',
 // Create new agent
 router.post('/', 
   authenticateToken, 
+  requireIndustry,
   requirePermission('Sales Commission', 'Add agent'), 
   createAgent
 );
@@ -59,6 +63,7 @@ router.post('/',
 // Update agent
 router.put('/:id', 
   authenticateToken, 
+  requireIndustry,
   requirePermission('Sales Commission', 'Edit agent'), 
   updateAgent
 );
@@ -67,6 +72,7 @@ router.put('/:id',
 // Delete agent
 router.delete('/:id', 
   authenticateToken, 
+  requireIndustry,
   requirePermission('Sales Commission', 'Delete agent'), 
   deleteAgent
 );
@@ -75,6 +81,7 @@ router.delete('/:id',
 // Recalculate commission for an agent
 router.post('/:id/recalculate', 
   authenticateToken, 
+  requireIndustry,
   requirePermission('Sales Commission', 'Edit agent'), 
   recalculateCommissions
 );

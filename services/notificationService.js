@@ -19,14 +19,27 @@ const pool = require('../config/database');
  * Create one notification for one recipient.
  * Never throws — logs and swallows on failure, exactly like logAudit.
  */
-const notifyUser = async ({ recipientId, recipientSource = 'user', module, eventType, title, message, recordId }) => {
+let notifSchemaReady = false;
+const ensureNotificationSchema = async () => {
+  if (notifSchemaReady) return;
+  try {
+    await pool.query(`ALTER TABLE hrm_notifications ADD COLUMN IF NOT EXISTS industry_id INTEGER;`);
+    notifSchemaReady = true;
+  } catch (err) {
+    console.error('[notificationService] schema migration warning:', err.message);
+    notifSchemaReady = true;
+  }
+};
+
+const notifyUser = async ({ recipientId, recipientSource = 'user', module, eventType, title, message, recordId, industryId }) => {
   if (!recipientId || !module || !eventType || !title) return null;
   try {
+    await ensureNotificationSchema();
     const { rows } = await pool.query(
       `INSERT INTO hrm_notifications
-         (recipient_id, recipient_source, module, event_type, title, message, record_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [String(recipientId), recipientSource, module, eventType, title, message || null, recordId || null]
+         (recipient_id, recipient_source, module, event_type, title, message, record_id, industry_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [String(recipientId), recipientSource, module, eventType, title, message || null, recordId || null, industryId || null]
     );
     return rows[0];
   } catch (err) {
@@ -60,12 +73,19 @@ const notifyAllActiveUsers = async (payload = {}) => {
   }
 };
 
-const fetchMyNotifications = async (userId, recipientSource = 'user') => {
+const fetchMyNotifications = async (userId, recipientSource = 'user', industryId = null) => {
+  await ensureNotificationSchema();
+  const params = [String(userId), recipientSource];
+  let scopeClause = '';
+  if (industryId) {
+    params.push(industryId);
+    scopeClause = ` AND (industry_id = $${params.length} OR industry_id IS NULL)`;
+  }
   const { rows } = await pool.query(
     `SELECT * FROM hrm_notifications
-     WHERE recipient_id = $1 AND recipient_source = $2 AND seen = FALSE
+     WHERE recipient_id = $1 AND recipient_source = $2 AND seen = FALSE ${scopeClause}
      ORDER BY created_at DESC`,
-    [String(userId), recipientSource]
+    params
   );
   return rows;
 };

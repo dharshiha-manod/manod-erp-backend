@@ -1,4 +1,4 @@
-  // ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
   // services/sellService.js
   // All DB operations for the Sell module
   // Uses the same `pool` pattern as your other services
@@ -13,7 +13,8 @@ const contactService = require("./contactService");
   // Manufacturing module integration: when a sale can't be fulfilled from
   // stock, auto-raise a make-to-order Work Order for the shortfall instead
   // of only failing the sale (see _tryAutoWorkOrder below).
-  const manufacturingService = require("./manufacturingService");
+const manufacturingService = require("./manufacturingService");
+  const accountingService = require("./accountingService");
   const _tryAutoWorkOrder = async (productId, name, currentStock, requestedQty) => {
     const shortfall = requestedQty - currentStock;
     try {
@@ -39,22 +40,70 @@ const contactService = require("./contactService");
   // there was no reliable way to credit/debit that customer's
   // advance_balance. This adds a real FK-style link.
 let sellSchemaReady = false;
-const ensureSellSchema = async () => {
-    if (sellSchemaReady) return;
+// Each statement runs independently so one failure (e.g. an FK type
+// mismatch) can't silently block every other statement — including the
+// sell_payments CREATE TABLE itself — from ever running. Previously the
+// whole block was one try/catch: if ANY line threw, sellSchemaReady was
+// never set to true AND later lines (like creating sell_payments) never
+// ran, so the table stayed permanently missing on every request.
+const _runMigrationStep = async (label, sql) => {
     try {
-      await q(`ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS customer_id INTEGER;`);
-      await q(`ALTER TABLE pos_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER;`);
-      // Optional ID-based link to HRM (users or hrm_employees) for the
-      // salesperson field. Nullable, additive — the existing `salesperson`
-      // text column is untouched and keeps working for display/exports.
-      await q(`ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS salesperson_employee_id VARCHAR(255);`);
-      await q(`ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS salesperson_source VARCHAR(20);`);
-      sellSchemaReady = true;
+      await q(sql);
     } catch (err) {
-      console.error("sales_invoices schema migration warning:", err.message);
+      console.error(`sales_invoices schema migration warning [${label}]:`, err.message);
     }
   };
-
+const ensureSellSchema = async () => {
+    if (sellSchemaReady) return;
+    await _runMigrationStep("customer_id", `ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS customer_id INTEGER;`);
+    await _runMigrationStep("pos_sales.customer_id", `ALTER TABLE pos_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER;`);
+    // Optional ID-based link to HRM (users or hrm_employees) for the
+    // salesperson field. Nullable, additive — the existing `salesperson`
+    // text column is untouched and keeps working for display/exports.
+    await _runMigrationStep("salesperson_employee_id", `ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS salesperson_employee_id VARCHAR(255);`);
+    await _runMigrationStep("salesperson_source", `ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS salesperson_source VARCHAR(20);`);
+    // Optional link to sales_commission_agents for commission tracking.
+    // Nullable, additive — invoices without an agent keep working as before.
+    await _runMigrationStep("agent_id", `ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS agent_id INTEGER;`);
+    await _runMigrationStep("idx_agent_id", `CREATE INDEX IF NOT EXISTS idx_sales_invoices_agent_id ON sales_invoices(agent_id);`);
+    // sell_payments — mirrors purchase_payments (invoice_id/amount/
+    // payment_method/paid_on/note/added_by). The FK to sales_invoices(id)
+    // was failing to implement (type mismatch), which used to abort the
+    // whole migration and leave the table missing forever. Now: try the
+    // FK'd version first, and if that fails, fall back to creating the
+    // table WITHOUT the FK constraint so payments can still be recorded —
+    // this is the actual fix for "relation sell_payments does not exist".
+    try {
+      await q(`
+        CREATE TABLE IF NOT EXISTS sell_payments (
+          id             SERIAL PRIMARY KEY,
+          invoice_id     INTEGER NOT NULL REFERENCES sales_invoices(id) ON DELETE CASCADE,
+          amount         NUMERIC(14,2) NOT NULL DEFAULT 0,
+          payment_method VARCHAR(50) DEFAULT 'Cash',
+          paid_on        TIMESTAMP DEFAULT NOW(),
+          note           TEXT,
+          added_by       UUID,
+          created_at     TIMESTAMP DEFAULT NOW()
+        );
+      `);
+    } catch (fkErr) {
+      console.error("sell_payments FK'd create failed, retrying without FK:", fkErr.message);
+      await _runMigrationStep("sell_payments_no_fk", `
+        CREATE TABLE IF NOT EXISTS sell_payments (
+          id             SERIAL PRIMARY KEY,
+          invoice_id     INTEGER NOT NULL,
+          amount         NUMERIC(14,2) NOT NULL DEFAULT 0,
+          payment_method VARCHAR(50) DEFAULT 'Cash',
+          paid_on        TIMESTAMP DEFAULT NOW(),
+          note           TEXT,
+          added_by       UUID,
+          created_at     TIMESTAMP DEFAULT NOW()
+        );
+      `);
+    }
+    await _runMigrationStep("idx_sell_payments_invoice_id", `CREATE INDEX IF NOT EXISTS idx_sell_payments_invoice_id ON sell_payments(invoice_id);`);
+    sellSchemaReady = true;
+  };
   // ─────────────────────────────────────────────────────────────
   // MAP helpers — snake_case DB → camelCase API response
   // ─────────────────────────────────────────────────────────────
@@ -71,9 +120,10 @@ const ensureSellSchema = async () => {
       customerId:       row.customer_id,
       customerType:     row.customer_type,
  warehouse:        row.warehouse,
-      salesperson:      row.salesperson,
+salesperson:      row.salesperson,
       salespersonEmployeeId: row.salesperson_employee_id,
       salespersonSource:     row.salesperson_source,
+      agentId:          row.agent_id,
       paymentMethod:    row.payment_method,
       paymentTerms:     row.payment_terms,
       paymentStatus:    row.payment_status,
@@ -225,10 +275,10 @@ const ensureSellSchema = async () => {
   // SALES INVOICES
   // ═══════════════════════════════════════════════════════════════
 
-  async function getAllInvoices(filters = {}) {
+async function getAllInvoices(industryId, filters = {}) {
     const { status, customer, dateFrom, dateTo, search, limit = 100, offset = 0 } = filters;
-    const params = [];
-    const where  = [];
+    const params = [industryId];
+    const where  = [`si.industry_id = $1`];
 
     if (status && status !== "All") {
       params.push(status);
@@ -272,7 +322,7 @@ const ensureSellSchema = async () => {
     return rows.map(r => mapInvoice({ ...r, items: r.items.map(mapItem) }));
   }
 
-  async function getInvoiceById(id) {
+async function getInvoiceById(industryId, id) {
     const { rows } = await q(
       `SELECT si.*,
         COALESCE(
@@ -281,22 +331,27 @@ const ensureSellSchema = async () => {
         ) AS items
       FROM sales_invoices si
       LEFT JOIN sales_invoice_items sii ON sii.invoice_id = si.id
-      WHERE si.id = $1
+      WHERE si.id = $1 AND si.industry_id = $2
       GROUP BY si.id`,
-      [id]
+      [id, industryId]
     );
     if (!rows[0]) return null;
-    return mapInvoice({ ...rows[0], items: rows[0].items.map(mapItem) });
+    const paymentsRes = await q(
+      `SELECT * FROM sell_payments WHERE invoice_id = $1 ORDER BY paid_on DESC, id DESC`,
+      [id]
+    );
+    return { ...mapInvoice({ ...rows[0], items: rows[0].items.map(mapItem) }), payments: paymentsRes.rows };
   }
 
 // ── NEW CODE ──
-async function createInvoice(data, userId, userName) {
+async function createInvoice(industryId, data, userId, userName) {
     await ensureSellSchema();
 
- const {
+const {
       invoiceNo, invoiceDate, dueDate, docType = "Sales Invoice",
     docStatus = "Draft", customer, customerId = null, customerType, warehouse, warehouseId,
       salesperson, salespersonEmployeeId = null, salespersonSource = null,
+      agentId = null,
       paymentMethod, paymentTerms, paymentStatus = "Unpaid",
       paidAmount = 0,
       // Amount the user chose to apply from the customer's existing
@@ -307,12 +362,12 @@ async function createInvoice(data, userId, userName) {
       affectsStock = false, notes, items = [],
     } = data;
 
-    // ── Apply advance balance toward this invoice, if requested ──
+  // ── Apply advance balance toward this invoice, if requested ──
     // Never trust the client-side amount blindly — clamp to what the
     // customer actually has available AND what's still owed.
     let advanceApplied = 0;
     if (customerId && useAdvanceAmount > 0) {
-      const contact = await contactService.fetchContactById(customerId);
+      const contact = await contactService.fetchContactById(industryId, customerId);
       const available = Number(contact?.advance_balance || 0);
       const stillDue  = Math.max(0, Number(grandTotal) - Number(paidAmount));
       advanceApplied  = Math.min(Number(useAdvanceAmount), available, stillDue);
@@ -322,29 +377,54 @@ async function createInvoice(data, userId, userName) {
     }
  const finalPaidAmount = Number(paidAmount) + advanceApplied;
 
+    // ── Credit Limit enforcement ──────────────────────────────────────────
+    // Customer/Supplier financial flow audit: credit_limit was stored on
+    // contacts but never checked anywhere. A credit sale (money still owed
+    // after this invoice) that would push the customer's outstanding past
+    // their configured limit is BLOCKED — confirmed business rule, not a
+    // warning. Cash/fully-paid invoices never hit this: outstandingAfter
+    // only grows by what remains unpaid on THIS invoice.
+    const remainingOnThisInvoice = Math.max(0, Number(grandTotal) - finalPaidAmount);
+    if (customerId && remainingOnThisInvoice > 0) {
+      const contact = await contactService.fetchContactById(industryId, customerId);
+      const creditLimit = Number(contact?.credit_limit || 0);
+      if (creditLimit > 0) {
+        const outstanding = await accountingService.getCustomerOutstanding(industryId, customerId);
+        const outstandingAfter = outstanding.total + remainingOnThisInvoice;
+        if (outstandingAfter > creditLimit) {
+          const available = Math.max(0, creditLimit - outstanding.total);
+          throw new Error(
+            `Credit limit exceeded for this customer. Credit limit: ₹${creditLimit.toFixed(2)}, ` +
+            `current outstanding: ₹${outstanding.total.toFixed(2)}, available credit: ₹${available.toFixed(2)}, ` +
+            `this sale would add ₹${remainingOnThisInvoice.toFixed(2)} in unpaid balance.`
+          );
+        }
+      }
+    }
+
     const client = await db.connect();
     let invoice;
     try {
     await client.query('BEGIN');
     const qc = (text, params) => client.query(text, params);
-    const { rows } = await qc(
-      `INSERT INTO sales_invoices
+ const { rows } = await qc(
+   `INSERT INTO sales_invoices
         (invoice_no, invoice_date, due_date, doc_type, doc_status,
         customer, customer_id, customer_type, warehouse, salesperson,
-        salesperson_employee_id, salesperson_source,
+        salesperson_employee_id, salesperson_source, agent_id,
         payment_method, payment_terms, payment_status, paid_amount,
         subtotal, item_discount_amt, global_discount,
         tax_amt, shipping_amt, grand_total,
-        affects_stock, notes)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+        affects_stock, notes, industry_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
       RETURNING *`,
       [invoiceNo, invoiceDate || new Date(), dueDate, docType, docStatus,
       customer, customerId, customerType, warehouse, salesperson,
-      salespersonEmployeeId, salespersonSource,
+      salespersonEmployeeId, salespersonSource, agentId || null,
       paymentMethod, paymentTerms, paymentStatus, finalPaidAmount,
       subtotal, itemDiscountAmt, globalDiscount,
       taxAmt, shippingAmt, grandTotal,
-      affectsStock, notes]
+      affectsStock, notes, industryId]
     );
 invoice = rows[0];
 
@@ -371,8 +451,8 @@ invoice = rows[0];
         const taxCalcService = require('./taxCalcService');
         const settings = await taxCalcService.getSettings();
         let buyerState = null;
-        if (customerId) {
-          const c = await contactService.fetchContactById(customerId);
+      if (customerId) {
+          const c = await contactService.fetchContactById(industryId, customerId);
           buyerState = c?.state || null;
         }
     const { rows: insertedItems } = await qc(
@@ -450,11 +530,30 @@ const qty = it.qty || 1;
       }
       resolved.push({ pid, qty });
     }
-    for (const { pid, qty } of resolved) {
+for (const { pid, qty } of resolved) {
       const resolvedWarehouseId = warehouseId || await stockLocationService.getDefaultLocationId(client);
       await stockLocationService.adjustStockAtLocation(client, pid, resolvedWarehouseId, -qty);
     }
   }
+
+    // Insert initial payment, if any, into sell_payments — same pattern as
+    // purchaseService.createPurchase writing to purchase_payments. Keeps a
+    // real, dated transaction record instead of only the paid_amount column.
+    if (finalPaidAmount > 0) {
+      await client.query(
+        `INSERT INTO sell_payments (
+          invoice_id, amount, payment_method, paid_on, note, added_by
+        ) VALUES ($1,$2,$3,$4,$5,$6)`,
+        [
+          invoice.id,
+          finalPaidAmount,
+          paymentMethod || 'Cash',
+          invoiceDate || new Date(),
+          null,
+          userId || null,
+        ]
+      );
+    }
 
     await client.query('COMMIT');
     } catch (txErr) {
@@ -483,12 +582,14 @@ const qty = it.qty || 1;
       }
     }
 
+
     try {
       await q(  
         `UPDATE invoice_settings
          SET invoice_start_number = invoice_start_number + 1,
              updated_at = CURRENT_TIMESTAMP
-         WHERE business_id = 'e4138fb0-00fa-4ab0-b2dd-4f44470b7e93'`
+         WHERE business_id = 'e4138fb0-00fa-4ab0-b2dd-4f44470b7e93' AND industry_id = $1`,
+        [industryId]
       );
     } catch (counterErr) {
       console.error("[createInvoice] failed to increment invoice number counter:", counterErr.message);
@@ -518,14 +619,15 @@ const qty = it.qty || 1;
       newData: invoice,
     }).catch(() => {});
 
-    return getInvoiceById(invoice.id);
+    return getInvoiceById(industryId, invoice.id);
   } 
 
-  async function updateInvoice(id, data, userId, userName) {
+  async function updateInvoice(industryId, id, data, userId, userName) {
+    await ensureSellSchema();
     const fields = [];
     const params = [];
 
-  const allowed = {
+const allowed = {
       doc_status:     data.docStatus,
       payment_status: data.paymentStatus,
       payment_method: data.paymentMethod,
@@ -534,6 +636,7 @@ const qty = it.qty || 1;
       notes:          data.notes,
       salesperson:    data.salesperson,
       grand_total:    data.grandTotal,
+      agent_id:       data.agentId,
     };
     for (const [col, val] of Object.entries(allowed)) {
       if (val !== undefined) {
@@ -542,13 +645,36 @@ const qty = it.qty || 1;
       }
     }
 
-    if (fields.length === 0) return getInvoiceById(id);
+if (fields.length === 0) return getInvoiceById(industryId, id);
 
-  params.push(id);
+  params.push(id, industryId);
     await q(
-      `UPDATE sales_invoices SET ${fields.join(",")} WHERE id = $${params.length}`,
+      `UPDATE sales_invoices SET ${fields.join(",")} WHERE id = $${params.length - 1} AND industry_id = $${params.length}`,
       params
     );
+
+    // Keep sell_payments in sync with a directly-edited paid_amount, same
+    // reasoning as purchaseService.updatePurchase: the edit form's value is
+    // the single source of truth on edit, so replace the payment row rather
+    // than leaving a stale one that would drift future recalculations.
+    if (data.paidAmount !== undefined) {
+      await q(`DELETE FROM sell_payments WHERE invoice_id = $1`, [id]);
+      if (Number(data.paidAmount) > 0) {
+        await q(
+          `INSERT INTO sell_payments (
+            invoice_id, amount, payment_method, paid_on, note, added_by
+          ) VALUES ($1,$2,$3,$4,$5,$6)`,
+          [
+            id,
+            Number(data.paidAmount),
+            data.paymentMethod || 'Cash',
+            new Date(),
+            null,
+            userId || null,
+          ]
+        );
+      }
+    }
 
     logAudit({
       userId, userName,
@@ -575,19 +701,19 @@ const qty = it.qty || 1;
       }).catch(() => {});
     }
 
-    return getInvoiceById(id);
+      return getInvoiceById(industryId, id);
   }
 
-async function deleteInvoice(id, userId, userName) {
+async function deleteInvoice(industryId, id, userId, userName) {
   // Reverse stock before deleting, if this invoice had deducted stock
   const { rows } = await q(
     `SELECT si.affects_stock,
        COALESCE(json_agg(sii.*) FILTER (WHERE sii.id IS NOT NULL), '[]') AS items
      FROM sales_invoices si
      LEFT JOIN sales_invoice_items sii ON sii.invoice_id = si.id
-     WHERE si.id = $1
+     WHERE si.id = $1 AND si.industry_id = $2
      GROUP BY si.id`,
-    [id]
+    [id, industryId]
   );
   const invoice = rows[0];
   if (invoice?.affects_stock) {
@@ -602,7 +728,7 @@ async function deleteInvoice(id, userId, userName) {
     }
   }
 
-await q("DELETE FROM sales_invoices WHERE id = $1", [id]);
+await q("DELETE FROM sales_invoices WHERE id = $1 AND industry_id = $2", [id, industryId]);
 
   logAudit({
     userId, userName,
@@ -620,10 +746,10 @@ await q("DELETE FROM sales_invoices WHERE id = $1", [id]);
   // POS SALES
   // ═══════════════════════════════════════════════════════════════
 
-  async function getAllPOSSales(filters = {}) {
+async function getAllPOSSales(industryId, filters = {}) {
     const { customer, dateFrom, dateTo, search, limit = 100, offset = 0 } = filters;
-    const params = [];
-    const where  = [];
+    const params = [industryId];
+    const where  = [`ps.industry_id = $1`];
 
     if (customer) {
       params.push(`%${customer}%`);
@@ -655,7 +781,7 @@ await q("DELETE FROM sales_invoices WHERE id = $1", [id]);
     return rows.map(r => mapPOSSale({ ...r, items: r.items }));
   }
 
-  async function getPOSSaleById(id) {
+async function getPOSSaleById(industryId, id) {
     const { rows } = await q(
       `SELECT ps.*,
         COALESCE(
@@ -664,14 +790,14 @@ await q("DELETE FROM sales_invoices WHERE id = $1", [id]);
         ) AS items
       FROM pos_sales ps
       LEFT JOIN pos_sale_items psi ON psi.sale_id = ps.id
-      WHERE ps.id = $1
+      WHERE ps.id = $1 AND ps.industry_id = $2
       GROUP BY ps.id`,
-      [id]
+      [id, industryId]
     );
     return mapPOSSale(rows[0]);
   }
 
-async function createPOSSale(data, userId, userName) {
+async function createPOSSale(industryId, data, userId, userName) {
     await ensureSellSchema();
 
     const {
@@ -682,15 +808,15 @@ async function createPOSSale(data, userId, userName) {
     } = data;
 
     const { rows } = await q(
-      `INSERT INTO pos_sales
+    `INSERT INTO pos_sales
         (ref_no, date, customer, customer_id, location, cashier,
         payment_method, payment_status,
-        discount, tax_amt, grand_total, affects_stock, notes)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        discount, tax_amt, grand_total, affects_stock, notes, industry_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
       RETURNING *`,
       [refNo, date || new Date(), customer, customerId, location, cashier,
       paymentMethod, paymentStatus,
-      discount, taxAmt, grandTotal, affectsStock, notes]
+      discount, taxAmt, grandTotal, affectsStock, notes, industryId]
     );
   const sale = rows[0];
 
@@ -752,9 +878,10 @@ logAudit({
   }).catch(() => {});
 
   return getPOSSaleById(sale.id);
+  return getPOSSaleById(industryId, sale.id);
   }
 
-  async function updatePOSSale(id, data, userId, userName) {
+  async function updatePOSSale(industryId, id, data, userId, userName) {
     const fields = [];
     const params = [];
 
@@ -770,9 +897,9 @@ logAudit({
       }
     }
 
-    if (fields.length === 0) return getPOSSaleById(id);
-params.push(id);
-    await q(`UPDATE pos_sales SET ${fields.join(",")} WHERE id = $${params.length}`, params);
+    if (fields.length === 0) return getPOSSaleById(industryId, id);
+params.push(id, industryId);
+    await q(`UPDATE pos_sales SET ${fields.join(",")} WHERE id = $${params.length - 1} AND industry_id = $${params.length}`, params);
 
     logAudit({
       userId, userName,
@@ -783,19 +910,19 @@ params.push(id);
       newData: data,
     }).catch(() => {});
 
-    return getPOSSaleById(id);
+     return getPOSSaleById(industryId, id);
   }
 
-  async function deletePOSSale(id, userId, userName) {
+  async function deletePOSSale(industryId, id, userId, userName) {
   // Reverse stock before deleting, since a POS sale normally deducts stock
   const { rows } = await q(
     `SELECT ps.affects_stock,
        COALESCE(json_agg(psi.*) FILTER (WHERE psi.id IS NOT NULL), '[]') AS items
      FROM pos_sales ps
      LEFT JOIN pos_sale_items psi ON psi.sale_id = ps.id
-     WHERE ps.id = $1
+     WHERE ps.id = $1 AND ps.industry_id = $2
      GROUP BY ps.id`,
-    [id]
+    [id, industryId]
   );
   const sale = rows[0];
   if (sale?.affects_stock) {
@@ -809,7 +936,7 @@ params.push(id);
       }
     }
   }
-await q("DELETE FROM pos_sales WHERE id = $1", [id]);
+await q("DELETE FROM pos_sales WHERE id = $1 AND industry_id = $2", [id, industryId]);
 
   logAudit({
     userId, userName,
@@ -828,10 +955,10 @@ await q("DELETE FROM pos_sales WHERE id = $1", [id]);
   // QUOTATIONS
   // ═══════════════════════════════════════════════════════════════
 
-  async function getAllQuotations(filters = {}) {
+async function getAllQuotations(industryId, filters = {}) {
     const { status, search, limit = 100, offset = 0 } = filters;
-    const params = [];
-    const where  = [];
+    const params = [industryId];
+    const where  = [`q.industry_id = $1`];
 
     if (status && status !== "All") {
       params.push(status);
@@ -863,7 +990,7 @@ await q("DELETE FROM pos_sales WHERE id = $1", [id]);
     return rows.map(r => mapQuotation({ ...r, items: r.items }));
   }
 
-  async function getQuotationById(id) {
+async function getQuotationById(industryId, id) {
     const { rows } = await q(
       `SELECT q.*,
         COALESCE(
@@ -872,13 +999,13 @@ await q("DELETE FROM pos_sales WHERE id = $1", [id]);
         ) AS items
       FROM quotations q
       LEFT JOIN quotation_items qi ON qi.quot_id = q.id
-      WHERE q.id = $1
+      WHERE q.id = $1 AND q.industry_id = $2
       GROUP BY q.id`,
-      [id]
+      [id, industryId]
     );
     return mapQuotation(rows[0]);
   }
-  async function createQuotation(data) {
+  async function createQuotation(industryId, data) {
     const {
       quotNo, quotDate, validUntil, docStatus = "Draft",
       customer, customerType = "Walk-In", contactPerson, email, phone,
@@ -888,20 +1015,20 @@ await q("DELETE FROM pos_sales WHERE id = $1", [id]);
     } = data;
 
     const { rows } = await q(
-      `INSERT INTO quotations
+        `INSERT INTO quotations
         (quot_no, quot_date, valid_until, doc_status,
         customer, customer_type, contact_person, email, phone,
         salesperson, warehouse, global_disc,
         tax_total, shipping, grand_total,
-        notes, terms, affects_stock)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+        notes, terms, affects_stock, industry_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
       RETURNING *`,
       [quotNo, quotDate || new Date(), validUntil, docStatus,
       customer, customerType, contactPerson, email, phone,
       salesperson, warehouse, globalDisc,
       taxTotal, shipping, grandTotal,
-      notes, terms, affectsStock]
-    );
+      notes, terms, affectsStock, industryId]
+    );  
     const quot = rows[0];
 
    if (items.length > 0) {
@@ -924,19 +1051,19 @@ await q("DELETE FROM pos_sales WHERE id = $1", [id]);
       );
     }
 
-    return getQuotationById(quot.id);
+    return getQuotationById(industryId, quot.id);
   }
 
-  async function updateQuotation(id, data) {
+  async function updateQuotation(industryId, id, data) {
     const { docStatus, notes } = data;
     if (docStatus !== undefined) {
-      await q("UPDATE quotations SET doc_status=$1 WHERE id=$2", [docStatus, id]);
+      await q("UPDATE quotations SET doc_status=$1 WHERE id=$2 AND industry_id=$3", [docStatus, id, industryId]);
     }
-    return getQuotationById(id);
+    return getQuotationById(industryId, id);
   }
 
-  async function deleteQuotation(id) {
-    await q("DELETE FROM quotations WHERE id=$1", [id]);
+  async function deleteQuotation(industryId, id) {
+    await q("DELETE FROM quotations WHERE id=$1 AND industry_id=$2", [id, industryId]);
     return { deleted: true };
   }
 
@@ -957,7 +1084,7 @@ await q("DELETE FROM pos_sales WHERE id = $1", [id]);
     };
   }
 
-  async function getAllReturns(filters = {}) {
+async function getAllReturns(industryId, filters = {}) {
     const { limit = 100, offset = 0 } = filters;
     const { rows } = await q(
       `SELECT sr.*,
@@ -967,15 +1094,16 @@ await q("DELETE FROM pos_sales WHERE id = $1", [id]);
         ) AS items
       FROM sales_returns sr
       LEFT JOIN sales_return_items sri ON sri.return_id = sr.id
+      WHERE sr.industry_id = $1
       GROUP BY sr.id
       ORDER BY sr.created_at DESC
-      LIMIT $1 OFFSET $2`,
-      [limit, offset]
+      LIMIT $2 OFFSET $3`,
+      [industryId, limit, offset]
     );
     return rows.map(r => mapReturn({ ...r, items: r.items.map(mapReturnItem) }));
   }
 
-  async function getReturnById(id) {
+  async function getReturnById(industryId, id) {
     const { rows } = await q(
       `SELECT sr.*,
         COALESCE(
@@ -984,15 +1112,15 @@ await q("DELETE FROM pos_sales WHERE id = $1", [id]);
         ) AS items
       FROM sales_returns sr
       LEFT JOIN sales_return_items sri ON sri.return_id = sr.id
-      WHERE sr.id = $1
+      WHERE sr.id = $1 AND sr.industry_id = $2
       GROUP BY sr.id`,
-      [id]
+      [id, industryId]
     );
     if (!rows[0]) return null;
     return mapReturn({ ...rows[0], items: rows[0].items.map(mapReturnItem) });
   }
 
-async function createReturn(data, userId, userName) {
+async function createReturn(industryId, data, userId, userName) {
     const {
       returnNo, returnDate, customer, invoiceRef, warehouse,  
       reason, docStatus = "Draft", taxAmt = 0, grandTotal = 0,
@@ -1004,14 +1132,13 @@ async function createReturn(data, userId, userName) {
       `INSERT INTO sales_returns
         (return_no, return_date, customer, invoice_ref, warehouse,
         reason, doc_status, tax_amt, grand_total, affects_stock, notes,
-        refund_status, refund_method, refund_amount)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        refund_status, refund_method, refund_amount, industry_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
       RETURNING *`,
       [returnNo, returnDate || new Date(), customer, invoiceRef, warehouse,
       reason, docStatus, taxAmt, grandTotal, affectsStock, notes,
-      refundStatus, refundMethod, refundAmount]
+      refundStatus, refundMethod, refundAmount, industryId]
     );
-
     const ret = rows[0];
 
     const isUUID = v => typeof v === "string" &&
@@ -1081,10 +1208,10 @@ logAudit({
       newData: ret,
     }).catch(() => {});
 
-    return getReturnById(ret.id);
+    return getReturnById(industryId, ret.id);
   }
-  async function updateReturn(id, data, userId, userName) {
-    const existing = await getReturnById(id);
+  async function updateReturn(industryId, id, data, userId, userName) {
+    const existing = await getReturnById(industryId, id);
     const wasCompleted = existing?.affectsStock;
     const willBeCompleted = data.docStatus === "Completed";
 
@@ -1101,9 +1228,9 @@ logAudit({
     for (const [col, val] of Object.entries(allowed)) {
       if (val !== undefined) { params.push(val); fields.push(`${col} = $${params.length}`); }
     }
-    if (fields.length > 0) {
-      params.push(id);
-      await q(`UPDATE sales_returns SET ${fields.join(",")} WHERE id = $${params.length}`, params);
+   if (fields.length > 0) {
+      params.push(id, industryId);
+      await q(`UPDATE sales_returns SET ${fields.join(",")} WHERE id = $${params.length - 1} AND industry_id = $${params.length}`, params);
     }
 
     // Newly marked Completed (wasn't before) — add stock back now
@@ -1147,12 +1274,12 @@ logAudit({
       newData: data,
     }).catch(() => {});
 
-    return getReturnById(id);
+ return getReturnById(industryId, id);
   }
 
-  async function deleteReturn(id, userId, userName) {
-    const existing = await getReturnById(id);
-    await q("DELETE FROM sales_returns WHERE id = $1", [id]);
+  async function deleteReturn(industryId, id, userId, userName) {
+    const existing = await getReturnById(industryId, id);
+    await q("DELETE FROM sales_returns WHERE id = $1 AND industry_id = $2", [id, industryId]);
 
     logAudit({
       userId, userName,
@@ -1200,11 +1327,11 @@ logAudit({
     };
   }
 
-  async function getAllDrafts(filters = {}) {
+  async function getAllDrafts(industryId, filters = {}) {
     const { search, limit = 100, offset = 0 } = filters;
-    const params = [];
-    const where  = [];
-    if (search) {
+    const params = [industryId];
+    const where  = [`sd.industry_id = $1`];
+    if (search) { 
       params.push(`%${search}%`);
       where.push(`(sd.draft_no ILIKE $${params.length} OR sd.customer ILIKE $${params.length})`);
     }
@@ -1228,7 +1355,7 @@ logAudit({
     return rows.map(r => mapDraft({ ...r, items: r.items.map(mapDraftItem) }));
   }
 
-  async function getDraftById(id) {
+async function getDraftById(industryId, id) {
     const { rows } = await q(
       `SELECT sd.*,
         COALESCE(
@@ -1237,26 +1364,26 @@ logAudit({
         ) AS items
       FROM sales_drafts sd
       LEFT JOIN sales_draft_items sdi ON sdi.draft_id = sd.id
-      WHERE sd.id = $1
+      WHERE sd.id = $1 AND sd.industry_id = $2
       GROUP BY sd.id`,
-      [id]
+      [id, industryId]
     );
     if (!rows[0]) return null;
     return mapDraft({ ...rows[0], items: rows[0].items.map(mapDraftItem) });
   }
 
-  async function createDraft(data) {
+  async function createDraft(industryId, data) {
     const {
       invoiceNo, invoiceDate, customer, customerType = "Walk-In",
      warehouse, warehouseId, salesperson, notes, grandTotal = 0, items = [],
     } = data;
 
     const { rows } = await q(
-      `INSERT INTO sales_drafts
-        (draft_no, draft_date, customer, customer_type, warehouse, salesperson, notes, grand_total)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        `INSERT INTO sales_drafts
+        (draft_no, draft_date, customer, customer_type, warehouse, salesperson, notes, grand_total, industry_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
       RETURNING *`,
-      [invoiceNo, invoiceDate || new Date(), customer, customerType, warehouse, salesperson, notes, grandTotal]
+      [invoiceNo, invoiceDate || new Date(), customer, customerType, warehouse, salesperson, notes, grandTotal, industryId]
     );
     const draft = rows[0];
 
@@ -1279,10 +1406,10 @@ logAudit({
         })
       );
     }
-    return getDraftById(draft.id);
+      return getDraftById(industryId, draft.id);
   }
 
-  async function updateDraft(id, data) {
+  async function updateDraft(industryId, id, data) {
     const fields = [];
     const params = [];
     const allowed = {
@@ -1293,24 +1420,24 @@ logAudit({
     for (const [col, val] of Object.entries(allowed)) {
       if (val !== undefined) { params.push(val); fields.push(`${col} = $${params.length}`); }
     }
-    if (fields.length === 0) return getDraftById(id);
-    params.push(id);
-    await q(`UPDATE sales_drafts SET ${fields.join(",")}, updated_at = now() WHERE id = $${params.length}`, params);
-    return getDraftById(id);
+    if (fields.length === 0) return getDraftById(industryId, id);
+    params.push(id, industryId);
+    await q(`UPDATE sales_drafts SET ${fields.join(",")}, updated_at = now() WHERE id = $${params.length - 1} AND industry_id = $${params.length}`, params);
+    return getDraftById(industryId, id);
   }
 
-  async function deleteDraft(id) {
-    await q("DELETE FROM sales_drafts WHERE id = $1", [id]);
+  async function deleteDraft(industryId, id) {
+    await q("DELETE FROM sales_drafts WHERE id = $1 AND industry_id = $2", [id, industryId]);
     return { deleted: true };
   }
   // ═══════════════════════════════════════════════════════════════
   // SHIPMENTS
   // ═══════════════════════════════════════════════════════════════
 
-  async function getAllShipments(filters = {}) {
+  async function getAllShipments(industryId, filters = {}) {
     const { status, search, limit = 100, offset = 0 } = filters;
-    const params = [];
-    const where  = [];
+    const params = [industryId];
+    const where  = [`industry_id = $1`];
 
     if (status) {
       params.push(status);
@@ -1333,12 +1460,12 @@ logAudit({
     return rows.map(mapShipment);
   }
 
-  async function getShipmentById(id) {
-    const { rows } = await q("SELECT * FROM shipments WHERE id=$1", [id]);
+async function getShipmentById(industryId, id) {
+    const { rows } = await q("SELECT * FROM shipments WHERE id=$1 AND industry_id=$2", [id, industryId]);
     return mapShipment(rows[0]);
   }
 
-  async function createShipment(data) {
+  async function createShipment(industryId, data) {
     const {
       shipmentNo, date, customer, invoiceRef, warehouse,
       carrier, trackingNo, deliveryAddress, estimatedDelivery,
@@ -1346,20 +1473,20 @@ logAudit({
     } = data;
 
     const { rows } = await q(
-      `INSERT INTO shipments
+       `INSERT INTO shipments
         (shipment_no, date, customer, invoice_ref, warehouse,
         carrier, tracking_no, delivery_address, estimated_delivery,
-        weight, shipping_cost, status, notes)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        weight, shipping_cost, status, notes, industry_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
       RETURNING *`,
       [shipmentNo, date || new Date(), customer, invoiceRef, warehouse,
       carrier, trackingNo, deliveryAddress, estimatedDelivery || null,
-      weight || null, shippingCost, status, notes]
+      weight || null, shippingCost, status, notes, industryId]
     );
     return mapShipment(rows[0]);
   }
 
-  async function updateShipment(id, data) {
+  async function updateShipment(industryId, id, data) {
     const { status, trackingNo, notes } = data;
     const fields = [];
     const params = [];
@@ -1368,25 +1495,24 @@ logAudit({
     if (trackingNo) { params.push(trackingNo);fields.push(`tracking_no=$${params.length}`); }
     if (notes)      { params.push(notes);     fields.push(`notes=$${params.length}`); }
 
-    if (fields.length === 0) return getShipmentById(id);
-    params.push(id);
-    await q(`UPDATE shipments SET ${fields.join(",")} WHERE id=$${params.length}`, params);
-    return getShipmentById(id);
+    if (fields.length === 0) return getShipmentById(industryId, id);
+    params.push(id, industryId);
+    await q(`UPDATE shipments SET ${fields.join(",")} WHERE id=$${params.length - 1} AND industry_id=$${params.length}`, params);
+    return getShipmentById(industryId, id);
   }
 
-  async function deleteShipment(id) {
-    await q("DELETE FROM shipments WHERE id=$1", [id]);
+  async function deleteShipment(industryId, id) {
+    await q("DELETE FROM shipments WHERE id=$1 AND industry_id=$2", [id, industryId]);
     return { deleted: true };
   }
-
   // ═══════════════════════════════════════════════════════════════
   // DISCOUNTS
   // ═══════════════════════════════════════════════════════════════
 
-  async function getAllDiscounts(filters = {}) {
+ async function getAllDiscounts(industryId, filters = {}) {
     const { status, limit = 100, offset = 0 } = filters;
-    const params = [];
-    const where  = [];
+    const params = [industryId];
+    const where  = [`industry_id = $1`];
 
     if (status && status !== "All") {
       params.push(status);
@@ -1404,20 +1530,19 @@ logAudit({
     );
     return rows.map(mapDiscount);
   }
-
-  async function getDiscountById(id) {
-    const { rows } = await q("SELECT * FROM discounts WHERE id=$1", [id]);
+async function getDiscountById(industryId, id) {
+    const { rows } = await q("SELECT * FROM discounts WHERE id=$1 AND industry_id=$2", [id, industryId]);
     return mapDiscount(rows[0]);
   }
 
-  async function getDiscountByCode(code) {
+  async function getDiscountByCode(industryId, code) {
     const { rows } = await q(
-      "SELECT * FROM discounts WHERE UPPER(code)=UPPER($1) AND status='Active'", [code]
+      "SELECT * FROM discounts WHERE UPPER(code)=UPPER($1) AND status='Active' AND industry_id=$2", [code, industryId]
     );
     return mapDiscount(rows[0]);
   }
 
-  async function createDiscount(data) {
+  async function createDiscount(industryId, data) {
     const {
       name, code, type = "Percentage", value = 0,
       appliesTo = "All Products", customerGroup = "All",
@@ -1426,19 +1551,19 @@ logAudit({
     } = data;
 
     const { rows } = await q(
-      `INSERT INTO discounts
+       `INSERT INTO discounts
         (name, code, type, value, applies_to, customer_group,
-        min_order_amount, max_uses, valid_from, valid_to, status, description)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+        min_order_amount, max_uses, valid_from, valid_to, status, description, industry_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
       RETURNING *`,
       [name, code?.toUpperCase(), type, value, appliesTo, customerGroup,
       minOrderAmount, maxUses || null, validFrom || null, validTo || null,
-      status, description]
+      status, description, industryId]
     );
     return mapDiscount(rows[0]);
   }
 
-  async function updateDiscount(id, data) {
+  async function updateDiscount(industryId, id, data) {
     const { status, name, value } = data;
     const fields = [];
     const params = [];
@@ -1447,29 +1572,29 @@ logAudit({
     if (name)   { params.push(name);   fields.push(`name=$${params.length}`); }
     if (value !== undefined) { params.push(value); fields.push(`value=$${params.length}`); }
 
-    if (fields.length === 0) return getDiscountById(id);
-    params.push(id);
-    await q(`UPDATE discounts SET ${fields.join(",")} WHERE id=$${params.length}`, params);
-    return getDiscountById(id);
+    if (fields.length === 0) return getDiscountById(industryId, id);
+    params.push(id, industryId);
+    await q(`UPDATE discounts SET ${fields.join(",")} WHERE id=$${params.length - 1} AND industry_id=$${params.length}`, params);
+    return getDiscountById(industryId, id);
   }
 
-  async function deleteDiscount(id) {
-    await q("DELETE FROM discounts WHERE id=$1", [id]);
+  async function deleteDiscount(industryId, id) {
+    await q("DELETE FROM discounts WHERE id=$1 AND industry_id=$2", [id, industryId]);
     return { deleted: true };
   }
 
   // ── Import Sales (CSV) ────────────────────────────────────────
-  async function importSalesFromCSV(rows, fileName = "unknown.csv", importedBy = null) {
+async function importSalesFromCSV(industryId, rows, fileName = "unknown.csv", importedBy = null) {
     let imported = 0;
     const errors = [];
 
     for (const row of rows) {
       try {
         const invoiceNo = row["Invoice No."] || `IMP-${Date.now()}-${imported}`;
-        const existing = await q("SELECT id FROM sales_invoices WHERE invoice_no=$1", [invoiceNo]);
+        const existing = await q("SELECT id FROM sales_invoices WHERE invoice_no=$1 AND industry_id=$2", [invoiceNo, industryId]);
         if (existing.rows.length > 0) continue; // skip duplicates
 
-      await createInvoice({
+      await createInvoice(industryId, {
           invoiceNo,
           invoiceDate:   row["Date"] || new Date(),
           dueDate:       row["Due Date"] || null,
@@ -1509,7 +1634,13 @@ logAudit({
   }
   module.exports = {
     // Invoices
-    getAllInvoices, getInvoiceById, createInvoice, updateInvoice, deleteInvoice,
+getAllInvoices, getInvoiceById, createInvoice, updateInvoice, deleteInvoice,
+    // TODO: addInvoicePayment/deleteInvoicePayment were referenced here but
+    // never implemented — this was crashing the server on boot
+    // (ReferenceError: addInvoicePayment is not defined). Removed from the
+    // export list until they're written. Use the new
+    // POST /api/contacts/:id/payments endpoint (accountingService.recordCustomerPayment)
+    // for standalone customer payments in the meantime.
     // POS
     getAllPOSSales, getPOSSaleById, createPOSSale, updatePOSSale, deletePOSSale,
     // Quotations

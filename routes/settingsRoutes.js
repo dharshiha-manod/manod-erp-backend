@@ -10,6 +10,7 @@ const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
 const authenticate = require('../middleware/auth');
+const requireIndustry = require('../middleware/industry');
 const settingsController = require('../controllers/settingsController');
 
 // ── LOGO UPLOAD (multer, same pattern as essentials.js) ─────────
@@ -36,47 +37,47 @@ const uploadLogo = multer({
 
 // ── MIDDLEWARE ─────────────────────────────────────────────────
 router.use(authenticate);
-
-// ── GENERAL SETTINGS ────────────────────────────────────────────
 // NEW
-router.get('/general', settingsController.getGeneralSettings);
-router.put('/general', settingsController.updateGeneralSettings);
+// ── GENERAL SETTINGS (industry-scoped) ──────────────────────────
+router.get('/general', requireIndustry, settingsController.getGeneralSettings);
+router.put('/general', requireIndustry, settingsController.updateGeneralSettings);
 
 // ── BUSINESS SETTINGS ──────────────────────────────────────────
 router.get('/business', settingsController.getBusinessSettings);
 router.put('/business', settingsController.updateBusinessSettings);
 router.post('/business/logo', uploadLogo.single('logo'), settingsController.uploadBusinessLogo);
 
-// ── BUSINESS LOCATIONS ────────────────────────────────────────
-router.get('/locations', settingsController.getBusinessLocations);
-router.post('/locations', settingsController.createBusinessLocation);
-router.put('/locations/:id', settingsController.updateBusinessLocation);
+// ── BUSINESS LOCATIONS (industry-scoped) ────────────────────────
+router.get('/locations', requireIndustry, settingsController.getBusinessLocations);
+router.post('/locations', requireIndustry, settingsController.createBusinessLocation);
+router.put('/locations/:id', requireIndustry, settingsController.updateBusinessLocation);
 // NEW
-router.patch('/locations/:id/deactivate', settingsController.deactivateBusinessLocation);
-router.delete('/locations/:id', settingsController.deleteBusinessLocation);
+router.patch('/locations/:id/deactivate', requireIndustry, settingsController.deactivateBusinessLocation);
+router.delete('/locations/:id', requireIndustry, settingsController.deleteBusinessLocation);
 
-// ── TAX RATES ──────────────────────────────────────────────────
-router.get('/tax-rates', settingsController.getTaxRates);
-router.post('/tax-rates', settingsController.createTaxRate);
-router.put('/tax-rates/:id', settingsController.updateTaxRate);
-router.delete('/tax-rates/:id', settingsController.deleteTaxRate);
+// ── TAX RATES (industry-scoped) ─────────────────────────────────
+router.get('/tax-rates', requireIndustry, settingsController.getTaxRates);
+router.post('/tax-rates', requireIndustry, settingsController.createTaxRate);
+router.put('/tax-rates/:id', requireIndustry, settingsController.updateTaxRate);
+router.delete('/tax-rates/:id', requireIndustry, settingsController.deleteTaxRate);
 
 // ── INVOICE SETTINGS ───────────────────────────────────────────
-router.get('/invoice', settingsController.getInvoiceSettings);
-router.put('/invoice', settingsController.updateInvoiceSettings);
 
-// ── RECEIPT PRINTERS ───────────────────────────────────────────
-router.get('/printers', settingsController.getReceiptPrinters);
-router.post('/printers', settingsController.createReceiptPrinter);
-router.put('/printers/:id', settingsController.updateReceiptPrinter);
-router.delete('/printers/:id', settingsController.deleteReceiptPrinter);
+router.get('/invoice', requireIndustry, settingsController.getInvoiceSettings);
+router.put('/invoice', requireIndustry, settingsController.updateInvoiceSettings);
 
-// ── BARCODE SETTINGS ───────────────────────────────────────────
-router.get('/barcode', settingsController.getBarcodeSettings);
-router.put('/barcode', settingsController.updateBarcodeSettings);
+// ── RECEIPT PRINTERS (industry-scoped) ──────────────────────────
+router.get('/printers', requireIndustry, settingsController.getReceiptPrinters);
+router.post('/printers', requireIndustry, settingsController.createReceiptPrinter);
+router.put('/printers/:id', requireIndustry, settingsController.updateReceiptPrinter);
+router.delete('/printers/:id', requireIndustry, settingsController.deleteReceiptPrinter);
 
-// ── EXPORT/IMPORT ────────────────────────────────────────────
-router.get('/export', settingsController.exportSettings);
-router.post('/import', express.json(), settingsController.importSettings);
+// ── BARCODE SETTINGS (industry-scoped) ──────────────────────────
+router.get('/barcode', requireIndustry, settingsController.getBarcodeSettings);
+router.put('/barcode', requireIndustry, settingsController.updateBarcodeSettings);
+
+// ── EXPORT/IMPORT (industry-scoped) ─────────────────────────────
+router.get('/export', requireIndustry, settingsController.exportSettings);
+router.post('/import', requireIndustry, express.json(), settingsController.importSettings);
 
 module.exports = router;

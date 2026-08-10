@@ -3,7 +3,7 @@ const pool = require('../config/database');
 const { logActivity } = require('./activityLogService');
 
 // Open a new shift for a cashier
-const openSession = async ({ cashier_id, location, shift, opening_balance }) => {
+const openSession = async ({ cashier_id, location, shift, opening_balance, industry_id }) => {
   if (!cashier_id) throw new Error('Cashier is required');
   const existing = await pool.query(
     `SELECT id FROM register_sessions WHERE cashier_id=$1 AND status='open'`,
@@ -12,14 +12,13 @@ const openSession = async ({ cashier_id, location, shift, opening_balance }) => 
   if (existing.rows[0]) throw new Error('This cashier already has an open shift');
 
   const r = await pool.query(
-    `INSERT INTO register_sessions (location, cashier_id, shift, opening_balance, status, opened_at, created_at)
-     VALUES ($1,$2,$3,$4,'open',NOW(),NOW()) RETURNING *`,
-    [location || null, cashier_id, shift || 'Morning', opening_balance || 0]
+    `INSERT INTO register_sessions (location, cashier_id, shift, opening_balance, status, opened_at, created_at, industry_id)
+     VALUES ($1,$2,$3,$4,'open',NOW(),NOW(),$5) RETURNING *`,
+    [location || null, cashier_id, shift || 'Morning', opening_balance || 0, industry_id || null]
   );
-  logActivity({ userId: cashier_id, module: 'POS', action: `Opened Register Shift`, detail: `Opening balance: ₹${opening_balance || 0}` });
+  logActivity({ userId: cashier_id, module: 'POS', action: `Opened Register Shift`, detail: `Opening balance: ₹${opening_balance || 0}`, industryId: industry_id || null });
   return r.rows[0];
 };
-
 // Record a manual cash in/out during a shift
 const addCashMovement = async (sessionId, { type, amount, reason }) => {
   if (!['in', 'out'].includes(type)) throw new Error('Type must be "in" or "out"');

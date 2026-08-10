@@ -17,8 +17,7 @@ const getAllPurchases = async (req, res) => {
       supplier_id = '', purchase_status = '', payment_status = '',
       date_from = '', date_to = '', location = '',
     } = req.query;
-
-    const { rows, total } = await purchaseService.fetchAllPurchases({
+    const { rows, total } = await purchaseService.fetchAllPurchases(req.industryId, {
       page, limit, search,
       supplier_id, purchase_status, payment_status,
       date_from, date_to, location,
@@ -41,7 +40,7 @@ const getAllPurchases = async (req, res) => {
 // ── GET SINGLE PURCHASE (with items + payments) ──────────────────────────────
 const getPurchaseById = async (req, res) => {
   try {
-    const purchase = await purchaseService.fetchPurchaseById(req.params.id);
+const purchase = await purchaseService.fetchPurchaseById(req.industryId, req.params.id);
     if (!purchase) {
       return res.status(404).json({ success: false, error: 'Purchase not found' });
     }
@@ -65,7 +64,7 @@ const createPurchase = async (req, res) => {
       return res.status(400).json({ success: false, error: 'At least one product item is required' });
     }
 
-  const purchase = await purchaseService.createPurchase(req.body, userId, userName);
+const purchase = await purchaseService.createPurchase(req.industryId, req.body, userId, userName);
     console.log(`✅ Purchase created: ${purchase.reference_no}`);
     logActivity({ userId, module: 'Purchases', action: `Created Purchase ${purchase.reference_no}`, detail: `Status: ${purchase.purchase_status}`, req });
     res.status(201).json({
@@ -85,7 +84,7 @@ const updatePurchase = async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId || null;
     const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
-   const purchase = await purchaseService.updatePurchase(req.params.id, req.body, userId, userName);
+const purchase = await purchaseService.updatePurchase(req.industryId, req.params.id, req.body, userId, userName);
     console.log(`✅ Purchase updated: id ${req.params.id}`);
     logActivity({ userId, module: 'Purchases', action: `Updated Purchase ${purchase.reference_no || req.params.id}`, req });
     res.status(200).json({
@@ -105,7 +104,7 @@ const deletePurchase = async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId || null;
     const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
-    const result = await purchaseService.deletePurchase(req.params.id, userId, userName);
+  const result = await purchaseService.deletePurchase(req.industryId, req.params.id, userId, userName);
     res.status(200).json({
       success: true,
       message: 'Purchase deleted successfully',
@@ -127,8 +126,7 @@ const addPayment = async (req, res) => {
     if (!req.body.amount || parseFloat(req.body.amount) <= 0) {
       return res.status(400).json({ success: false, error: 'Valid payment amount is required' });
     }
-
-    const payment = await purchaseService.addPayment(purchaseId, req.body, userId);
+const payment = await purchaseService.addPayment(req.industryId, purchaseId, req.body, userId);
     res.status(201).json({
       success: true,
       message: 'Payment recorded successfully',
@@ -145,7 +143,7 @@ const addPayment = async (req, res) => {
 const deletePayment = async (req, res) => {
   try {
     const { id: purchaseId, paymentId } = req.params;
-    const result = await purchaseService.deletePayment(purchaseId, paymentId);
+const result = await purchaseService.deletePayment(req.industryId, purchaseId, paymentId);
     res.status(200).json({
       success: true,
       message: 'Payment deleted successfully',
@@ -161,7 +159,7 @@ const deletePayment = async (req, res) => {
 // ── DASHBOARD STATS ──────────────────────────────────────────────────────────
 const getStats = async (req, res) => {
   try {
-    const stats = await purchaseService.getPurchaseStats();
+const stats = await purchaseService.getPurchaseStats(req.industryId);
     res.status(200).json({ success: true, stats });
   } catch (err) {
     console.error('❌ Get Purchase Stats Error:', err.message);
@@ -183,7 +181,7 @@ const getSuppliers = async (req, res) => {
 // ── PRODUCTS SEARCH (for Add Purchase product dropdown) ──────────────────────
 const searchProducts = async (req, res) => {
   try {
-    const products = await purchaseService.searchProducts(req.query.q || '');
+   const products = await purchaseService.searchProducts(req.industryId, req.query.q || '');
     res.status(200).json({ success: true, products: products || [] });
   } catch (err) {
     console.error('❌ Search Products Error:', err.message);

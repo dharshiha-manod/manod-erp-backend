@@ -9,7 +9,7 @@ const err = (res, e, msg = 'Server error') => {
 
 const openShift = async (req, res) => {
   try {
-    const data = await registerService.openSession({ ...req.body, cashier_id: req.body.cashier_id || req.user?.id });
+const data = await registerService.openSession({ ...req.body, cashier_id: req.body.cashier_id || req.user?.id, industry_id: req.industryId });
     res.status(201).json({ success: true, data });
   } catch (e) { err(res, e, 'Failed to open shift'); }
 };

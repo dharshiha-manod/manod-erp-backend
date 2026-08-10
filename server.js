@@ -16,7 +16,7 @@ app.use(cors({
   origin:         process.env.FRONTEND_URL || 'http://localhost:5173',
   credentials:    true,
   methods:        ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Industry-Id']
 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -58,33 +58,36 @@ const registerRoutes = require('./routes/register');
 const settingsRoutes = require('./routes/settingsRoutes'); // adjust path
 const reportsRoutes = require('./routes/reports'); // ← REPORTS MODULE (NEW)
 const accountingRoutes = require('./routes/accounting'); // ← ACCOUNTING MODULE (NEW)
-
-
+const industryRoutes = require('./routes/industries'); // ← INDUSTRY WORKSPACE MODULE (NEW)
+const requireIndustry = require('./middleware/industry'); // ← INDUSTRY ISOLATION (NEW)
+require('./services/industryService').ensureIndustrySchema(); // boot-time self-migration
 
 app.use('/api/auth',                    authRoutes);
 app.use('/api/users',                   userRoutes);
 app.use('/api/roles',                   roleRoutes);
 app.use('/api/sales-commission-agents', commissionAgentRoutes);
-app.use('/api/contacts',                contactRoutes);
-app.use('/api/products',                productRoutes);       // ← PRODUCT MODULE
-app.use('/api/stock-transfers',         stockTransferRoutes); // ← STOCK TRANSFER MODULE (NEW)
-app.use('/api/stock-adjustments',       stockAdjustmentRoutes); // ← STOCK ADJUSTMENT
-app.use('/api/manufacturing',           manufacturingRoutes);
-app.use('/api/expenses',                expenseRoutes);
-app.use('/api/purchases',               purchaseRoutes);
-app.use('/api/purchase-returns',        purchaseReturnRoutes);
+app.use('/api/contacts',                requireIndustry, contactRoutes); // ← CONTACTS MODULE (now industry-scoped)
+app.use('/api/industries',              industryRoutes);      // ← INDUSTRY WORKSPACE MODULE (NEW)
+app.use('/api/products',                requireIndustry, productRoutes);       // ← PRODUCT MODULE (now industry-scoped)
+app.use('/api/stock-transfers',         requireIndustry, stockTransferRoutes); // ← STOCK TRANSFER MODULE (now industry-scoped)
+app.use('/api/stock-adjustments',       requireIndustry, stockAdjustmentRoutes); // ← STOCK ADJUSTMENT (now industry-scoped)
+app.use('/api/manufacturing',           requireIndustry, manufacturingRoutes);
+app.use('/api/expenses',                requireIndustry, expenseRoutes); // ← EXPENSES MODULE (now industry-scoped)
+app.use('/api/purchases',               requireIndustry, purchaseRoutes);
+app.use('/api/purchase-returns',        requireIndustry, purchaseReturnRoutes);
 app.use('/api/notification-templates',  notificationTemplateRoutes); // ← NOTIFICATION TEMPLATES
-app.use('/api/hrm', hrmRoutes);
-app.use('/api/ess', essRoutes);
-app.use('/api/crm', crmRoutes);
-app.use('/api/essentials', essentialsRoutes); // ← ESSENTIALS MODULE (NEW)
-app.use('/api', sellRoutes);
+// NEW
+app.use('/api/hrm', requireIndustry, hrmRoutes);
+app.use('/api/ess', requireIndustry, essRoutes);
+app.use('/api/crm', requireIndustry, crmRoutes);
+app.use('/api/essentials', requireIndustry, essentialsRoutes); // ← ESSENTIALS MODULE (now industry-scoped)
+app.use('/api', requireIndustry, sellRoutes); // ← SELL MODULE now industry-scoped
 app.use('/api/register', registerRoutes);
 app.use('/api/selling-price-groups', require('./routes/sellingPriceGroupRoutes'));// ← SELL MODULE (NEW) — sales-invoice, pos-sales, quotations, sales-returns, shipments, discounts, import/sales
 app.use('/api/product-selling-prices', require('./routes/productSellingPriceRoutes'));
 app.use('/api/settings', settingsRoutes);
 app.use('/api/audit-logs', require('./routes/auditLogs'));
-app.use('/api/reports', reportsRoutes); // ← REPORTS MODULE (NEW)
+app.use('/api/reports', requireIndustry, reportsRoutes); // ← REPORTS MODULE (now industry-scoped)
 app.use('/api/accounting', accountingRoutes); // ← ACCOUNTING MODULE (NEW)  
 app.use('/api/product-selling-prices', require('./routes/productSellingPrices'));
 // ── HEALTH CHECK ─────────────────────────────────────────────
@@ -161,11 +164,46 @@ app.listen(PORT, () => {
   manufacturingService.autoFinishOverdueWorkOrders().catch(err =>
     console.error('[AutoFinish] startup sweep failed:', err.message)
   );
-  setInterval(() => {
+setInterval(() => {
     manufacturingService.autoFinishOverdueWorkOrders().catch(err =>
       console.error('[AutoFinish] scheduled sweep failed:', err.message)
     );
   }, AUTO_FINISH_INTERVAL_MS);
+
+  // Attendance Automation (Phase 4) — auto-marks Absent once office hours
+  // + grace period have passed, skipping Holiday/Weekly-Off/Approved-Leave.
+  // Checked every 15 minutes; the function itself no-ops until the cutoff
+  // time, so this is cheap to run frequently.
+const AUTO_ABSENT_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+  const hrmService = require('./services/hrmService');
+  setInterval(() => {
+    hrmService.autoMarkAbsentees().catch(err =>
+      console.error('[AutoAbsent] scheduled sweep failed:', err.message)
+    );
+  }, AUTO_ABSENT_INTERVAL_MS);
+
+const HRM_DAILY_CHECKS_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+  hrmService.runHrmDailyChecks().catch(err =>
+    console.error('[HrmDailyChecks] startup sweep failed:', err.message)
+  );
+  setInterval(() => {
+    hrmService.runHrmDailyChecks().catch(err =>
+      console.error('[HrmDailyChecks] scheduled sweep failed:', err.message)
+    );
+  }, HRM_DAILY_CHECKS_INTERVAL_MS);
+
+  // Memos: publish any Draft memo whose scheduled publish_at time has
+  // arrived. Same fire-on-startup + interval pattern as AutoAbsent above.
+  const MEMO_PUBLISH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+  const essentialsService = require('./services/essentialsService');
+  essentialsService.runScheduledMemoPublish().catch(err =>
+    console.error('[MemoPublish] startup sweep failed:', err.message)
+  );
+  setInterval(() => {
+    essentialsService.runScheduledMemoPublish().catch(err =>
+      console.error('[MemoPublish] scheduled sweep failed:', err.message)
+    );
+  }, MEMO_PUBLISH_INTERVAL_MS);
 });
 process.on('SIGINT', () => {
   console.log('\n📴 Shutting down...');

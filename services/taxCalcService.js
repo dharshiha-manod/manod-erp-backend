@@ -34,14 +34,9 @@ const ensureSchema = async () => {
         updated_at TIMESTAMP DEFAULT NOW()
       );
     `);
-    // Seed one settings row if none exists, so the engine always has config.
-    const { rows } = await pool.query(`SELECT id FROM gst_settings LIMIT 1`);
-    if (!rows.length) {
-      await pool.query(`
-        INSERT INTO gst_settings (business_state, default_cgst_rate, default_sgst_rate, default_igst_rate)
-        VALUES (NULL, 9, 9, 18)
-      `);
-    }
+    // NOTE: default-row seeding is now per-industry and handled lazily
+    // inside getSettings(industryId) below, since gst_settings is an
+    // industry-isolated table (see ISOLATED_TABLES in industryService.js).
 
     await pool.query(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS gstin VARCHAR(15);`);
     await pool.query(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS gst_registered BOOLEAN DEFAULT FALSE;`);
@@ -97,14 +92,18 @@ const ensureSchema = async () => {
   }
 };
 
-/** Returns the single active gst_settings row (creates default if missing). */
-const getSettings = async () => {
+/** Returns the active gst_settings row for this industry (creates default if missing). */
+const getSettings = async (industryId) => {
   await ensureSchema();
-  const { rows } = await pool.query(`SELECT * FROM gst_settings ORDER BY id LIMIT 1`);
-  return rows[0] || {
-    business_state: null, default_cgst_rate: 9, default_sgst_rate: 9,
-    default_igst_rate: 18, default_cess_rate: 0, reverse_charge_enabled: false,
-  };
+  const { rows } = await pool.query(
+    `SELECT * FROM gst_settings WHERE industry_id = $1 ORDER BY id LIMIT 1`, [industryId]);
+  if (rows.length) return rows[0];
+
+  const { rows: created } = await pool.query(`
+    INSERT INTO gst_settings (industry_id, business_state, default_cgst_rate, default_sgst_rate, default_igst_rate)
+    VALUES ($1, NULL, 9, 9, 18)
+    RETURNING *`, [industryId]);
+  return created[0];
 };
 
 /**

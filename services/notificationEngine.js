@@ -169,6 +169,51 @@ async function checkAndAlertLowStock(productId) {
 
   console.log(`[Notify] Low stock alert for "${product.name}" (${product.current_stock}/${product.alert_qty}) -> sent to internal staff: ${results.sentTo.join(', ') || 'nobody (no email configured)'}`);
 
+  // Auto-create a To Do for every inventory/admin user so the alert also
+  // lands as an actionable task inside Essentials, not just an email.
+  // Fire-and-forget — never blocks or fails the sale/stock update that
+  // triggered this check.
+  try {
+    const essentialsService = require('./essentialsService');
+    const staffResult = await pool.query(
+      `SELECT id, full_name FROM users
+       WHERE status = 'active'
+         AND (LOWER(role) LIKE '%admin%' OR LOWER(role) LIKE '%inventory%')`
+    );
+    for (const staff of staffResult.rows) {
+      // Skip if an open (not Completed) reorder task for this exact product
+      // + user already exists — prevents a new task on every single sale
+      // while stock stays below threshold.
+      const existing = await pool.query(
+        `SELECT id FROM essentials_todos
+         WHERE link_type = 'product' AND link_id = $1 AND assigned_to_id = $2
+           AND status <> 'Completed'
+         LIMIT 1`,
+        [product.id, staff.id]
+      );
+      if (existing.rows.length) continue;
+
+      await essentialsService.createTodo(
+        {
+          task: `Reorder stock: ${product.name}`,
+          description: `Current stock (${product.current_stock}) is at or below the alert threshold (${product.alert_qty}).` +
+            (supplier?.supplier_name ? ` Last supplier: ${supplier.supplier_name}.` : ' No previous supplier on record.'),
+          priority: 'High',
+          status: 'Not Started',
+          task_type: 'Team',
+          assigned_to_id: staff.id,
+          link_type: 'product',
+          link_id: product.id,
+          link_label: product.name,
+        },
+        staff.id,
+        'System'
+      ).catch(err => console.error('[NotificationEngine] low-stock To Do creation failed:', err.message));
+    }
+  } catch (err) {
+    console.error('[NotificationEngine] low-stock To Do auto-creation skipped:', err.message);
+  }
+
   return results;
 }
 

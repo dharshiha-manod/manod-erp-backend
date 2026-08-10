@@ -12,6 +12,7 @@ const getAllAgents = async (req, res) => {
   try {
     const { page = 1, limit = 25, search = '', status = '', region = '' } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
+    const industryId = req.industryId;
 
     let query = `
       SELECT 
@@ -19,9 +20,9 @@ const getAllAgents = async (req, res) => {
         status, customers_assigned AS customers, region, join_date, notes,
         created_at, updated_at
       FROM sales_commission_agents
-      WHERE 1=1
+      WHERE industry_id = $1
     `;
-    const params = [];
+    const params = [industryId];
 
     // Search by name, email, or region
     if (search) {
@@ -45,13 +46,12 @@ const getAllAgents = async (req, res) => {
       query += ` AND LOWER(region) = LOWER($${params.length})`;
     }
 
-    // Count total records
-    const countQuery = query.replace(
-      'SELECT id, name, email, phone, commission_type, commission_rate, status, customers_assigned AS customers, region, join_date, notes, created_at, updated_at FROM',
-      'SELECT COUNT(*) FROM'
-    );
+// Count total records — reuse the exact WHERE clause already built above
+// (search/status/region), just swap the SELECT list for COUNT(*).
+    const whereClause = query.split('WHERE industry_id = $1')[1].split('ORDER BY')[0];
+    const countQuery = `SELECT COUNT(*) as count FROM sales_commission_agents WHERE industry_id = $1${whereClause}`;
     const countResult = await pool.query(countQuery, params);
-    const total = parseInt(countResult.rows[0].count);
+    const total = parseInt(countResult.rows[0].count);  
 
     // Get paginated data
     params.push(limit);
@@ -63,7 +63,7 @@ const getAllAgents = async (req, res) => {
     // Calculate commission for each agent
     const agentsWithCommission = await Promise.all(
       result.rows.map(async (agent) => {
-        const commission = await calculateAgentCommission(agent.id, agent.commission_type, agent.commission_rate);
+        const commission = await calculateAgentCommission(agent.id, agent.commission_type, agent.commission_rate, industryId);
         return {
           ...agent,
           salesThisMonth: commission.salesThisMonth,
@@ -72,7 +72,6 @@ const getAllAgents = async (req, res) => {
         };
       })
     );
-
     res.status(200).json({
       success: true,
       total,
@@ -91,13 +90,14 @@ const getAllAgents = async (req, res) => {
 const getAgentById = async (req, res) => {
   try {
     const { id } = req.params;
+    const industryId = req.industryId;
 
     const result = await pool.query(
       `SELECT id, name, email, phone, commission_type, commission_rate,
               status, customers_assigned AS customers, region, join_date, notes,
               created_at, updated_at
-       FROM sales_commission_agents WHERE id = $1`,
-      [id]
+       FROM sales_commission_agents WHERE id = $1 AND industry_id = $2`,
+      [id, industryId]
     );
 
     if (result.rows.length === 0) {
@@ -106,7 +106,7 @@ const getAgentById = async (req, res) => {
 
     // Calculate commission
     const agent = result.rows[0];
-    const commission = await calculateAgentCommission(agent.id, agent.commission_type, agent.commission_rate);
+    const commission = await calculateAgentCommission(agent.id, agent.commission_type, agent.commission_rate, industryId);
 
     res.status(200).json({
       success: true,
@@ -126,6 +126,7 @@ const getAgentById = async (req, res) => {
 // ── CREATE AGENT ──
 const createAgent = async (req, res) => {
   try {
+    const industryId = req.industryId;
     const {
       name, email, phone, commission_type, commission_rate,
       status, customers, region, join_date, notes
@@ -145,10 +146,10 @@ const createAgent = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Commission rate must be >= 0' });
     }
 
-    // Check if email already exists
+    // Check if email already exists within this industry
     const existing = await pool.query(
-      'SELECT id FROM sales_commission_agents WHERE LOWER(email) = LOWER($1)',
-      [email]
+      'SELECT id FROM sales_commission_agents WHERE LOWER(email) = LOWER($1) AND industry_id = $2',
+      [email, industryId]
     );
     if (existing.rows.length > 0) {
       return res.status(400).json({ success: false, error: 'Email already exists' });
@@ -156,8 +157,8 @@ const createAgent = async (req, res) => {
 
     const result = await pool.query(
       `INSERT INTO sales_commission_agents 
-       (name, email, phone, commission_type, commission_rate, status, customers_assigned, region, join_date, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       (name, email, phone, commission_type, commission_rate, status, customers_assigned, region, join_date, notes, industry_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING id, name, email, phone, commission_type, commission_rate, status, 
                  customers_assigned AS customers, region, join_date, notes, created_at`,
       [
@@ -170,7 +171,8 @@ const createAgent = async (req, res) => {
         parseInt(customers) || 0,
         region || null,
         join_date || null,
-        notes || null
+        notes || null,
+        industryId
       ]
     );
 
@@ -190,6 +192,7 @@ const createAgent = async (req, res) => {
 const updateAgent = async (req, res) => {
   try {
     const { id } = req.params;
+    const industryId = req.industryId;
     const {
       name, email, phone, commission_type, commission_rate,
       status, customers, region, join_date, notes
@@ -197,18 +200,18 @@ const updateAgent = async (req, res) => {
 
     // Check if agent exists
     const existing = await pool.query(
-      'SELECT id FROM sales_commission_agents WHERE id = $1',
-      [id]
+      'SELECT id FROM sales_commission_agents WHERE id = $1 AND industry_id = $2',
+      [id, industryId]
     );
     if (existing.rows.length === 0) {
       return res.status(404).json({ success: false, error: 'Agent not found' });
     }
 
-    // If email is being updated, check for duplicates
+    // If email is being updated, check for duplicates within this industry
     if (email) {
       const emailCheck = await pool.query(
-        'SELECT id FROM sales_commission_agents WHERE LOWER(email) = LOWER($1) AND id != $2',
-        [email, id]
+        'SELECT id FROM sales_commission_agents WHERE LOWER(email) = LOWER($1) AND id != $2 AND industry_id = $3',
+        [email, id, industryId]
       );
       if (emailCheck.rows.length > 0) {
         return res.status(400).json({ success: false, error: 'Email already in use' });
@@ -228,7 +231,7 @@ const updateAgent = async (req, res) => {
            join_date = COALESCE($9, join_date),
            notes = COALESCE($10, notes),
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = $11
+       WHERE id = $11 AND industry_id = $12
        RETURNING id, name, email, phone, commission_type, commission_rate, status,
                  customers_assigned AS customers, region, join_date, notes, updated_at`,
       [
@@ -242,7 +245,7 @@ const updateAgent = async (req, res) => {
         region || null,
         join_date || null,
         notes || null,
-        id
+        id, industryId
       ]
     );
 
@@ -250,7 +253,7 @@ const updateAgent = async (req, res) => {
     
     // Calculate commission for updated agent
     const agent = result.rows[0];
-    const commission = await calculateAgentCommission(agent.id, agent.commission_type, agent.commission_rate);
+    const commission = await calculateAgentCommission(agent.id, agent.commission_type, agent.commission_rate, industryId);
 
     res.status(200).json({
       success: true,
@@ -271,10 +274,11 @@ const updateAgent = async (req, res) => {
 const deleteAgent = async (req, res) => {
   try {
     const { id } = req.params;
+    const industryId = req.industryId;
 
     const result = await pool.query(
-      'DELETE FROM sales_commission_agents WHERE id = $1 RETURNING id, name, email',
-      [id]
+      'DELETE FROM sales_commission_agents WHERE id = $1 AND industry_id = $2 RETURNING id, name, email',
+      [id, industryId]
     );
 
     if (result.rows.length === 0) {
@@ -296,43 +300,55 @@ const deleteAgent = async (req, res) => {
 // ── GET DASHBOARD STATISTICS ──
 const getDashboardStats = async (req, res) => {
   try {
+    const industryId = req.industryId;
+
     // Total agents
-    const totalResult = await pool.query('SELECT COUNT(*) as count FROM sales_commission_agents');
+    const totalResult = await pool.query(
+      'SELECT COUNT(*) as count FROM sales_commission_agents WHERE industry_id = $1',
+      [industryId]
+    );
     const totalAgents = parseInt(totalResult.rows[0].count);
 
     // Active agents
     const activeResult = await pool.query(
-      "SELECT COUNT(*) as count FROM sales_commission_agents WHERE status = 'Active'"
+      "SELECT COUNT(*) as count FROM sales_commission_agents WHERE status = 'Active' AND industry_id = $1",
+      [industryId]
     );
     const activeAgents = parseInt(activeResult.rows[0].count);
 
-    // Total sales this month
+    // Total sales this month, across agent-linked invoices only, in this industry
     const startOfMonth = new Date();
     startOfMonth.setDate(1);
-    
+
     const salesResult = await pool.query(
-      `SELECT COALESCE(SUM(sale_amount), 0) as total
-       FROM sales_transactions
-       WHERE sale_date >= $1 AND status = 'Completed'`,
-      [startOfMonth.toISOString().split('T')[0]]
+      `SELECT COALESCE(SUM(grand_total), 0) as total
+       FROM sales_invoices
+       WHERE agent_id IS NOT NULL AND industry_id = $1 AND invoice_date >= $2`,
+      [industryId, startOfMonth.toISOString().split('T')[0]]
     );
     const totalSalesThisMonth = parseFloat(salesResult.rows[0].total);
 
-    // Average commission rate
+    // Average commission rate — Percentage-type agents only.
+    // Fixed-type agents store a rupee amount in commission_rate, not a
+    // percentage, so mixing them in skews the average wildly.
     const avgResult = await pool.query(
-      'SELECT AVG(commission_rate) as avg FROM sales_commission_agents'
+      `SELECT AVG(commission_rate) as avg
+       FROM sales_commission_agents
+       WHERE industry_id = $1 AND commission_type = 'Percentage'`,
+      [industryId]
     );
     const avgCommissionRate = parseFloat(avgResult.rows[0].avg || 0).toFixed(1);
 
     // Get all agents with calculated commissions
     const agentsResult = await pool.query(
       `SELECT id, commission_type, commission_rate
-       FROM sales_commission_agents`
+       FROM sales_commission_agents WHERE industry_id = $1`,
+      [industryId]
     );
 
     let totalEarnedByAllAgents = 0;
     for (const agent of agentsResult.rows) {
-      const commission = await calculateAgentCommission(agent.id, agent.commission_type, agent.commission_rate);
+      const commission = await calculateAgentCommission(agent.id, agent.commission_type, agent.commission_rate, industryId);
       totalEarnedByAllAgents += commission.totalEarned;
     }
 
@@ -351,20 +367,21 @@ const getDashboardStats = async (req, res) => {
     res.status(500).json({ success: false, error: 'Failed to fetch statistics' });
   }
 };
-
 // ── HELPER: Calculate commission for an agent ──
-async function calculateAgentCommission(agentId, commissionType, commissionRate) {
+async function calculateAgentCommission(agentId, commissionType, commissionRate, industryId) {
   try {
     const startOfMonth = new Date();
     startOfMonth.setDate(1);
     const monthStart = startOfMonth.toISOString().split('T')[0];
 
-    // Get all completed sales for this month
+    // Get all sales_invoices linked to this agent this month, within
+    // the current industry workspace. "Completed" in this ERP is
+    // represented by payment_status = 'Paid' on sales_invoices.
     const result = await pool.query(
-      `SELECT COALESCE(SUM(sale_amount), 0) as total
-       FROM sales_transactions
-       WHERE agent_id = $1 AND sale_date >= $2 AND status = 'Completed'`,
-      [agentId, monthStart]
+      `SELECT COALESCE(SUM(grand_total), 0) as total
+       FROM sales_invoices
+       WHERE agent_id = $1 AND industry_id = $2 AND invoice_date >= $3`,
+      [agentId, industryId, monthStart]
     );
 
     const salesThisMonth = parseFloat(result.rows[0].total) || 0;
@@ -393,13 +410,15 @@ async function calculateAgentCommission(agentId, commissionType, commissionRate)
 // ── RECALCULATE COMMISSION FOR ALL AGENTS ──
 const recalculateCommissions = async (req, res) => {
   try {
+    const industryId = req.industryId;
     const result = await pool.query(
-      'SELECT id, commission_type, commission_rate FROM sales_commission_agents'
+      'SELECT id, commission_type, commission_rate FROM sales_commission_agents WHERE industry_id = $1',
+      [industryId]
     );
 
     const updated = [];
     for (const agent of result.rows) {
-      const commission = await calculateAgentCommission(agent.id, agent.commission_type, agent.commission_rate);
+      const commission = await calculateAgentCommission(agent.id, agent.commission_type, agent.commission_rate, industryId);
       updated.push({
         id: agent.id,
         ...commission

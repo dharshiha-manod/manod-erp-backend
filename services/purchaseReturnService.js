@@ -58,11 +58,12 @@ const ensureSchema = async () => {
 };
 
 // ── AUTO-GENERATE REFERENCE NUMBER ───────────────────────────────────────────
-const generateReturnNumber = async () => {
+const generateReturnNumber = async (industryId) => {
   const result = await pool.query(
     `SELECT return_number FROM purchase_returns
-     WHERE return_number LIKE 'PR-%'
-     ORDER BY id DESC LIMIT 1`
+     WHERE return_number LIKE 'PR-%' AND industry_id = $1
+     ORDER BY id DESC LIMIT 1`,
+    [industryId]
   );
   let next = 1;
   if (result.rows.length > 0) {
@@ -73,12 +74,12 @@ const generateReturnNumber = async () => {
 };
 
 // ── FETCH ALL (paginated) ─────────────────────────────────────────────────────
-const fetchAllReturns = async (filters = {}) => {
+const fetchAllReturns = async (industryId, filters = {}) => {
   await ensureSchema();
   const { page = 1, limit = 25, search = '', supplier_id = '', date_from = '', date_to = '', payment_status = '' } = filters;
   const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
-  const params = [];
-  const wheres = [];
+  const params = [industryId];
+  const wheres = ['pr.industry_id = $1'];
 
   if (search) {
     params.push(`%${search}%`);
@@ -128,9 +129,11 @@ const fetchAllReturns = async (filters = {}) => {
 };
 
 // ── FETCH SINGLE ──────────────────────────────────────────────────────────────
-const fetchReturnById = async (id) => {
+const fetchReturnById = async (industryId, id) => {
   await ensureSchema();
-  const result = await pool.query(`SELECT * FROM purchase_returns WHERE id = $1`, [id]);
+  const result = industryId
+    ? await pool.query(`SELECT * FROM purchase_returns WHERE id = $1 AND industry_id = $2`, [id, industryId])
+    : await pool.query(`SELECT * FROM purchase_returns WHERE id = $1`, [id]);
   if (result.rows.length === 0) return null;
   const ret = result.rows[0];
   const items = await pool.query(
@@ -141,15 +144,15 @@ const fetchReturnById = async (id) => {
 };
 
 // ── CREATE ────────────────────────────────────────────────────────────────────
-const createReturn = async (body, userId, userName) => {
+const createReturn = async (industryId, body, userId, userName) => {
   await ensureSchema();
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    const returnNumber = body.return_number || await generateReturnNumber();
+    const returnNumber = body.return_number || await generateReturnNumber(industryId);
     const existing = await client.query(
-      `SELECT id FROM purchase_returns WHERE return_number = $1`, [returnNumber]
+      `SELECT id FROM purchase_returns WHERE return_number = $1 AND industry_id = $2`, [returnNumber, industryId]
     );
     if (existing.rows.length > 0) throw new Error(`Return number ${returnNumber} already exists`);
 
@@ -166,8 +169,8 @@ const createReturn = async (body, userId, userName) => {
         return_number, purchase_order_id, supplier_id, supplier_name,
         location, purchase_ref, tax_label, tax_amount, subtotal,
         total_amount, payment_status, payment_due, amount_paid,
-        reason, return_date, added_by
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW(),$15)
+        reason, return_date, added_by, industry_id
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW(),$15,$16)
       RETURNING *`,
       [
         returnNumber,
@@ -185,6 +188,7 @@ const createReturn = async (body, userId, userName) => {
         amtPaid,
         body.reason            || null,
         userId                 || null,
+        industryId,
       ]
     );
 
@@ -245,7 +249,7 @@ logAudit({
       }).catch(() => {});
     }
 
-    return fetchReturnById(pr.id);
+return fetchReturnById(industryId, pr.id);
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -255,13 +259,13 @@ logAudit({
 };
 
 // ── UPDATE ────────────────────────────────────────────────────────────────────
-const updateReturn = async (id, body, userId, userName) => {
+const updateReturn = async (industryId, id, body, userId, userName) => {
   await ensureSchema();
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-const ex = await client.query(`SELECT id, amount_paid, return_date FROM purchase_returns WHERE id = $1`, [id]);
+const ex = await client.query(`SELECT id, amount_paid, return_date FROM purchase_returns WHERE id = $1 AND industry_id = $2`, [id, industryId]);
     if (ex.rows.length === 0) throw new Error('Purchase return not found');
     const existingReturn = ex.rows[0];
 
@@ -273,17 +277,17 @@ const ex = await client.query(`SELECT id, amount_paid, return_date FROM purchase
     const payDue    = Math.max(0, totalAmt - amtPaid);
     const payStatus = amtPaid >= totalAmt && totalAmt > 0 ? 'Paid' : amtPaid > 0 ? 'Partial' : 'Due';
 
-    await client.query(
+   await client.query(
       `UPDATE purchase_returns SET
         supplier_id=$1, supplier_name=$2, location=$3, purchase_ref=$4,
         tax_label=$5, tax_amount=$6, subtotal=$7, total_amount=$8,
         payment_status=$9, payment_due=$10, amount_paid=$11,
         reason=$12, updated_at=NOW()
-       WHERE id=$13`,
+       WHERE id=$13 AND industry_id=$14`,
       [body.supplier_id||null, body.supplier_name||null, body.location||null,
        body.purchase_ref||null, body.tax_label||'None', taxAmount, subtotal,
        totalAmt, payStatus, payDue, amtPaid,
-       body.reason||null, id]
+       body.reason||null, id, industryId]
     );
 
 if (items) {
@@ -340,7 +344,7 @@ logAudit({
       oldData: existingReturn,
       newData: body,
     }).catch(() => {});
-    return fetchReturnById(id);
+  return fetchReturnById(industryId, id);
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -350,14 +354,14 @@ logAudit({
 };
 
 // ── DELETE ────────────────────────────────────────────────────────────────────
-const deleteReturn = async (id, userId, userName) => {
+const deleteReturn = async (industryId, id, userId, userName) => {
   const client = await pool.connect();
   try {
 await client.query('BEGIN');
 
     const returnRow = await client.query(
-      `SELECT location FROM purchase_returns WHERE id = $1`,
-      [id]
+      `SELECT location FROM purchase_returns WHERE id = $1 AND industry_id = $2`,
+      [id, industryId]
     );
     if (returnRow.rows.length === 0) throw new Error('Purchase return not found');
     const locationId = await resolveLocationId(client, returnRow.rows[0].location);
@@ -374,9 +378,9 @@ await client.query('BEGIN');
       }
     }
 
-    const result = await client.query(
-      `DELETE FROM purchase_returns WHERE id = $1 RETURNING id, return_number`,
-      [id]
+ const result = await client.query(
+      `DELETE FROM purchase_returns WHERE id = $1 AND industry_id = $2 RETURNING id, return_number`,
+      [id, industryId]
     );
     if (result.rows.length === 0) throw new Error('Purchase return not found');
 
@@ -403,11 +407,11 @@ await client.query('BEGIN');
 };
 
 // ── BULK DELETE RETURNS ───────────────────────────────────────────────────
-const bulkDeleteReturns = async (ids, userId, userName) => {
+const bulkDeleteReturns = async (industryId, ids, userId, userName) => {
   const results = { deleted: [], failed: [] };
   for (const id of ids) {
     try {
-      const r = await deleteReturn(id, userId, userName);
+      const r = await deleteReturn(industryId, id, userId, userName);
       results.deleted.push(r.id || id);
     } catch (err) {
       results.failed.push({ id, error: err.message });

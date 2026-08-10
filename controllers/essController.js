@@ -32,10 +32,11 @@ const updateMyProfile = async (req, res) => { try { const { userId } = getUser(r
 const getMyAttendance      = async (req, res) => { try { const { userId } = getUser(req); ok(res, { attendance: await svc.fetchMyAttendance(userId, req.query) }); } catch(e) { err(res,e); } };
 const getMyAttendanceStats = async (req, res) => { try { const { userId } = getUser(req); ok(res, { stats: await svc.fetchMyAttendanceStats(userId) }); } catch(e) { err(res,e); } };
 // NEW
+const { getRequestMeta } = require('../utils/requestMeta');
 const clockInSelf          = async (req, res) => {
   try {
     const { userId, userName } = getUser(req);
-    ok(res, { attendance: await svc.clockInSelf(userId, userName, req.body?.department, req.body?.note, req.body?.shift_name) }, 201);
+    ok(res, { attendance: await svc.clockInSelf(userId, userName, req.body?.department, req.body?.note, req.body?.shift_name, req.body?.location, getRequestMeta(req)) }, 201);
   } catch(e) { err(res,e,400); }
 };
 const clockOutSelf = async (req, res) => {
@@ -47,7 +48,7 @@ const getMyShifts      = async (req, res) => { try { ok(res, { shifts: await svc
 
 // ── MY LEAVE ─────────────────────────────────────────────────
 const getMyLeaves       = async (req, res) => { try { const { userId } = getUser(req); ok(res, { leaves: await svc.fetchMyLeaves(userId) }); } catch(e) { err(res,e); } };
-const getMyLeaveBalance = async (req, res) => { try { const { userId } = getUser(req); ok(res, { balance: await svc.fetchMyLeaveBalance(userId) }); } catch(e) { err(res,e); } };
+const getMyLeaveBalance = async (req, res) => { try { const { userId } = getUser(req); ok(res, { balance: await svc.fetchMyLeaveBalance(req.industryId, userId) }); } catch(e) { err(res,e); } };
 const applyMyLeave      = async (req, res) => {
   try {
     const { userId, userName } = getUser(req);
@@ -79,6 +80,10 @@ const getMyPayroll      = async (req, res) => { try { const { userId } = getUser
 const getMyPayrollItems = async (req, res) => {
   try { const { userId } = getUser(req); ok(res, { items: await svc.fetchMyPayrollItems(userId, req.params.id) }); } catch(e) { err(res,e,404); }
 };
+// ── MY DOCUMENTS / EDUCATION / TIMELINE (Phase 6) ────────────
+const getMyDocuments = async (req, res) => { try { const { userId } = getUser(req); ok(res, { documents: await svc.fetchMyDocuments(userId) }); } catch(e) { err(res,e); } };
+const getMyEducation = async (req, res) => { try { const { userId } = getUser(req); ok(res, { education: await svc.fetchMyEducation(userId) }); } catch(e) { err(res,e); } };
+const getMyTimeline  = async (req, res) => { try { const { userId } = getUser(req); ok(res, { timeline: await svc.fetchMyTimeline(userId) }); } catch(e) { err(res,e); } };
 
 // ── MY NOTIFICATIONS (shared, all modules) ───────────────────
 const getMyNotifications      = async (req, res) => { try { const { userId } = getUser(req); ok(res, { notifications: await notificationService.fetchMyNotifications(userId) }); } catch(e) { err(res,e); } };
@@ -95,5 +100,6 @@ module.exports = {
   getMyLeaveNotifications, markLeaveNotificationSeen,
   getMyHolidays, getMySalesTarget,
   getMyPayroll, getMyPayrollItems,
+  getMyDocuments, getMyEducation, getMyTimeline,
   getMyNotifications, markNotificationSeen, markAllNotificationsSeen,
 };

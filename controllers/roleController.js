@@ -6,11 +6,10 @@
  */
 
 const roleService = require('../services/roleService');
-
 // GET /api/roles
 const getAllRoles = async (req, res) => {
   try {
-    const roles = await roleService.getAllRoles();
+    const roles = await roleService.getAllRoles(req.industryId);
     res.json({ success: true, data: roles });
   } catch (err) {
     console.error('getAllRoles error:', err.message);
@@ -21,7 +20,7 @@ const getAllRoles = async (req, res) => {
 // GET /api/roles/:id
 const getRoleById = async (req, res) => {
   try {
-    const role = await roleService.getRoleById(req.params.id);
+    const role = await roleService.getRoleById(req.params.id, req.industryId);
     if (!role) return res.status(404).json({ success: false, error: 'Role not found' });
     res.json({ success: true, data: role });
   } catch (err) {
@@ -37,7 +36,7 @@ const createRole = async (req, res) => {
     if (!name || !name.trim()) {
       return res.status(400).json({ success: false, error: 'Role name is required' });
     }
-    const role = await roleService.createRole(name.trim(), permissions || []);
+    const role = await roleService.createRole(name.trim(), permissions || [], req.industryId);
     res.status(201).json({ success: true, data: role, message: 'Role created successfully' });
   } catch (err) {
     console.error('createRole error:', err.message);
@@ -53,7 +52,7 @@ const updateRole = async (req, res) => {
     if (!name || !name.trim()) {
       return res.status(400).json({ success: false, error: 'Role name is required' });
     }
-    const role = await roleService.updateRole(req.params.id, name.trim(), permissions || []);
+    const role = await roleService.updateRole(req.params.id, name.trim(), permissions || [], req.industryId);
     res.json({ success: true, data: role, message: 'Role updated successfully' });
   } catch (err) {
     console.error('updateRole error:', err.message);
@@ -65,7 +64,7 @@ const updateRole = async (req, res) => {
 // DELETE /api/roles/:id
 const deleteRole = async (req, res) => {
   try {
-    await roleService.deleteRole(req.params.id);
+    await roleService.deleteRole(req.params.id, req.industryId);
     res.json({ success: true, message: 'Role deleted successfully' });
   } catch (err) {
     console.error('deleteRole error:', err.message);

@@ -12,7 +12,6 @@
  * so none of the existing CRUD logic is touched.
  * ====================================================
  */
-
 'use strict';
 
 const pool = require('../config/database');
@@ -30,14 +29,31 @@ function pushDateRange(params, whereArr, column, date_from, date_to) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ACTIVITY LOG REPORT  → activity_logs table (live)
+// INDUSTRY WORKSPACE ISOLATION — NOTE
+// activity_logs and register_sessions have NO industry_id column anywhere
+// in this codebase (confirmed: not in industryService.ISOLATED_TABLES, no
+// inline ALTER TABLE for them in any service file). getActivityLogReport
+// and getRegisterReport are therefore intentionally left business-wide —
+// this is a deliberate scope decision, not an oversight. Every other
+// report below IS scoped by industryId, first positional argument,
+// same pattern as expenseService.fetchAllExpenses(industryId, filters).
 // ═══════════════════════════════════════════════════════════════════════════
-const getActivityLogReport = async (filters = {}) => {
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ACTIVITY LOG REPORT  → activity_logs table (live) — industry-scoped.
+// Rows written before this migration have industry_id = NULL and are
+// excluded from every industry's view (nothing deleted, just untagged).
+// ═══════════════════════════════════════════════════════════════════════════
+const getActivityLogReport = async (industryId, filters = {}) => {
   const { user = '', module = '', search = '', date_from = '', date_to = '', page = 1, limit = 25 } = filters;
 
   const where = ['1=1'];
   const params = [];
 
+  if (industryId) {
+    params.push(industryId);
+    where.push(`al.industry_id = $${params.length}`);
+  }
   if (user) {
     params.push(`%${user}%`);
     where.push(`al.user_name ILIKE $${params.length}`);
@@ -86,11 +102,11 @@ const getActivityLogReport = async (filters = {}) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. STOCK REPORT  → Products + current_stock + business_locations
 // ═══════════════════════════════════════════════════════════════════════════
-const getStockReport = async (filters = {}) => {
+const getStockReport = async (industryId, filters = {}) => {
   const { location = '', category = '', brand = '', page = 1, limit = 25 } = filters;
 
-  const where = ['1=1'];
-  const params = [];
+  const where = ['p.industry_id = $1'];
+  const params = [industryId];
 
   if (location) {
     params.push(`%${location}%`);
@@ -146,7 +162,7 @@ const getStockReport = async (filters = {}) => {
        COUNT(*) AS total_skus,
        COALESCE(SUM(COALESCE(p.current_stock,0) * COALESCE(p.purchase_price_exc_tax,0)), 0) AS total_stock_value,
        COUNT(*) FILTER (WHERE COALESCE(p.current_stock,0) < COALESCE(p.alert_qty,0)) AS low_or_out_count,
-       (SELECT COUNT(*) FROM business_locations) AS warehouse_count
+       (SELECT COUNT(*) FROM business_locations WHERE industry_id = $1) AS warehouse_count
      FROM products p
      LEFT JOIN product_categories pc ON pc.id = p.category_id
      LEFT JOIN product_brands     pb ON pb.id = p.brand_id
@@ -160,14 +176,14 @@ const getStockReport = async (filters = {}) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // 2. STOCK ADJUSTMENT REPORT → stock_adjustments + items + products
 // ═══════════════════════════════════════════════════════════════════════════
-const getStockAdjustmentReport = async (filters = {}) => {
+const getStockAdjustmentReport = async (industryId, filters = {}) => {
   const {
     location = '', adjustment_type = '', date_from = '', date_to = '',
     page = 1, limit = 25,
   } = filters;
 
-  const where = ['1=1'];
-  const params = [];
+  const where = ['sa.industry_id = $1'];
+  const params = [industryId];
 
   if (location) {
     params.push(location);
@@ -240,11 +256,11 @@ const getStockAdjustmentReport = async (filters = {}) => {
 //    NULL at insert time (confirmed in sellService.createInvoice), so SKU
 //    is the only reliable join key on the sell side.
 // ═══════════════════════════════════════════════════════════════════════════
-const getItemsReport = async (filters = {}) => {
+const getItemsReport = async (industryId, filters = {}) => {
   const { category = '', brand = '', page = 1, limit = 25 } = filters;
 
-  const where = ['1=1'];
-  const params = [];
+  const where = ['p.industry_id = $1'];
+  const params = [industryId];
 
   if (category) {
     params.push(`%${category}%`);
@@ -269,6 +285,10 @@ const getItemsReport = async (filters = {}) => {
   const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
   const dataParams = [...params, parseInt(limit, 10), offset];
 
+  // NOTE: the pur/sel subqueries below are matched onto p (already
+  // industry-filtered by the outer WHERE), so they never need their own
+  // industry_id predicate — purchase_items/sales_invoice_items have no
+  // such column, they inherit scope purely by joining to this p.
   const { rows } = await pool.query(
     `SELECT
        p.id, p.name AS product, p.sku,
@@ -309,8 +329,11 @@ const getItemsReport = async (filters = {}) => {
   const summaryRes = await pool.query(
     `SELECT
        COUNT(*) AS total_products,
-       COALESCE((SELECT SUM(qty) FROM sales_invoice_items), 0) AS total_units_sold,
-       (SELECT COUNT(DISTINCT category_id) FROM products WHERE category_id IS NOT NULL) AS category_count
+       COALESCE((SELECT SUM(si.qty)
+                 FROM sales_invoice_items si
+                 JOIN sales_invoices inv ON inv.id = si.invoice_id
+                 WHERE inv.industry_id = $1), 0) AS total_units_sold,
+       (SELECT COUNT(DISTINCT category_id) FROM products WHERE category_id IS NOT NULL AND industry_id = $1) AS category_count
      FROM products p
      LEFT JOIN product_categories pc ON pc.id = p.category_id
      LEFT JOIN product_brands     pb ON pb.id = p.brand_id
@@ -324,14 +347,14 @@ const getItemsReport = async (filters = {}) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // 4. PRODUCT PURCHASE REPORT → purchase_items + purchases
 // ═══════════════════════════════════════════════════════════════════════════
-const getProductPurchaseReport = async (filters = {}) => {
+const getProductPurchaseReport = async (industryId, filters = {}) => {
   const {
     product = '', supplier = '', date_from = '', date_to = '',
     page = 1, limit = 25,
   } = filters;
 
-  const where = ['1=1'];
-  const params = [];
+  const where = ['pu.industry_id = $1'];
+  const params = [industryId];
 
   if (product) {
     params.push(`%${product}%`);
@@ -389,20 +412,20 @@ const getProductPurchaseReport = async (filters = {}) => {
   );
 
   return { rows, total, summary: summaryRes.rows[0] };
-};
+};  
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 5. PRODUCT SELL REPORT → sales_invoice_items + sales_invoices
 //    (customer is a plain text column on sales_invoices, no contacts FK)
 // ═══════════════════════════════════════════════════════════════════════════
-const getProductSellReport = async (filters = {}) => {
+const getProductSellReport = async (industryId, filters = {}) => {
   const {
     product = '', customer = '', date_from = '', date_to = '',
     page = 1, limit = 25,
   } = filters;
 
-  const where = ['1=1'];
-  const params = [];
+  const where = ['inv.industry_id = $1'];
+  const params = [industryId];
 
   if (product) {
     params.push(`%${product}%`);
@@ -466,14 +489,14 @@ const summaryRes = await pool.query(
 //    (mirrors expenseService.fetchAllExpenses joins/columns exactly —
 //     read-only, does not touch expenses table logic)
 // ═══════════════════════════════════════════════════════════════════════════
-const getExpenseReport = async (filters = {}) => {
+const getExpenseReport = async (industryId, filters = {}) => {
   const {
     category = '', location = '', date_from = '', date_to = '',
     page = 1, limit = 25,
   } = filters;
 
-  const where = ['1=1'];
-  const params = [];
+  const where = ['e.industry_id = $1'];
+  const params = [industryId];
 
   if (category) {
     params.push(`%${category}%`);
@@ -516,14 +539,15 @@ const getExpenseReport = async (filters = {}) => {
     dataParams
   );
 
-  const summaryRes = await pool.query(
+const summaryRes = await pool.query(
     `SELECT
        COUNT(*) AS total_expenses,
        COALESCE(SUM(e.total_amount), 0) AS total_amount,
-       (SELECT COUNT(DISTINCT location) FROM expenses WHERE location IS NOT NULL AND location != '') AS location_count,
+       (SELECT COUNT(DISTINCT location) FROM expenses WHERE location IS NOT NULL AND location != '' AND industry_id = $1) AS location_count,
        (
          SELECT c2.name FROM expenses e2
          LEFT JOIN expense_categories c2 ON c2.id = e2.category_id
+         WHERE e2.industry_id = $1
          GROUP BY c2.name ORDER BY SUM(e2.total_amount) DESC NULLS LAST LIMIT 1
        ) AS top_category
      FROM expenses e
@@ -565,14 +589,14 @@ const getExpenseReport = async (filters = {}) => {
 //                            the schema (sales_commission_agents has no
 //                            target field either)
 // ═══════════════════════════════════════════════════════════════════════════
-const getSalesRepresentativeReport = async (filters = {}) => {
+const getSalesRepresentativeReport = async (industryId, filters = {}) => {
   const {
     sales_rep = '', location = '', date_from = '', date_to = '',
     page = 1, limit = 25,
   } = filters;
 
-  const where = [`inv.salesperson IS NOT NULL`, `inv.salesperson != ''`];
-  const params = [];
+  const where = [`inv.industry_id = $1`, `inv.salesperson IS NOT NULL`, `inv.salesperson != ''`];
+  const params = [industryId];  
 
   if (sales_rep) {
     params.push(`%${sales_rep}%`);
@@ -713,14 +737,14 @@ const getSalesRepresentativeReport = async (filters = {}) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // 8. PURCHASE PAYMENT REPORT → purchases (payment fields) + purchase_payments
 // ═══════════════════════════════════════════════════════════════════════════
-const getPurchasePaymentReport = async (filters = {}) => {
+const getPurchasePaymentReport = async (industryId, filters = {}) => {
   const {
     supplier = '', payment_method = '', date_from = '', date_to = '',
     page = 1, limit = 25,
   } = filters;
 
-  const where = ['1=1'];
-  const params = [];
+  const where = ['p.industry_id = $1'];
+  const params = [industryId];
 
   if (supplier) {
     params.push(`%${supplier}%`);
@@ -788,14 +812,14 @@ const getPurchasePaymentReport = async (filters = {}) => {
 // 9. SELL PAYMENT REPORT → sales_invoices (payment fields)
 //    balance = grand_total - paid_amount (no separate balance column exists)
 // ═══════════════════════════════════════════════════════════════════════════
-const getSellPaymentReport = async (filters = {}) => {
+const getSellPaymentReport = async (industryId, filters = {}) => {
   const {
     customer = '', payment_method = '', date_from = '', date_to = '',
     page = 1, limit = 25,
   } = filters;
 
-  const where = ['1=1'];
-  const params = [];
+  const where = ['inv.industry_id = $1'];
+  const params = [industryId];
 
   if (customer) {
     params.push(`%${customer}%`);
@@ -857,16 +881,16 @@ const getSellPaymentReport = async (filters = {}) => {
 //     (purchases counted as cost of goods, matching how Purchase & Sale report
 //     treats "purchased" amount).
 // ═══════════════════════════════════════════════════════════════════════════
-const getProfitLossReport = async (filters = {}) => {
+const getProfitLossReport = async (industryId, filters = {}) => {
   const { location = '', date_from = '', date_to = '', page = 1, limit = 12 } = filters;
 
-  const revWhere = ['1=1'];
-  const revParams = [];
+  const revWhere = ['inv.industry_id = $1'];
+  const revParams = [industryId];
   pushDateRange(revParams, revWhere, 'inv.invoice_date', date_from, date_to);
   const revWhereClause = revWhere.join(' AND ');
 
-  const expWhere = ['1=1'];
-  const expParams = [];
+  const expWhere = ['e.industry_id = $1'];
+  const expParams = [industryId];
   if (location) {
     expParams.push(`%${location}%`);
     expWhere.push(`e.location ILIKE $${expParams.length}`);
@@ -874,8 +898,8 @@ const getProfitLossReport = async (filters = {}) => {
   pushDateRange(expParams, expWhere, 'e.expense_date', date_from, date_to);
   const expWhereClause = expWhere.join(' AND ');
 
-  const purWhere = ['1=1'];
-  const purParams = [];
+  const purWhere = ['p.industry_id = $1'];
+  const purParams = [industryId];
   pushDateRange(purParams, purWhere, 'p.purchase_date', date_from, date_to);
   const purWhereClause = purWhere.join(' AND ');
 
@@ -960,16 +984,16 @@ const map = {};
 //     columns anywhere), so this report shows Taxable Amount, Sales Tax,
 //     Purchase Tax and Net Tax Payable (Sales Tax - Purchase Tax) per quarter.
 // ═══════════════════════════════════════════════════════════════════════════
-const getTaxReport = async (filters = {}) => {
+const getTaxReport = async (industryId, filters = {}) => {
   const { date_from = '', date_to = '', page = 1, limit = 10 } = filters;
 
-  const salesWhere = ['1=1'];
-  const salesParams = [];
+  const salesWhere = ['inv.industry_id = $1'];
+  const salesParams = [industryId];
   pushDateRange(salesParams, salesWhere, 'inv.invoice_date', date_from, date_to);
   const salesWhereClause = salesWhere.join(' AND ');
 
-  const purWhere = ['1=1'];
-  const purParams = [];
+  const purWhere = ['p.industry_id = $1'];
+  const purParams = [industryId];
   pushDateRange(purParams, purWhere, 'p.purchase_date', date_from, date_to);
   const purWhereClause = purWhere.join(' AND ');
 
@@ -1055,11 +1079,11 @@ const summary = {
 //     period of equal length. No "rating" column exists anywhere in the
 //     schema, so that fabricated field is dropped rather than faked.
 // ═══════════════════════════════════════════════════════════════════════════
-const getTrendingProductsReport = async (filters = {}) => {
+const getTrendingProductsReport = async (industryId, filters = {}) => {
   const { location = '', category = '', date_from = '', date_to = '', page = 1, limit = 10 } = filters;
 
-  const where = ['1=1'];
-  const params = [];
+  const where = ['inv.industry_id = $1'];
+  const params = [industryId];
   if (category) {
     params.push(`%${category}%`);
     where.push(`pc.name ILIKE $${params.length}`);
@@ -1106,12 +1130,12 @@ const countRes = await pool.query(
     const spanMs = toDate.getTime() - fromDate.getTime();
     const prevTo = new Date(fromDate.getTime() - 24 * 60 * 60 * 1000);
     const prevFrom = new Date(prevTo.getTime() - spanMs);
-    const prevParams = [prevFrom.toISOString().slice(0, 10), prevTo.toISOString().slice(0, 10)];
+   const prevParams = [prevFrom.toISOString().slice(0, 10), prevTo.toISOString().slice(0, 10), industryId];
     const { rows: prevRows } = await pool.query(
       `SELECT si.product, COALESCE(SUM(si.qty), 0) AS units_sold
        FROM sales_invoice_items si
        JOIN sales_invoices inv ON inv.id = si.invoice_id
-       WHERE inv.invoice_date >= $1::date AND inv.invoice_date <= $2::date
+       WHERE inv.invoice_date >= $1::date AND inv.invoice_date <= $2::date AND inv.industry_id = $3
        GROUP BY si.product`,
       prevParams
     );
@@ -1177,11 +1201,11 @@ const summaryRes = await pool.query(
 //     column). "Settled" and "Due" are derived from grand_total vs the
 //     due/balance fields available on each side; no fabricated numbers.
 // ═══════════════════════════════════════════════════════════════════════════
-const getSupplierCustomerReport = async (filters = {}) => {
+const getSupplierCustomerReport = async (industryId, filters = {}) => {
   const { contact_type = '', name = '', page = 1, limit = 10 } = filters;
 
-  const where = ['1=1'];
-  const params = [];
+  const where = ['c.industry_id = $1'];
+  const params = [industryId];
   if (contact_type && contact_type !== 'All') {
     params.push(contact_type === 'Supplier' ? 'Suppliers' : 'Customers');
     params.push('Both');
@@ -1208,21 +1232,25 @@ const getSupplierCustomerReport = async (filters = {}) => {
        c.email,
        COALESCE(c.business_name, c.contact_name) AS name,
        c.contact_type,
+       COALESCE(c.opening_balance, 0) AS opening_balance,
        COALESCE(pur.total_purchased, 0) AS total_purchased,
        COALESCE(pur.total_purchase_paid, 0) AS purchase_paid,
        COALESCE(sel.total_sold, 0) AS total_sold,
        COALESCE(sel.total_sell_received, 0) AS sell_received
-     FROM contacts c
+    FROM contacts c
      LEFT JOIN (
        SELECT supplier_id, COALESCE(SUM(grand_total),0) AS total_purchased,
               COALESCE(SUM(amount_paid), 0) AS total_purchase_paid
-       FROM purchases GROUP BY supplier_id
+       FROM purchases WHERE industry_id = $1 GROUP BY supplier_id
      ) pur ON pur.supplier_id = c.id
      LEFT JOIN (
-       SELECT customer, COALESCE(SUM(grand_total),0) AS total_sold,
+       -- UPDATED: was joining on customer NAME text (sel.customer = business_name),
+       -- which silently missed renamed/duplicate-named customers even though
+       -- sales_invoices.customer_id already exists. Now uses the real FK.
+       SELECT customer_id, COALESCE(SUM(grand_total),0) AS total_sold,
               COALESCE(SUM(paid_amount), 0) AS total_sell_received
-       FROM sales_invoices GROUP BY customer
-     ) sel ON sel.customer = COALESCE(c.business_name, c.contact_name)
+       FROM sales_invoices WHERE industry_id = $1 GROUP BY customer_id
+     ) sel ON sel.customer_id = c.id
      WHERE ${whereClause} AND c.contact_type IN ('Suppliers','Customers','Both')
      ORDER BY (COALESCE(pur.total_purchased,0) + COALESCE(sel.total_sold,0)) DESC
      LIMIT $${dataParams.length - 1} OFFSET $${dataParams.length}`,
@@ -1230,7 +1258,14 @@ const getSupplierCustomerReport = async (filters = {}) => {
   );
 
   const rowsOut = rows.map((r) => {
-    const total = Number(r.total_purchased) + Number(r.total_sold);
+    const isSupplierSide = r.contact_type === 'Suppliers';
+    const isCustomerSide = r.contact_type === 'Customers';
+    const openingBalance = Number(r.opening_balance) || 0;
+    // Opening balance only applies to the relevant side for a single-type
+    // contact; for 'Both' it's ambiguous which side it belongs to, so it's
+    // surfaced separately rather than guessed into total/due.
+    const openingForDue = (isSupplierSide || isCustomerSide) ? openingBalance : 0;
+    const total = Number(r.total_purchased) + Number(r.total_sold) + openingForDue;
     const settled = Number(r.purchase_paid) + Number(r.sell_received);
     const due = total - settled;
     let status = 'Paid';
@@ -1241,6 +1276,7 @@ const getSupplierCustomerReport = async (filters = {}) => {
       email: r.email || '',
       name: r.name,
       type: r.contact_type === 'Both' ? 'Both' : (r.contact_type === 'Suppliers' ? 'Supplier' : 'Customer'),
+      openingBalance,
       total,
       settled,
       due,
@@ -1248,21 +1284,25 @@ const getSupplierCustomerReport = async (filters = {}) => {
     };
   });
 
-  const summaryRes = await pool.query(
+const summaryRes = await pool.query(
     `SELECT
        COUNT(*) FILTER (WHERE contact_type IN ('Suppliers','Both')) AS supplier_count,
        COUNT(*) FILTER (WHERE contact_type IN ('Customers','Both')) AS customer_count
-     FROM contacts WHERE contact_type IN ('Suppliers','Customers','Both')`
+     FROM contacts WHERE contact_type IN ('Suppliers','Customers','Both') AND industry_id = $1`,
+    [industryId]
   );
 const totalsRes = await pool.query(
     `SELECT
-       COALESCE((SELECT SUM(grand_total) FROM purchases), 0) AS total_purchased,
-       COALESCE((SELECT SUM(grand_total) FROM sales_invoices), 0) AS total_sold,
-       COALESCE((SELECT SUM(amount_paid) FROM purchases), 0) AS purchase_paid,
-       COALESCE((SELECT SUM(paid_amount) FROM sales_invoices), 0) AS sell_received`
+       COALESCE((SELECT SUM(grand_total) FROM purchases WHERE industry_id = $1), 0) AS total_purchased,
+       COALESCE((SELECT SUM(grand_total) FROM sales_invoices WHERE industry_id = $1), 0) AS total_sold,
+       COALESCE((SELECT SUM(amount_paid) FROM purchases WHERE industry_id = $1), 0) AS purchase_paid,
+       COALESCE((SELECT SUM(paid_amount) FROM sales_invoices WHERE industry_id = $1), 0) AS sell_received,
+       COALESCE((SELECT SUM(opening_balance) FROM contacts WHERE industry_id = $1 AND contact_type IN ('Customers','Both') AND opening_balance > 0), 0) AS customer_opening,
+       COALESCE((SELECT SUM(opening_balance) FROM contacts WHERE industry_id = $1 AND contact_type IN ('Suppliers','Both') AND opening_balance > 0), 0) AS supplier_opening`,
+    [industryId]
   );
   const t = totalsRes.rows[0];
-  const totalBusiness = Number(t.total_purchased) + Number(t.total_sold);
+  const totalBusiness = Number(t.total_purchased) + Number(t.total_sold) + Number(t.customer_opening) + Number(t.supplier_opening);
   const totalSettled = Number(t.purchase_paid) + Number(t.sell_received);
 
   const summary = {
@@ -1271,6 +1311,8 @@ const totalsRes = await pool.query(
     total_business: totalBusiness,
     total_settled: totalSettled,
     total_due: totalBusiness - totalSettled,
+    customer_opening_balances: Number(t.customer_opening),
+    supplier_opening_balances: Number(t.supplier_opening),
   };
 
   return { rows: rowsOut, total, summary };
@@ -1279,13 +1321,22 @@ const totalsRes = await pool.query(
 // 13b. CONTACT LEDGER → single contact's full purchase/sale history, used by
 //      the "Send Ledger" email button on the Supplier & Customer Report.
 // ═══════════════════════════════════════════════════════════════════════════
-const getContactLedger = async (contactId) => {
+// UPDATED: now sourced from accountingService's getCustomerOutstanding /
+// getSupplierOutstanding (single source of truth — see item 19 of the
+// Customer/Supplier financial flow audit: this report used to match sales
+// by `customer` name text instead of the `customer_id` FK, and ignored
+// opening_balance entirely, which is why this screen could disagree with
+// the Contact card and Accounting. For a "Both" contact, receivable and
+// payable are now kept SEPARATE instead of being summed into one
+// meaningless `due` figure.
+const getContactLedger = async (industryId, contactId) => {
   if (!contactId) return null;
+  const accountingService = require('./accountingService');
 
   const contactRes = await pool.query(
     `SELECT id, COALESCE(business_name, contact_name) AS name, contact_type, email, phone
-     FROM contacts WHERE id = $1`,
-    [contactId]
+     FROM contacts WHERE id = $1 AND industry_id = $2`,
+    [contactId, industryId]
   );
   const contact = contactRes.rows[0];
   if (!contact) return null;
@@ -1294,6 +1345,7 @@ const getContactLedger = async (contactId) => {
   const includeCustomerSide = contact.contact_type === 'Customers' || contact.contact_type === 'Both';
 
   let purchaseRows = [];
+  let supplierOutstanding = null;
   if (includeSupplierSide) {
     const r = await pool.query(
       `SELECT
@@ -1304,14 +1356,16 @@ const getContactLedger = async (contactId) => {
          COALESCE(p.payment_due, 0) AS balance,
          p.payment_status AS status
        FROM purchases p
-       WHERE p.supplier_id = $1
+       WHERE p.supplier_id = $1 AND p.industry_id = $2
        ORDER BY p.purchase_date DESC, p.id DESC`,
-      [contactId]
+      [contactId, industryId]
     );
     purchaseRows = r.rows.map((row) => ({ type: 'Purchase', ...row }));
+    supplierOutstanding = await accountingService.getSupplierOutstanding(industryId, contactId);
   }
 
   let saleRows = [];
+  let customerOutstanding = null;
   if (includeCustomerSide) {
     const r = await pool.query(
       `SELECT
@@ -1322,13 +1376,13 @@ const getContactLedger = async (contactId) => {
          GREATEST(COALESCE(inv.grand_total, 0) - COALESCE(inv.paid_amount, 0), 0) AS balance,
          inv.payment_status AS status
        FROM sales_invoices inv
-       WHERE inv.customer = $1
+       WHERE inv.customer_id = $1 AND inv.industry_id = $2
        ORDER BY inv.invoice_date DESC, inv.id DESC`,
-      [contact.name]
+      [contactId, industryId]
     );
     saleRows = r.rows.map((row) => ({ type: 'Sale', ...row }));
+    customerOutstanding = await accountingService.getCustomerOutstanding(industryId, contactId);
   }
-
   const transactions = [...purchaseRows, ...saleRows].sort(
     (a, b) => new Date(b.date) - new Date(a.date)
   );
@@ -1338,18 +1392,25 @@ const getContactLedger = async (contactId) => {
   const totalSold = saleRows.reduce((sum, r) => sum + Number(r.amount), 0);
   const sellReceived = saleRows.reduce((sum, r) => sum + Number(r.paid), 0);
 
-  const total = totalPurchased + totalSold;
-  const settled = purchasePaid + sellReceived;
-  const due = total - settled;
-
+  // receivableDue / payableDue are the real, opening-balance-inclusive
+  // numbers (same ones shown on the Contact card and Accounting).
+  // total/settled/due are kept for backward compatibility with any existing
+  // UI reading those fields, but now reflect only invoice/purchase activity
+  // (no opening balance) — receivableDue/payableDue are authoritative.
   const summary = {
     total_purchased: totalPurchased,
     purchase_paid: purchasePaid,
     total_sold: totalSold,
     sell_received: sellReceived,
-    total,
-    settled,
-    due,
+    total: totalPurchased + totalSold,
+    settled: purchasePaid + sellReceived,
+    due: (totalPurchased - purchasePaid) + (totalSold - sellReceived),
+    openingBalanceCustomer: customerOutstanding ? customerOutstanding.openingBalance : null,
+    openingBalanceSupplier: supplierOutstanding ? supplierOutstanding.openingBalance : null,
+    receivableDue: customerOutstanding ? customerOutstanding.total : null,
+    payableDue: supplierOutstanding ? supplierOutstanding.total : null,
+    creditLimit: customerOutstanding ? customerOutstanding.creditLimit : null,
+    availableCredit: customerOutstanding ? customerOutstanding.availableCredit : null,
   };
 
   return { contact, summary, transactions };
@@ -1361,11 +1422,11 @@ const getContactLedger = async (contactId) => {
 //     Supplier & Customer report). "Growth" is this-period vs prior-period
 //     of equal length, only computed when a date range is supplied.
 // ═══════════════════════════════════════════════════════════════════════════
-const getCustomerGroupsReport = async (filters = {}) => {
+const getCustomerGroupsReport = async (industryId, filters = {}) => {
   const { group = '', date_from = '', date_to = '', page = 1, limit = 10 } = filters;
 
-  const where = ['1=1'];
-  const params = [];
+  const where = ['cg.industry_id = $1'];
+  const params = [industryId];
   if (group) {
     params.push(`%${group}%`);
     where.push(`cg.name ILIKE $${params.length}`);
@@ -1404,8 +1465,9 @@ const getCustomerGroupsReport = async (filters = {}) => {
        COALESCE(SUM(inv.grand_total), 0) AS total_sales
      FROM customer_groups cg
      LEFT JOIN contacts c ON c.customer_group_id = cg.id
-     LEFT JOIN sales_invoices inv
+LEFT JOIN sales_invoices inv
        ON inv.customer = COALESCE(c.business_name, c.contact_name)
+       AND inv.industry_id = $1
        ${dateJoinClause}
      WHERE ${whereClause}
      GROUP BY cg.id, cg.name
@@ -1418,16 +1480,16 @@ const getCustomerGroupsReport = async (filters = {}) => {
   const topProductMap = {};
   for (const r of rows) {
     const { rows: tp } = await pool.query(
-      `SELECT si.product, COALESCE(SUM(si.qty),0) AS units
+ `SELECT si.product, COALESCE(SUM(si.qty),0) AS units
        FROM sales_invoice_items si
        JOIN sales_invoices inv ON inv.id = si.invoice_id
        JOIN contacts c ON inv.customer = COALESCE(c.business_name, c.contact_name)
-       WHERE c.customer_group_id = $1
+       WHERE c.customer_group_id = $1 AND inv.industry_id = $2
        GROUP BY si.product
        ORDER BY units DESC
        LIMIT 1`,
-      [r.id]
-    );
+      [r.id, industryId]
+    );  
     topProductMap[r.id] = tp[0]?.product || null;
   }
 
@@ -1440,14 +1502,16 @@ const getCustomerGroupsReport = async (filters = {}) => {
     const prevTo = new Date(fromDate.getTime() - 24 * 60 * 60 * 1000);
     const prevFrom = new Date(prevTo.getTime() - spanMs);
     const { rows: prevRows } = await pool.query(
-      `SELECT cg.id, COALESCE(SUM(inv.grand_total),0) AS total_sales
+  `SELECT cg.id, COALESCE(SUM(inv.grand_total),0) AS total_sales
        FROM customer_groups cg
        LEFT JOIN contacts c ON c.customer_group_id = cg.id
        LEFT JOIN sales_invoices inv
          ON inv.customer = COALESCE(c.business_name, c.contact_name)
          AND inv.invoice_date >= $1::date AND inv.invoice_date <= $2::date
+         AND inv.industry_id = $3
+       WHERE cg.industry_id = $3
        GROUP BY cg.id`,
-      [prevFrom.toISOString().slice(0, 10), prevTo.toISOString().slice(0, 10)]
+      [prevFrom.toISOString().slice(0, 10), prevTo.toISOString().slice(0, 10), industryId]
     );
     prevRows.forEach((r) => { growthMap[r.id] = Number(r.total_sales); });
   }
@@ -1470,7 +1534,7 @@ const getCustomerGroupsReport = async (filters = {}) => {
     };
   });
 
-  const totalCustomersRes = await pool.query(`SELECT COUNT(*) FROM contacts WHERE customer_group_id IS NOT NULL`);
+const totalCustomersRes = await pool.query(`SELECT COUNT(*) FROM contacts WHERE customer_group_id IS NOT NULL AND industry_id = $1`, [industryId]);
   const totalSalesAll = rowsOut.reduce((s, r) => s + r.total_sales, 0);
   const best = rowsOut.reduce((a, b) => (b.total_sales > (a?.total_sales || 0) ? b : a), null);
   const fastest = date_from && date_to
@@ -1496,11 +1560,11 @@ const getCustomerGroupsReport = async (filters = {}) => {
 //     by product_id, since purchase_items.product_id is INTEGER while
 //     sales_invoice_items.product_id is UUID, per the earlier schema fix).
 // ═══════════════════════════════════════════════════════════════════════════
-const getPurchaseSaleReport = async (filters = {}) => {
+const getPurchaseSaleReport = async (industryId, filters = {}) => {
   const { product = '', category = '', date_from = '', date_to = '', page = 1, limit = 10 } = filters;
 
-  const purWhere = ['1=1'];
-  const purParams = [];
+  const purWhere = ['p.industry_id = $1'];
+  const purParams = [industryId];
   if (product) {
     purParams.push(`%${product}%`);
     purWhere.push(`pi.product_name ILIKE $${purParams.length}`);
@@ -1508,8 +1572,8 @@ const getPurchaseSaleReport = async (filters = {}) => {
   pushDateRange(purParams, purWhere, 'p.purchase_date', date_from, date_to);
   const purWhereClause = purWhere.join(' AND ');
 
-  const sellWhere = ['1=1'];
-  const sellParams = [];
+  const sellWhere = ['inv.industry_id = $1'];
+  const sellParams = [industryId];
   if (product) {
     sellParams.push(`%${product}%`);
     sellWhere.push(`si.product ILIKE $${sellParams.length}`);
@@ -1538,9 +1602,10 @@ const { rows: purRows } = await pool.query(
   // Cost basis per unit for each sold product — used to compute real COGS
   // instead of comparing against unrelated purchase-transaction totals
   // that merely happen to fall inside the same date range.
-  const { rows: costRows } = await pool.query(
-    `SELECT name AS product, COALESCE(purchase_price_exc_tax, 0) AS unit_cost FROM products`
-  );
+const { rows: costRows } = await pool.query(
+    `SELECT name AS product, COALESCE(purchase_price_exc_tax, 0) AS unit_cost FROM products WHERE industry_id = $1`,
+    [industryId]
+  );  
 
   const map = {};
   purRows.forEach((r) => {
@@ -1560,11 +1625,11 @@ const { rows: purRows } = await pool.query(
   // Category filter applied here since neither purchase_items nor
   // sales_invoice_items store category directly — look it up via products.
   if (category) {
-    const { rows: catRows } = await pool.query(
+  const { rows: catRows } = await pool.query(
       `SELECT p.name AS product FROM products p
        LEFT JOIN product_categories pc ON pc.id = p.category_id
-       WHERE pc.name ILIKE $1`,
-      [`%${category}%`]
+       WHERE pc.name ILIKE $1 AND p.industry_id = $2`,
+      [`%${category}%`, industryId]
     );
     const catSet = new Set(catRows.map((r) => r.product));
     allProducts = allProducts.filter((r) => catSet.has(r.product));
@@ -1610,13 +1675,19 @@ const { rows: purRows } = await pool.query(
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 16. REGISTER REPORT → register_sessions (real POS cash register shifts)
+// industry-scoped. Sessions opened before this migration have
+// industry_id = NULL and are excluded from every industry's view.
 // ═══════════════════════════════════════════════════════════════════════════
-const getRegisterReport = async (filters = {}) => {
+const getRegisterReport = async (industryId, filters = {}) => {
   const { location = '', user = '', date_from = '', date_to = '', page = 1, limit = 25 } = filters;
 
   const where = ['1=1'];
   const params = [];
 
+  if (industryId) {
+    params.push(industryId);
+    where.push(`rs.industry_id = $${params.length}`);
+  }
   if (location) {
     params.push(`%${location}%`);
     where.push(`rs.location ILIKE $${params.length}`);
@@ -1682,14 +1753,13 @@ const getRegisterReport = async (filters = {}) => {
 //      Shows which products generated how much tax, at which GST rate,
 //      within the same date range as the main Tax Report.
 // ═══════════════════════════════════════════════════════════════════════════
-const getTaxByProductReport = async (filters = {}) => {
+const getTaxByProductReport = async (industryId, filters = {}) => {
   const { date_from = '', date_to = '', page = 1, limit = 25 } = filters;
 
-  const where = ['1=1'];
-  const params = [];
+  const where = ['inv.industry_id = $1'];
+  const params = [industryId];
   pushDateRange(params, where, 'inv.invoice_date', date_from, date_to);
   const whereClause = where.join(' AND ');
-
   const countRes = await pool.query(
     `SELECT COUNT(*) FROM (
        SELECT si.product, si.tax
@@ -1739,11 +1809,11 @@ const getTaxByProductReport = async (filters = {}) => {
 //    via SKU (same join key as getItemsReport, since sales_invoice_items
 //    has no reliable product_id). Returns % share of revenue per category.
 // ═══════════════════════════════════════════════════════════════════════════
-const getSalesByCategoryReport = async (filters = {}) => {
+const getSalesByCategoryReport = async (industryId, filters = {}) => {
   const { date_from = '', date_to = '' } = filters;
 
-  const where = ['1=1'];
-  const params = [];
+  const where = ['inv.industry_id = $1'];
+  const params = [industryId];
   pushDateRange(params, where, 'inv.invoice_date', date_from, date_to);
   const whereClause = where.join(' AND ');
 
@@ -1777,11 +1847,11 @@ const getSalesByCategoryReport = async (filters = {}) => {
 //    unlike getStockReport above which only shows the company-wide total.
 //    Read-only — never mutates product_stock_by_location or products.
 // ═══════════════════════════════════════════════════════════════════════════
-const getLocationWiseStockReport = async (filters = {}) => {
+const getLocationWiseStockReport = async (industryId, filters = {}) => {
   const { location_id = '', product_id = '', page = 1, limit = 25 } = filters;
 
-  const where = ['1=1'];
-  const params = [];
+  const where = ['p.industry_id = $1'];
+  const params = [industryId];
 
   if (location_id) {
     params.push(location_id);
@@ -1793,7 +1863,6 @@ const getLocationWiseStockReport = async (filters = {}) => {
   }
 
   const whereClause = where.join(' AND ');
-
   const countRes = await pool.query(
     `SELECT COUNT(*) FROM product_stock_by_location psl
      JOIN products p ON p.id = psl.product_id
@@ -1836,8 +1905,8 @@ const getLocationWiseStockReport = async (filters = {}) => {
 };
 
 module.exports = {
-  getNetProfitSummary: async (filters = {}) => {
-    const { rows, summary } = await getProfitLossReport(filters);
+  getNetProfitSummary: async (industryId, filters = {}) => {
+    const { rows, summary } = await getProfitLossReport(industryId, filters);
     return { rows, summary };
   },
   getActivityLogReport,

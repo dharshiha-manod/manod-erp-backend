@@ -11,7 +11,7 @@ const { logActivity } = require('../services/activityLogService');
 const getAllReturns = async (req, res) => {
   try {
     const { page = 1, limit = 25, search = '', supplier_id = '', date_from = '', date_to = '', payment_status = '' } = req.query;
-    const { rows, total } = await service.fetchAllReturns({ page, limit, search, supplier_id, date_from, date_to, payment_status });
+    const { rows, total } = await service.fetchAllReturns(req.industryId, { page, limit, search, supplier_id, date_from, date_to, payment_status });
     res.status(200).json({
       success: true,
       total,
@@ -28,7 +28,7 @@ const getAllReturns = async (req, res) => {
 // GET /api/purchase-returns/:id
 const getReturnById = async (req, res) => {
   try {
-    const ret = await service.fetchReturnById(req.params.id);
+    const ret = await service.fetchReturnById(req.industryId, req.params.id);
     if (!ret) return res.status(404).json({ success: false, error: 'Purchase return not found' });
     res.status(200).json({ success: true, purchaseReturn: ret });
   } catch (err) {
@@ -48,7 +48,7 @@ const createReturn = async (req, res) => {
     if (!Array.isArray(req.body.items) || req.body.items.length === 0) {
       return res.status(400).json({ success: false, error: 'At least one product item is required' });
     }
-   const ret = await service.createReturn(req.body, userId, userName);
+const ret = await service.createReturn(req.industryId, req.body, userId, userName);
     logActivity({ userId, module: 'Purchase Returns', action: `Created Return ${ret.reference_no || ret.return_no || ret.id}`, detail: `Supplier: ${req.body.supplier_name || req.body.supplier_id || ''}`, req });
     res.status(201).json({ success: true, message: 'Purchase return created', purchaseReturn: ret });
   } catch (err) {
@@ -61,7 +61,7 @@ const createReturn = async (req, res) => {
 // PUT /api/purchase-returns/:id
 const updateReturn = async (req, res) => {
   try {
-const ret = await service.updateReturn(req.params.id, req.body);
+const ret = await service.updateReturn(req.industryId, req.params.id, req.body);
     logActivity({ userId: req.user?.id || req.user?.userId || null, module: 'Purchase Returns', action: `Updated Return ${ret.reference_no || ret.return_no || req.params.id}`, req });
     res.status(200).json({ success: true, message: 'Purchase return updated', purchaseReturn: ret });
   } catch (err) {
@@ -76,7 +76,7 @@ const deleteReturn = async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId || null;
     const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
-    const result = await service.deleteReturn(req.params.id, userId, userName);
+  const result = await service.deleteReturn(req.industryId, req.params.id, userId, userName);
     res.status(200).json({ success: true, message: 'Purchase return deleted', deleted: result });
   } catch (err) {
     console.error('❌ Delete Purchase Return Error:', err.message);
@@ -94,7 +94,7 @@ const bulkDeleteReturns = async (req, res) => {
     }
     const userId = req.user?.id || req.user?.userId || null;
     const userName = req.user?.name || req.user?.full_name || req.user?.username || req.user?.email || null;
-    const result = await service.bulkDeleteReturns(ids, userId, userName);
+  const result = await service.bulkDeleteReturns(req.industryId, ids, userId, userName);
     res.status(200).json({ success: true, message: `Deleted ${result.deleted.length} return(s)`, ...result });
   } catch (err) {
     console.error('❌ Bulk Delete Purchase Returns Error:', err.message);
