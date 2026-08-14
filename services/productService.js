@@ -1087,7 +1087,8 @@ const openingStockQty = parseFloat(r.openingStock ?? r.opening_stock) || 0;
       // purchaseService manages its own transaction/stock-impact logic) ──
 if (openingStockQty > 0) {
         try {
-          await purchaseService.createPurchase(
+        await purchaseService.createPurchase(
+            industryId,
             {
               supplier_id: supplierId,
               purchase_status: 'Received',
@@ -1102,7 +1103,7 @@ if (openingStockQty > 0) {
                 discount_pct: 0,
                 margin_pct: 0,
               }],
-         amount_paid: paidAmount,
+              amount_paid: paidAmount,
             },
             userId,
             userName
