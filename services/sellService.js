@@ -55,8 +55,42 @@ const _runMigrationStep = async (label, sql) => {
   };
 const ensureSellSchema = async () => {
     if (sellSchemaReady) return;
-    await _runMigrationStep("customer_id", `ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS customer_id INTEGER;`);
-    await _runMigrationStep("pos_sales.customer_id", `ALTER TABLE pos_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER;`);
+  await _runMigrationStep("customer_id", `ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS customer_id TEXT;`);
+    await _runMigrationStep(
+      "sales_invoice_items.product_id_drop_fk",
+      `DO $$
+       DECLARE r RECORD;
+       BEGIN
+         FOR r IN
+           SELECT conname FROM pg_constraint
+           WHERE conrelid = 'sales_invoice_items'::regclass
+             AND conname LIKE '%product_id%'
+         LOOP
+           EXECUTE 'ALTER TABLE sales_invoice_items DROP CONSTRAINT ' || quote_ident(r.conname);
+         END LOOP;
+       END $$;`
+    );
+    await _runMigrationStep(
+      "sales_invoice_items.product_id_uuid_fix",
+      `ALTER TABLE sales_invoice_items ALTER COLUMN product_id TYPE UUID USING NULLIF(product_id::text, '')::uuid;`
+    );
+    await _runMigrationStep(
+      "customer_id_drop_fk",
+      `DO $$
+       DECLARE r RECORD;
+       BEGIN
+         FOR r IN
+           SELECT conname FROM pg_constraint
+           WHERE conrelid = 'sales_invoices'::regclass
+             AND conname LIKE '%customer_id%'
+         LOOP
+           EXECUTE 'ALTER TABLE sales_invoices DROP CONSTRAINT ' || quote_ident(r.conname);
+         END LOOP;
+       END $$;`
+    );
+    await _runMigrationStep("customer_id_text_fix", `ALTER TABLE sales_invoices ALTER COLUMN customer_id TYPE TEXT USING customer_id::text;`);
+    await _runMigrationStep("pos_sales.customer_id", `ALTER TABLE pos_sales ADD COLUMN IF NOT EXISTS customer_id TEXT;`);
+    await _runMigrationStep("pos_sales.customer_id_text_fix", `ALTER TABLE pos_sales ALTER COLUMN customer_id TYPE TEXT USING customer_id::text;`);
     // Optional ID-based link to HRM (users or hrm_employees) for the
     // salesperson field. Nullable, additive — the existing `salesperson`
     // text column is untouched and keeps working for display/exports.
@@ -436,10 +470,14 @@ invoice = rows[0];
         `INSERT INTO sales_invoice_items ${cols} VALUES ${items.map((_,i)=>{
           const b=i*10; return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},$${b+8},$${b+9},$${b+10})`;
         }).join(",")}`,
-    items.flatMap(it => {
+items.flatMap(it => {
         const tax = (it.tax === null || it.tax === undefined || it.tax === '') ? 18 : it.tax;
+        const isUUID = v => typeof v === "string" &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+        const rawPid = it.productId || it.id;
+        const pid = isUUID(rawPid) ? rawPid : null;
           return [
-          invoice.id, null, it.product, it.sku || null,
+         invoice.id, pid, it.product, it.sku || null,
           it.qty || 1, it.unit || "Pcs", it.unitPrice || 0,
           it.discount || 0, tax,
           ((it.qty||1)*(it.unitPrice||0))*(1-(it.discount||0)/100)*(1+tax/100),
@@ -492,7 +530,7 @@ invoice = rows[0];
       }
 
 let prows = [];
-      if (pid) {
+      if (pid && !isUUID(pid)) {
         try {
           const result = await qc(`SELECT id, name, COALESCE(current_stock,0) AS current_stock FROM products WHERE id = $1`, [pid]);
           prows = result.rows;
@@ -522,13 +560,14 @@ let prows = [];
         continue;
       }
 const qty = it.qty || 1;
+     const resolvedProductId = prows[0].id; // always the real products.id (integer) resolved above — never the raw UUID from the request
      const resolvedWarehouseId = warehouseId || await stockLocationService.getDefaultLocationId(client);
-      const stockHere = await stockLocationService.stockAtLocation(client, pid, resolvedWarehouseId);
+      const stockHere = await stockLocationService.stockAtLocation(client, resolvedProductId, resolvedWarehouseId);
       if (qty > stockHere) {
-        const extra = await _tryAutoWorkOrder(pid, prows[0].name, stockHere, qty);
+        const extra = await _tryAutoWorkOrder(resolvedProductId, prows[0].name, stockHere, qty);
         throw new Error(`Insufficient stock for "${prows[0].name}" at "${warehouse}": have ${stockHere}, cannot sell ${qty}.${extra}`);
       }
-      resolved.push({ pid, qty });
+      resolved.push({ pid: resolvedProductId, qty });
     }
 for (const { pid, qty } of resolved) {
       const resolvedWarehouseId = warehouseId || await stockLocationService.getDefaultLocationId(client);
@@ -572,13 +611,14 @@ for (const { pid, qty } of resolved) {
     }
 
     if (affectsStock && items.length > 0) {
+      const isUUID = v => typeof v === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
       for (const it of items) {
-        const pid = it.productId || it.id;
-        if (pid) {
-          notificationEngine.checkAndAlertLowStock(pid).catch(err =>
-            console.error(`[createInvoice] low stock check failed for pid=${pid}:`, err.message)
-          );
-        }
+        const rawPid = it.productId || it.id;
+        if (!rawPid || isUUID(rawPid)) continue; // skip UUID-shaped ids — products.id is integer
+        notificationEngine.checkAndAlertLowStock(rawPid).catch(err =>
+          console.error(`[createInvoice] low stock check failed for pid=${rawPid}:`, err.message)
+        );
       }
     }
 

@@ -16,9 +16,8 @@ const created = (res, data)          => res.status(201).json({ success: true, da
 const notFound= (res, msg = "Not found") => res.status(404).json({ success: false, message: msg });
 const err   = (res, e, msg = "Server error") => {
   console.error("[SellController]", msg, e?.message || e);
-  res.status(500).json({ success: false, message: msg, error: e?.message });
+  res.status(500).json({ success: false, message: e?.message || msg, error: e?.message });
 };
-
 // ═══════════════════════════════════════════════════════════════
 // SALES INVOICES
 // ═══════════════════════════════════════════════════════════════

@@ -222,14 +222,18 @@ const createBusinessLocation = async (businessId, industryId, data) => {
   // deleted rows don't cause a previously-used id to be reissued. Wrapped
   // in a retry loop against the unique constraint to stay safe under
   // concurrent inserts (e.g. an accidental double-click / double request).
-  const maxAttempts = 5;
+const maxAttempts = 5;
   let lastErr;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    // location_id is UNIQUE across the whole business_locations table
+    // (constraint: business_locations_location_id_key), not just per
+    // business/industry. So the next-number lookup must scan the full
+    // table — scoping it to business_id/industry_id let two different
+    // industries both compute "BL0001" and collide on insert.
     const maxResult = await pool.query(
       `SELECT COALESCE(MAX(CAST(SUBSTRING(location_id FROM 3) AS INTEGER)), 0) AS max_num
        FROM business_locations
-       WHERE business_id = $1 AND industry_id = $2 AND location_id ~ '^BL[0-9]+$'`,
-      [businessId, industryId]
+       WHERE location_id ~ '^BL[0-9]+$'`
     );
     const nextNum = parseInt(maxResult.rows[0].max_num) + 1 + attempt;
     const locationId = `BL${String(nextNum).padStart(4, '0')}`;
